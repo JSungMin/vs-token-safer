@@ -118,6 +118,8 @@ export const BACKENDS = {
         // progress (older clangd / a server without that capability).
         const idxWait = envInt("VTS_LSP_INDEX_WAIT_MS", 120000);
         const indexed = await client.waitForNotification("$/progress", idxWait, (p) => p && p.value && p.value.kind === "end");
+        // Fallback only for a server that emits no work-done progress (clangd always does). idxWait was
+        // already spent above, so this is a short "did the first file parse?" check, not a second full wait.
         if (!indexed) await client.waitForNotification("textDocument/publishDiagnostics", Math.min(idxWait, 30000));
       }
     },
