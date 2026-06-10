@@ -53,16 +53,20 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   clangd indexes async → `afterInit` (`backends/index.js`) opens the compile_commands TUs + nearby
   headers (cap 100) and waits for `textDocument/publishDiagnostics` before the first query. CAVEAT: a
   compile DB without include dirs → system/3rd-party headers fail to resolve → only header-free symbols
-  index; UBT-generated DBs include the paths. **✅ real UE 5.x project checked (clang-cl-configured):**
-  `GenerateClangDatabase` needs **`-Compiler=VisualCpp`** override — targets set up to build with clang-cl
-  otherwise fail clang-toolchain validation (`Unable to find valid <ver> C++ toolchain for Clang x64`);
-  with the override → `Result: Succeeded`, ~26k-entry DB. `clangd --check` on a game TU (~19s) resolves
-  the **full engine include graph** (engine base types + `*.generated.h` land in the index cache) →
-  caveat confirmed on real source. KNOWN LIMIT: on a UE-scale **cold** index, LSP-server queries can
-  exceed the 30s `request()` timeout — `--background-index` saturates the AST worker indexing thousands
-  of engine headers and starves the first query; the engine parses fine (`--check` proves it), but a
-  one-shot CLI query needs a warm/persistent index or a higher timeout. Follow-up: make the LSP request
-  timeout env-configurable (`VTS_LSP_TIMEOUT_MS`) + optionally wait for index-ready on huge trees.
+  index; UBT-generated DBs include the paths. **✅ real UE 5.x project live-verified end-to-end**
+  (`search_symbol` returned the game `UCLASS` + its `*.generated.h` symbols as `file:line`):
+  - `GenerateClangDatabase` needs **`-Compiler=VisualCpp`** when the targets build with clang-cl — else
+    clang-toolchain validation fails (`Unable to find valid <ver> C++ toolchain for Clang x64`). Override
+    → `Result: Succeeded`, ~26k-entry DB.
+  - **CLANGD VERSION MATTERS (root cause of the long stall hunt).** VS-bundled clangd **19.1.5 DEADLOCKS**
+    on a real UE TU in LSP-server mode: `clangd --check` parses it in ~19s, but every async path (didOpen
+    *and* background-index) never finishes (>250s, 0 symbols). **Standalone clangd 22.1.6 parses the same
+    TU in ~13s and returns symbols.** So it's an upstream clangd 19.x bug, not a vts/glue bug. Fix: use
+    clangd ≥ `MIN_CLANGD` (22) — `backends/index.js` probes `clangd --version` and `core.js` prepends a
+    one-time advisory if it's older. Isolation proved engine headers (CoreMinimal, GameplayTagContainer)
+    parse fine; only the full game-TU header chain trips 19.x.
+  - Secondary tuning for cold/large indexes: `VTS_LSP_TIMEOUT_MS` (request timeout), `VTS_LSP_INDEX_WAIT_MS`
+    (afterInit waits for `$/progress` index-ready), `VTS_CLANGD_OPEN_CAP` (warm-up open cap).
 - **roslyn** (C#/.NET): `.sln/.csproj`. **✅ live-verified** against **Microsoft.CodeAnalysis.LanguageServer**
   (the real VS / C# Dev Kit engine), auto-detected from the VS Code C# extension bundle + its net10
   runtime; opens the workspace via `solution/open`/`project/open` then waits for

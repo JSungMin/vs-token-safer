@@ -35,6 +35,38 @@ const refOk = !r2.isError && /reference\(s\)/.test(r2.text);
 // 5) MCP=CLI parity: both go through runTool; the dispatch is the shared layer (smoke).
 const dispatchOk = lspOk && fmtOk && refOk;
 
+// 6) VTS_LSP_TIMEOUT_MS honored — a request slower than the configured timeout rejects (the cold
+// UE-scale fix: users can raise the ceiling instead of silently timing out at a hardcoded 30s).
+// Set the env only AROUND the slow request — not during initialize (the handshake would race a 50ms cap).
+const ct = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+await ct.initialize(process.cwd());
+let timeoutHonored = false;
+try {
+  process.env.VTS_LSP_TIMEOUT_MS = "50"; // mock delays "SLOW" 300ms → request() default timeout (50ms) rejects
+  await ct.symbol("SLOW");
+} catch (e) { timeoutHonored = /timed out/.test(e.message); }
+finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
+await ct.shutdown();
+
+// 7) index-ready signal — afterInit waits for clangd's background-index completion ($/progress
+// kind:end) before the first query, instead of racing the still-building index.
+const cp = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+await cp.initialize(process.cwd());
+const ready = await cp.waitForNotification("$/progress", 2000, (p) => p && p.value && p.value.kind === "end");
+await cp.shutdown();
+const indexReadyOk = !!ready;
+
+// 8) clangd version advisory — parse the major version and gate on the recommended floor (older
+// clangd deadlocks on large UE projects; ≥ MIN_CLANGD is the verified-good floor).
+// Dynamic import: static would load backends/index.js (capturing BACKENDS.clangd.cmd) before the
+// VTS_CLANGD_CMD env above is set; by here core.js has already loaded it with the mock cmd in place.
+const { parseClangdMajor, MIN_CLANGD } = await import("../server/backends/index.js");
+const verParseOk = parseClangdMajor("clangd version 19.1.5") === 19
+  && parseClangdMajor("clangd version 22.1.6 (https://github.com/llvm/llvm-project abc123)") === 22
+  && parseClangdMajor("not a version") === null;
+const verGateOk = MIN_CLANGD >= 22 && 19 < MIN_CLANGD && 22 >= MIN_CLANGD;
+const advisoryOk = verParseOk && verGateOk;
+
 await disposeClients();
 
 const rows = [
@@ -44,6 +76,9 @@ const rows = [
   ["token reduction vs raw index", (capReduction * 100).toFixed(1) + "%", "≥ 70%", capReduction >= 0.7],
   ["references wiring", refOk, "true", refOk],
   ["runTool dispatch", dispatchOk, "true", dispatchOk],
+  ["VTS_LSP_TIMEOUT_MS honored", timeoutHonored, "true", timeoutHonored],
+  ["index-ready ($/progress end) wait", indexReadyOk, "true", indexReadyOk],
+  ["clangd version advisory + gate", advisoryOk, "true", advisoryOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

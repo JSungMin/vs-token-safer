@@ -10,6 +10,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
+// Positive-integer env override, else default. Used so huge-project users (e.g. a cold UE-scale clangd
+// index) can raise the per-request timeout instead of hitting the hardcoded 30s ceiling.
+export const envInt = (name, def) => { const v = parseInt(process.env[name], 10); return Number.isFinite(v) && v > 0 ? v : def; };
+
 export const toUri = (p) => pathToFileURL(path.resolve(p)).href;
 export const fromUri = (u) => {
   try { return fileURLToPath(u); } catch { return u.replace(/^file:\/\//, ""); }
@@ -121,7 +125,7 @@ export class LspClient {
     });
   }
 
-  request(method, params, timeoutMs = 30000) {
+  request(method, params, timeoutMs = envInt("VTS_LSP_TIMEOUT_MS", 30000)) {
     const id = this.nextId++;
     this._send({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
