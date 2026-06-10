@@ -7,8 +7,7 @@
 //   --dry-run print what would change, write nothing
 //   --tag     after writing, create the annotated git tag vX.Y.Z
 //
-// The `v*` tag publishes the GitHub Release (release.yml) AND (idempotently) the npm package
-// (npm-publish.yml skips if that version is already on npm).
+// The `v*` tag publishes a GitHub Release (release.yml). This repo does NOT publish to npm.
 //
 // Targets (edited in place, formatting preserved via a scoped regex replace):
 //   .claude-plugin/plugin.json            (top-level "version")
@@ -89,5 +88,5 @@ if (TAG) {
 } else {
   console.log("\nNext: commit the bump (PR + merge to main), then push the release tag on main:");
   console.log(`  git tag -a ${tag} -m "vs-token-safer ${next}" && git push origin ${tag}`);
-  console.log("That `v*` tag publishes the GitHub Release AND (idempotently) the npm package.");
+  console.log("That `v*` tag publishes a GitHub Release. (No npm publish from this repo.)");
 }

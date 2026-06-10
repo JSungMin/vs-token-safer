@@ -42,12 +42,15 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - **No proprietary leak.** Never put real paths/symbols/company names in the repo or commits; sanitize;
   scan tree + git log before any push. Eval/docs use synthetic names only.
 - **Security/local-only.** No network calls; nothing transmitted. PRIVACY.md says so.
-- **PR workflow.** Issue → in-place branch (NOT worktree) → PR (`Closes #N`, "Review points") →
-  squash-merge → label. Bump this package + tag `v<x>` (`node scripts/bump.mjs <level> --tag`); npm
-  auto-publishes on the `v*` tag (idempotent). Use Edit/Write for files + short `git`/`gh` Bash (no
-  heredocs/`node -e` — they break tool calls). `timeout: 300000` for network Bash.
+- **Release/branch workflow.** Work accumulates on the **`dev`** integration branch; land via a single
+  **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge, then resync `dev` to `main`. Bump on
+  main + tag `v<x>` (`node scripts/bump.mjs <level>`, then commit + `git tag -a`); the `v*` tag publishes a
+  **GitHub Release** (release.yml). **No npm publish from this repo** — the gamedev-log-analyzer npm
+  package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. Use
+  Edit/Write for files + short `git`/`gh` Bash (no heredocs/`node -e` — they break tool calls).
+  `timeout: 300000` for network Bash.
 - **Reuse, don't reinvent.** Pull patterns from `../rider-mcp-enforcer` and `../gamedev-log-analyzer`
-  (token-cap, savings ledger, grep-block hook, routing skill, CLI-first, release/npm-publish CI).
+  (token-cap, savings ledger, grep-block hook, routing skill, CLI-first, release CI).
 - Commit author: `JSungMin <jsm1505104@gmail.com>`. End commits with the Claude Code co-author line.
 
 ## Backends

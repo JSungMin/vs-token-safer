@@ -4,7 +4,7 @@
 for C/C++, a Roslyn-based LSP for C#/.NET — instead of Bash `grep`, and token-cap the result to a
 compact `file:line` list.** Faster and far fewer tokens on large Unreal C++ / .NET codebases.
 **Local-only. No IDE required.** Ships as a Claude Code plugin (MCP server + hook + skill) and as a
-standalone CLI (`vts`) on npm.
+standalone CLI (`vts`) you run from a clone.
 
 > 🇰🇷 한국어 문서: [README.ko.md](README.ko.md)
 
@@ -57,10 +57,13 @@ directory.
 
 ### As a standalone CLI (no IDE, no Claude Code)
 
+Not published to npm — install from a clone:
+
 ```
-npm i -g vs-token-safer      # provides `vts`
-# or one-off:
-npx -p vs-token-safer vts symbol --q SpawnActor --projectPath /path/to/proj
+git clone https://github.com/JSungMin/vs-token-safer
+cd vs-token-safer/server && npm install && npm link   # provides `vts`
+# or run directly, no link:
+node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
 ```
 
 ### Prerequisites — the language server

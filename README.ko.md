@@ -3,7 +3,7 @@
 **Claude Code가 C++/C# 코드를 Bash `grep` 대신 공식 언어 서버 인덱스로 검색하도록 강제한다** —
 C/C++은 clangd(LLVM), C#/.NET은 Roslyn 기반 LSP. 결과는 간결한 `file:line` 목록으로 **토큰 캡**한다.
 대규모 Unreal C++ / .NET 코드베이스에서 더 빠르고 토큰을 훨씬 적게 쓴다. **로컬 전용, IDE 불필요.**
-Claude Code 플러그인(MCP 서버 + 훅 + 스킬)과 독립 CLI(`vts`, npm)로 제공된다.
+Claude Code 플러그인(MCP 서버 + 훅 + 스킬)과 클론해서 쓰는 독립 CLI(`vts`)로 제공된다.
 
 > 🇺🇸 English: [README.md](README.md)
 
@@ -53,10 +53,13 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
 
 ### 독립 CLI로 (IDE·Claude Code 불필요)
 
+npm 미배포 — 클론해서 설치한다:
+
 ```
-npm i -g vs-token-safer      # `vts` 제공
-# 또는 일회성:
-npx -p vs-token-safer vts symbol --q SpawnActor --projectPath /path/to/proj
+git clone https://github.com/JSungMin/vs-token-safer
+cd vs-token-safer/server && npm install && npm link   # `vts` 제공
+# 또는 link 없이 직접 실행:
+node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
 ```
 
 ### 사전 준비 — 언어 서버
