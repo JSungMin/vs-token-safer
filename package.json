@@ -13,7 +13,7 @@
     "bump": "node scripts/bump.mjs"
   },
   "devDependencies": {
-    "@eslint/js": "^9.0.0",
+    "@eslint/js": "^10.0.1",
     "eslint": "^9.0.0",
     "globals": "^17.6.0",
     "prettier": "^3.0.0"
