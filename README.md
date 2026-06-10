@@ -84,6 +84,9 @@ vs-token-safer drives an official engine; install the one(s) you need:
   - The database is large (a full editor target ≈ tens of thousands of entries). On a **cold** index the
     first query can be slow while clangd indexes the engine headers — see `VTS_LSP_TIMEOUT_MS` /
     `VTS_LSP_INDEX_WAIT_MS` below, or keep the MCP server running so the index stays warm.
+  - **Pre-warm like an IDE:** the MCP server indexes the configured `projectPath` at boot (`VTS_PREWARM`,
+    on by default) so the first search is already warm; or run **`vts warmup`** once to build clangd's
+    on-disk index (`.cache/clangd`) up front. Either way you pay the warmup once, not per query.
 - **CMake:** configure with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
 **C# uses the official Visual Studio Roslyn engine automatically.** vs-token-safer auto-detects
@@ -136,6 +139,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large (e.g. UE) index |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index |
+| — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style) so the first search is warm; set `0` to disable |
+| — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly for CLI/non-MCP use) |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll` |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args |
 | — | `VTS_ENFORCE` | `1` | Set `0`/`false`/`off` to let Bash code-grep through (escape hatch) |

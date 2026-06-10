@@ -68,20 +68,33 @@ function savingsReport() {
 }
 
 // ---- LSP client cache (one per root+backend; reused across calls in a process) ----
+// key -> Promise<LspClient>. We cache the PROMISE (not the resolved client) so a boot-time pre-warm
+// racing the first real query share ONE clangd instead of spawning two (the warmup is expensive).
 const clients = new Map();
-async function getClient(root, backendName) {
+function getClient(root, backendName) {
   const key = `${backendName}|${root}`;
   if (clients.has(key)) return clients.get(key);
   const b = BACKENDS[backendName];
-  const c = new LspClient(b.cmd, b.args(root), { cwd: root });
-  await c.initialize(root);
-  if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
-  clients.set(key, c);
-  return c;
+  const p = (async () => {
+    const c = new LspClient(b.cmd, b.args(root), { cwd: root });
+    await c.initialize(root);
+    if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
+    return c;
+  })();
+  clients.set(key, p);
+  p.catch(() => clients.delete(key)); // a failed warmup shouldn't poison the cache — allow a retry
+  return p;
 }
 export async function disposeClients() {
-  for (const c of clients.values()) { try { await c.shutdown(); } catch { /* ignore */ } }
+  for (const p of clients.values()) { try { (await p).shutdown(); } catch { /* ignore */ } }
   clients.clear();
+}
+// Proactively spawn + warm a backend WITHOUT issuing a query (IDE-style background indexing). Fire-and-
+// forget at MCP boot so the user's first search reuses an already-warming/warm client. Returns the
+// same cached promise getClient would, so a query arriving mid-warmup joins it rather than racing.
+export function prewarm(root, backendName) {
+  if (!root || !backendName || !BACKENDS[backendName]) return Promise.resolve(null);
+  return getClient(root, backendName);
 }
 
 // Surface a one-time advisory if the resolved clangd is too old (older clangd deadlocks on large UE
@@ -133,6 +146,14 @@ export async function runTool(name, a = {}) {
     }
     if (name === "vts_savings") return out(savingsReport());
     if (name === "vts_savings_reset") { try { fs.writeFileSync(SAVINGS_FILE, "{}"); } catch { /* ignore */ } return out("Savings ledger cleared."); }
+    if (name === "vts_warmup") {
+      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const backendName = a.backend || BACKEND || pickBackend(root);
+      if (!backendName) return err(`No backend to warm. Pass backend=clangd|roslyn or ensure ${root} has compile_commands.json / a .sln.`);
+      const t0 = Date.now();
+      await getClient(root, backendName); // spawn + afterInit (index-ready wait) → primes the on-disk + in-process index
+      return out(backendAdvisory(backendName) + `Warmed ${backendName} for ${root} in ${((Date.now() - t0) / 1000).toFixed(1)}s. Queries in this process are now warm; clangd's on-disk index (.cache/clangd) also persists for faster cold starts.`);
+    }
 
     const root = a.projectPath || PROJECT_PATH || process.cwd();
     const backendName = a.backend || BACKEND || pickBackend(root);

@@ -6,7 +6,7 @@ import { LspClient } from "../server/lsp.js";
 
 process.env.VTS_CLANGD_CMD = process.execPath;
 process.env.VTS_CLANGD_ARGS = new URL("./_mock-lsp.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const { runTool, disposeClients } = await import("../server/core.js");
+const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 
@@ -67,6 +67,13 @@ const verParseOk = parseClangdMajor("clangd version 19.1.5") === 19
 const verGateOk = MIN_CLANGD >= 22 && 19 < MIN_CLANGD && 22 >= MIN_CLANGD;
 const advisoryOk = verParseOk && verGateOk;
 
+// 9) pre-warm + vts_warmup — IDE-style index warming. prewarm guards bad args; vts_warmup runs the
+// warmup path (spawn + afterInit) without a query and reports success.
+const prewarmGuardOk = (await prewarm("", "")) === null && (await prewarm("/x", "nope")) === null;
+const w = await runTool("vts_warmup", { projectPath: process.cwd(), backend: "clangd" });
+const warmupOk = !w.isError && /Warmed clangd/.test(w.text);
+const warmOk = prewarmGuardOk && warmupOk;
+
 await disposeClients();
 
 const rows = [
@@ -79,6 +86,7 @@ const rows = [
   ["VTS_LSP_TIMEOUT_MS honored", timeoutHonored, "true", timeoutHonored],
   ["index-ready ($/progress end) wait", indexReadyOk, "true", indexReadyOk],
   ["clangd version advisory + gate", advisoryOk, "true", advisoryOk],
+  ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

@@ -10,9 +10,11 @@
  * dispose clients on shutdown so no language-server child is left running.
  */
 import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from "./sdk.js";
-import { runTool, disposeClients } from "./core.js";
+import { runTool, disposeClients, prewarm, PROJECT_PATH, BACKEND } from "./core.js";
+import { pickBackend } from "./backends/index.js";
 
 const log = (...a) => console.error("[vs-token-safer]", ...a);
+const envBool = (name, def) => { const v = process.env[name]; if (v === undefined || v === "") return def; return !/^(0|false|off|no)$/i.test(v); };
 
 const TOOLS = [
   {
@@ -99,6 +101,11 @@ const TOOLS = [
     description: "Clear the local savings ledger.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "vts_warmup",
+    description: "Pre-build the language-server index (IDE-style) so later searches are fast. Spawns + warms the backend without running a query.",
+    inputSchema: { type: "object", properties: { projectPath: { type: "string" }, backend: { type: "string", enum: ["clangd", "roslyn"] } } },
+  },
 ];
 
 const server = new Server({ name: "vs-search", version: "0.1.0" }, { capabilities: { tools: {} } });
@@ -115,3 +122,17 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 
 await server.connect(new StdioServerTransport());
 log("ready on stdio.");
+
+// IDE-style background pre-warm: when a project root is configured, spawn + index the backend now so
+// the user's first search reuses an already-warming/warm client instead of paying cold warmup inline.
+// Default on when projectPath is set; disable with VTS_PREWARM=0 (fire-and-forget — never blocks boot).
+if (PROJECT_PATH && envBool("VTS_PREWARM", true)) {
+  const backend = BACKEND || pickBackend(PROJECT_PATH);
+  if (backend) {
+    log(`pre-warming ${backend} index for ${PROJECT_PATH} …`);
+    prewarm(PROJECT_PATH, backend).then(
+      (c) => { if (c) log(`index warm (${backend}).`); },
+      (e) => log(`pre-warm failed (${backend}): ${e.message}`),
+    );
+  }
+}
