@@ -35,6 +35,9 @@ Commands:
   learnings-reset   Clear the local learnings ledger.
   savings           How many tokens you've saved vs dumping raw logs into context.
   savings-reset     Clear the local savings ledger.
+  enforce           Show/set Bash log-grep enforcement.   [<block|warn|off> | status]
+                    block (default) denies raw grep/tail/cat over .log/.jsonl/Logs + nudges here;
+                    warn allows but nudges; off disables. Env override: GDLOG_ENFORCE.
   setup             Persist config.   [--projectPath --logPath --logMaxBytes --maxGroups --maxLineChars]
   config            Show effective settings.
 
@@ -92,8 +95,11 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") {
 }
 const name = normCommand(rawCmd);
 const args = parseArgs(rest);
-// convenience: a bare first positional after the command is treated as --path (or --severityMin for nothing else)
-if (rest[0] && !rest[0].startsWith("--") && args.path === undefined && name !== "log_diff") {
+// convenience: `enforce <mode>` takes a bare positional as the mode, not a path.
+if (name === "log_enforce" && rest[0] && !rest[0].startsWith("--") && args.mode === undefined) {
+  args.mode = rest[0];
+} else if (rest[0] && !rest[0].startsWith("--") && args.path === undefined && name !== "log_diff") {
+  // convenience: a bare first positional after the command is treated as --path
   args.path = rest[0];
 }
 

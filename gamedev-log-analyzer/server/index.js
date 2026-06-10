@@ -161,6 +161,16 @@ const TOOLS = [
     description: "Clear the local savings ledger.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "log_enforce",
+    description:
+      "Show or set Bash log-grep enforcement. Pass mode to set ('block' = deny raw grep/tail/cat over " +
+      ".log/.jsonl/Logs + nudge to gamedev-log; 'warn' = allow + nudge; 'off' = allow). Omit (or 'status') to show.",
+    inputSchema: {
+      type: "object",
+      properties: { mode: { type: "string", description: "block | warn | off | status" } },
+    },
+  },
 ];
 
 const server = new Server({ name: "gamedev-log", version: "0.3.0" }, { capabilities: { tools: {} } });

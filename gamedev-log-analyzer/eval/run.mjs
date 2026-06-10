@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { analyzeLog, extractFields, parseLine, diffLogs, locateLog, readText } from "../server/logs.js";
 import { runTool } from "../server/core.js";
+import { shouldBlockLogBash, normalizeMode, shouldBlockRead, nudgeText, READ_MIN_BYTES } from "../server/enforce.js";
 
 // Deterministic synthetic UE-style log (generic names only).
 function makeLog(n) {
@@ -155,6 +156,63 @@ const jsonlLog = [
 const jsonlOut = extractFields(jsonlLog, { fields: ["ts", "Actor.x", "Vel", "step:Actor"], category: "Pos", severityMin: "Display", max: 10 });
 const jsonlOk = /(^|\n)100\t10\.0\t400\t/.test(jsonlOut) && /\t5\.00$/.test(jsonlOut); // step = hypot(3,4)=5.00
 
+// Log-grep enforcement: the PreToolUse hook must catch raw Bash log reads (grep/tail/cat over
+// .log/.jsonl/Logs) and steer them to gamedev-log, while leaving code grep and non-log reads alone.
+const enfCases = [
+  // unbounded reads of a log = floods → block
+  ["grep -i warning build.log", true],
+  ["cat crash.jsonl", true],
+  ["rg pattern G:/Proj/Saved/Logs/run.log", true],
+  ["tail -n 5000 build.log", true], // large -n → flood
+  ["tail -f Saved/Logs/Editor.log", true], // live stream → unbounded
+  ["tail -n +1 build.log", true], // from line 1 to EOF → whole file
+  // bounded peeks / count-only reads can't flood → pass (mirrors the Read slice escape)
+  ["tail -3 Saved/Logs/Editor.log | grep -cE error", false], // the original incident — 3 lines + a count
+  ["tail -8 build.log", false],
+  ["head -20 Saved/Logs/Editor.log", false],
+  ["tail build.log", false], // default 10 lines
+  ["grep -c error build.log", false], // count only = one number
+  // non-log / non-read-exec → pass
+  ["grep TODO src/Foo.cpp", false], // code file, not a log
+  ["node server/cli.js search --path x.log", false], // analyzer's own call (node, not a read exec)
+  ["head -20 notes.txt", false], // txt is not a log
+  ["ls Logs/", false], // ls is not a read-exec
+  // variable indirection: path in the assignment, read in a later segment
+  ['log=/p/x.log; cat "$log"', true], // bareword RHS, deref, full cat → block
+  ['L="/p/run.jsonl"; grep err "$L"', true], // unbounded grep of a var-bound log → block
+  ['log="/p/x.log"; tail -8 "$log"', false], // var-bound but bounded peek → pass
+  ['log="/p/x.log"; echo "$log"', false], // echo is not a read-exec → not a flood
+  ['f="notes.txt"; cat "$f"', false], // var bound to a non-log → precise, no block
+  ['tail -3 "$log" | grep err', false], // $log never bound → unknown, allow
+];
+const enforceClassifyOk = enfCases.every(([c, exp]) => shouldBlockLogBash(c) === exp);
+const enforceModeOk =
+  normalizeMode("on") === "block" && normalizeMode("0") === "off" &&
+  normalizeMode("nudge") === "warn" && normalizeMode("bogus") === null;
+const enforceStatusOk = /Log-grep enforcement: (block|warn|off)/.test(runTool("log_enforce", {}).text);
+
+// Read-tool enforcement: intercept only an UNBOUNDED read of a LARGE log. A slice (offset/limit),
+// a small log, a non-log file, or an unknown size (stat failed → 0) must all pass — the slice path is
+// the one-step escape so a blocked Read never strands the model.
+const big = READ_MIN_BYTES + 1, small = READ_MIN_BYTES - 1;
+const readCases = [
+  ["Saved/Logs/Editor.log", big, false, true],   // large log, unbounded → block
+  ["Editor.log", big, true, false],               // sliced (offset/limit) → always allow
+  ["Editor.log", small, false, false],            // small log → allow (cheap)
+  ["src/Foo.cpp", big, false, false],             // non-log code file → allow
+  ["run.jsonl", big, false, true],                // large .jsonl → block
+  ["", big, false, false],                        // no path → allow
+  ["Editor.log", 0, false, false],                // stat failed (size 0) → allow (fail-open)
+];
+const readClassifyOk = readCases.every(([p, sz, sliced, exp]) => shouldBlockRead(p, sz, sliced) === exp);
+// the nudge must tell the truth about HOW the read happened + offer the right escape per kind
+const nudgeOk =
+  /via the Read tool/.test(nudgeText("Editor.log", "read")) &&
+  /offset.*limit|limit.*offset|`offset`/.test(nudgeText("Editor.log", "read")) &&
+  /via Bash/.test(nudgeText("tail x.log", "bash")) &&
+  /gamedev-log (summary|search)/.test(nudgeText("x.log", "read"));
+const enforceOk = enforceClassifyOk && enforceModeOk && enforceStatusOk && readClassifyOk && nudgeOk;
+
 const rows = [
   ["parse coverage", (coverage * 100).toFixed(1) + "%", "≥ 95%", coverage >= 0.95],
   ["token reduction (callsite)", (reduction * 100).toFixed(1) + "%", "≥ 90%", reduction >= 0.9],
@@ -169,6 +227,7 @@ const rows = [
   ["log_locate omits bodies", locateNoBodies, "true", locateNoBodies],
   ["multi-engine classify (synthetic)", engineOk, "true", engineOk],
   ["build code rollup (groupBy=code)", codeRollupOk, "true", codeRollupOk],
+  ["enforce: bash+read+mode+nudge", enforceOk, "true", enforceOk],
   ["JSONL field extraction", jsonlOk, "true", jsonlOk],
   ["coverage hint (unknown fmt only)", covHintOk, "true", covHintOk],
   ["tail-read clean line boundary", tailOk, "true", tailOk],

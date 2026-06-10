@@ -96,6 +96,20 @@ process.env.VTS_CLANGD_ARGS = savedArgs;
 delete process.env.VTS_CLANGD_REMOTE;
 const orderingOk = orderHotFirst && remoteWired;
 
+// 11) centrality (③) — a header #included by multiple candidates ranks above an unreferenced leaf
+// (no history/VCS for this temp dir, so centrality decides). Also exercises the working-now (④) path.
+const cdir = path.join(os.tmpdir(), `vts-cent-${process.pid}`);
+fs.mkdirSync(cdir, { recursive: true });
+fs.writeFileSync(path.join(cdir, "hub.h"), "#pragma once\n");
+fs.writeFileSync(path.join(cdir, "a.cpp"), '#include "hub.h"\n');
+fs.writeFileSync(path.join(cdir, "b.cpp"), '#include "hub.h"\n');
+fs.writeFileSync(path.join(cdir, "leaf.cpp"), "int x;\n");
+const cands = ["a.cpp", "b.cpp", "leaf.cpp", "hub.h"].map((f) => path.join(cdir, f));
+const cord = orderForWarm(cdir, cands, 10).map((p) => p.toLowerCase());
+const idx = (n) => cord.findIndex((p) => p.endsWith(n));
+const centralityOk = idx("hub.h") !== -1 && idx("hub.h") < idx("leaf.cpp");
+try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 
@@ -111,6 +125,7 @@ const rows = [
   ["clangd version advisory + gate", advisoryOk, "true", advisoryOk],
   ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
+  ["centrality ranks hub > leaf", centralityOk, "true", centralityOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

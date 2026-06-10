@@ -192,9 +192,10 @@ vts는 이를 IDE처럼 처리한다:
 - **`VTS_CLANGD_REMOTE`** — clangd를 공유/사전구축 인덱스 서버로 연결 → 개발자별 warm-up ~0.
 
 **무엇을 먼저 데우느냐가 중요하다.** clangd는 열린(open) 파일의 인덱싱 우선순위를 높이므로, vts는 warm-up
-대상을 *곧 검색할 것 우선*으로 정렬한다: **쿼리 이력**(과거 검색이 반환한 파일) → **VCS 최근성**(git
-`log` + Perforce `p4 opened`) → mtime. 거대한 트리에선 일부만 데울 수 있으므로, 이 정렬이 warm 윈도가
-실제로 검색 대상을 포함하게 만드는 핵심이다.
+대상을 *곧 검색할 것 우선*으로 정렬한다: **쿼리 이력**(과거 검색이 반환한 파일) → **지금 편집 중**(`git
+status` 수정/미추적 + Perforce `p4 opened`) → **git 커밋 최근성**(`git log`) → **include 중심성**(여러
+후보가 `#include`하는 헤더, `VTS_CENTRALITY_MAX`로 제한) → mtime. 거대한 트리에선 일부만 데울 수 있으므로,
+이 정렬이 warm 윈도가 실제 검색 대상을 포함하게 만드는 핵심이다. git·Perforce 모두 지원.
 
 측정된 향상 (`node eval/bench-hitrate.mjs` — 실제 `orderForWarm()`, 현실적 locality 합성 워크로드, 2,000 파일):
 
