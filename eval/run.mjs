@@ -37,13 +37,16 @@ const dispatchOk = lspOk && fmtOk && refOk;
 
 // 6) VTS_LSP_TIMEOUT_MS honored — a request slower than the configured timeout rejects (the cold
 // UE-scale fix: users can raise the ceiling instead of silently timing out at a hardcoded 30s).
-process.env.VTS_LSP_TIMEOUT_MS = "50";
+// Set the env only AROUND the slow request — not during initialize (the handshake would race a 50ms cap).
 const ct = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
 await ct.initialize(process.cwd());
 let timeoutHonored = false;
-try { await ct.symbol("SLOW"); } catch (e) { timeoutHonored = /timed out/.test(e.message); }
+try {
+  process.env.VTS_LSP_TIMEOUT_MS = "50"; // mock delays "SLOW" 300ms → request() default timeout (50ms) rejects
+  await ct.symbol("SLOW");
+} catch (e) { timeoutHonored = /timed out/.test(e.message); }
+finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
 await ct.shutdown();
-delete process.env.VTS_LSP_TIMEOUT_MS;
 
 // 7) index-ready signal — afterInit waits for clangd's background-index completion ($/progress
 // kind:end) before the first query, instead of racing the still-building index.
