@@ -28,6 +28,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `find_references`, `goto_definition`, `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`.
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
+- `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > git/p4 recency > mtime) +
+  `recordQueryResults`. Steers clangd's open-set so the warm window hits likely queries. Used by
+  `backends/index.js` afterInit + `core.js` (records result files per search).
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block (escape hatch `VTS_ENFORCE=0`).
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.

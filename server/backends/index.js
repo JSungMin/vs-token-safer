@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { toUri, envInt } from "../lsp.js";
+import { orderForWarm } from "../warmset.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
@@ -119,11 +120,19 @@ export const BACKENDS = {
   // `-mode=GenerateClangDatabase`, or CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). LIVE-TARGET.
   clangd: {
     cmd: env("VTS_CLANGD_CMD", "clangd"),
-    args: (root) => splitArgs(env("VTS_CLANGD_ARGS")) || [
-      `--compile-commands-dir=${path.dirname(findShallow(root, /^compile_commands\.json$/) || path.join(root, "x"))}`,
-      "--background-index",
-      "--header-insertion=never",
-    ],
+    args: (root) => {
+      const ov = splitArgs(env("VTS_CLANGD_ARGS"));
+      if (ov) return ov;
+      const a = [
+        `--compile-commands-dir=${path.dirname(findShallow(root, /^compile_commands\.json$/) || path.join(root, "x"))}`,
+        "--background-index",
+        "--header-insertion=never",
+      ];
+      // Prebuilt/remote index (zero per-dev warmup): point clangd at a shared clangd-index-server.
+      const remote = env("VTS_CLANGD_REMOTE");
+      if (remote) a.push(`--remote-index-address=${remote}`, `--project-root=${root}`);
+      return a;
+    },
     detect: (root) => !!findShallow(root, /^compile_commands\.json$/) || exists(root, "*.uproject") || !!findShallow(root, /\.uproject$/, 1),
     // clangd indexes asynchronously after launch; a one-shot CLI query would race (and kill) it
     // before the index exists. Open the compile_commands TUs (+ nearby headers) so their symbols
@@ -136,7 +145,9 @@ export const BACKENDS = {
         try { files = JSON.parse(fs.readFileSync(cc, "utf8")).map((e) => e.file).filter(Boolean); } catch { /* ignore */ }
       }
       const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2);
-      const open = [...new Set([...files, ...extra])].slice(0, envInt("VTS_CLANGD_OPEN_CAP", 100)); // cap for huge trees
+      // Order the open-set by likely-query-first (query-history > git-recency > mtime), then cap — this
+      // steers clangd's IndexBoostedFile priority so the warm window covers what the dev actually queries.
+      const open = orderForWarm(root, [...new Set([...files, ...extra])], envInt("VTS_CLANGD_OPEN_CAP", 100));
       for (const f of open) client.didOpen(f, "cpp");
       if (open.length) {
         // On a huge tree (e.g. a cold UE-scale index) the dynamic index isn't ready when the first

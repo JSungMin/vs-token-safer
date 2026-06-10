@@ -87,6 +87,11 @@ vs-token-safer drives an official engine; install the one(s) you need:
   - **Pre-warm like an IDE:** the MCP server indexes the configured `projectPath` at boot (`VTS_PREWARM`,
     on by default) so the first search is already warm; or run **`vts warmup`** once to build clangd's
     on-disk index (`.cache/clangd`) up front. Either way you pay the warmup once, not per query.
+  - **Warm-up ordering (hit-rate):** the open-set is ordered likely-query-first — by query history (files
+    that answered past searches), then VCS recency (**git** `log` and **Perforce** `p4 opened`), then mtime.
+    This steers clangd's per-file index priority so the warm window covers what you actually search.
+  - **Shared/prebuilt index (teams/CI):** set `VTS_CLANGD_REMOTE` to a clangd-index-server address so
+    everyone queries one prebuilt index — near-zero per-developer warmup.
 - **CMake:** configure with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
 **C# uses the official Visual Studio Roslyn engine automatically.** vs-token-safer auto-detects
@@ -141,6 +146,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index |
 | — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style) so the first search is warm; set `0` to disable |
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly for CLI/non-MCP use) |
+| — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup |
+| — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set by likely-query-first) |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll` |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args |
 | — | `VTS_ENFORCE` | `1` | Set `0`/`false`/`off` to let Bash code-grep through (escape hatch) |

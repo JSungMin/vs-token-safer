@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { LspClient, fromUri } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
+import { recordQueryResults } from "./warmset.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -164,6 +165,7 @@ export async function runTool(name, a = {}) {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
       const c = await getClient(root, backendName);
       const syms = (await c.symbol(String(a.q))) || [];
+      try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
       const adv = backendAdvisory(backendName);
       if (!syms.length) return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).`);
       return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
@@ -172,12 +174,14 @@ export async function runTool(name, a = {}) {
       if (!a.path || a.line == null || a.character == null) return err("find_references needs path, line, character (0-based position of the symbol).");
       const c = await getClient(root, backendName);
       const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
+      try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
       return finishOut(locs, backendAdvisory(backendName) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
       const c = await getClient(root, backendName);
       const locs = (await c.definition(a.path, Number(a.line), Number(a.character))) || [];
+      try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
       return finishOut(locs, backendAdvisory(backendName) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
     }
     return err(`Unknown tool: ${name}`);
