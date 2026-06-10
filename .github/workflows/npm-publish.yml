@@ -1,0 +1,51 @@
+name: npm-publish (vs-token-safer)
+
+# Publishes the vs-token-safer CLI/MCP package to npm so it can be used without an IDE
+# (`npx -p vs-token-safer vts <cmd>` or `npm i -g vs-token-safer`).
+# Trigger: ANY release tag `v*`, or a manual run. The publish step is IDEMPOTENT — it reads the
+# package version and skips if that version is already on npm, so a re-tag never double-publishes.
+# Requires an NPM_TOKEN secret.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Sanity — CLI runs dependency-free
+        working-directory: server
+        run: node cli.js config
+      - name: Is this version already on npm?
+        id: check
+        working-directory: server
+        run: |
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "vs-token-safer@${VER}" version >/dev/null 2>&1; then
+            echo "vs-token-safer@${VER} already published — skipping."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "vs-token-safer@${VER} not on npm — will publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to npm
+        if: steps.check.outputs.publish == 'true'
+        working-directory: server
+        # Write the auth line into the package dir's .npmrc so `npm publish` finds the token even when
+        # run from a subdirectory (setup-node's generated .npmrc isn't picked up here). npm never
+        # publishes .npmrc, and the `files` allowlist excludes it.
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

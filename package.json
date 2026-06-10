@@ -1,0 +1,22 @@
+{
+  "name": "vs-token-safer-dev",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev tooling (lint/format/test) for the vs-token-safer marketplace. Not published; the publishable package lives in server/ (npm: vs-token-safer).",
+  "scripts": {
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "eval": "node eval/run.mjs",
+    "test": "npm run eval",
+    "bump": "node scripts/bump.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^17.6.0",
+    "prettier": "^3.0.0"
+  },
+  "engines": { "node": ">=18" }
+}

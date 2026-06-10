@@ -1,0 +1,47 @@
+---
+description: Routing rules for code search in C++/C# projects via vs-token-safer — use the vs-search MCP tools (clangd/Roslyn language-server index) or the `vts` CLI instead of Bash grep. Use whenever searching for a symbol, definition, function, variable, type, or finding references/usages in a C/C++ or C#/.NET (incl. Unreal, Visual Studio) codebase.
+---
+
+# vs-token-safer search routing
+
+Code search runs through an OFFICIAL language server's index (clangd for C++, a Roslyn-based LSP for
+C#) and the result is token-capped to a compact `file:line` list — no source bodies. No IDE needs to
+be open; the engine is spawned headlessly. Karpathy-style rules: do the listed thing, do not improvise.
+
+## Tools (MCP server name: `vs-search`)
+- Symbol / class / function / type / variable → `search_symbol`  (args: `q`, `projectPath`, `backend`, `maxResults`). Never `grep`/`rg` for this.
+- References / usages of a symbol → `find_references`  (args: `path`, `line`, `character` — 0-based — `includeDeclaration`). Semantic, not a text match.
+- Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based).
+- Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`.
+
+CLI equivalent (no MCP needed): `vts symbol --q <name> --projectPath <root>`,
+`vts references --path <file> --line N --character N`, `vts definition --path <file> --line N --character N`.
+
+## Backends & projectPath
+- Backend auto-detects from the project root: `compile_commands.json` (or a `.uproject`) → **clangd**;
+  a `.sln`/`.csproj` → **roslyn**. Override with `backend=clangd|roslyn` or env `VTS_BACKEND`.
+- Set the root via `projectPath` or env `VTS_PROJECT_PATH` (default: cwd).
+- **clangd needs `compile_commands.json`.** Unreal: generate via UBT
+  `-mode=GenerateClangDatabase`; CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. Without it, clangd
+  indexes nothing useful — tell the user to generate it.
+- **roslyn** defaults to the `csharp-ls` dotnet tool; point `VTS_ROSLYN_CMD`/`VTS_ROSLYN_ARGS` at
+  `Microsoft.CodeAnalysis.LanguageServer` for the exact Visual Studio engine. Currently best-effort.
+
+## Truncated results
+Symbol/reference lists are capped at `maxResults` (default 60). A trailing `… N more` means the set
+was truncated — raise `maxResults` or narrow the query. For refactors/renames that must touch every
+call site, raise the cap (or narrow with a more specific symbol) before acting; don't act on a
+partial set and claim it's complete.
+
+## Why
+- The language-server index resolves symbols semantically (no full-tree scan) and the result is
+  token-capped to `file:line` — far less raw source reaches the model than grep-and-paste.
+- grep over a large UE/.NET codebase floods context with thousands of lines; this caps the response.
+- Caveat: on Unreal C++, `search_symbol` quality depends on `compile_commands.json` being current.
+  Verify the result; regenerate the compile DB if a known symbol is missing.
+
+## Fallback
+If a `vs-search` tool errors (engine missing/failed to spawn): clangd not installed → install LLVM
+clangd; roslyn not installed → `dotnet tool install --global csharp-ls`. Until the engine works,
+code-grep is blocked by the hook — the user can set `VTS_ENFORCE=0` to allow grep as a fallback. Do
+not loop on blocked grep; surface the fix and move on.

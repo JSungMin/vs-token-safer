@@ -1,0 +1,57 @@
+name: test
+# Run on PRs and on pushes to main only. This avoids the double run you get when a feature-branch
+# push and its PR both fire, and skips redundant runs on tag pushes (release.yml / npm-publish.yml
+# handle tags; main already passed CI before tagging).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ["18", "20", "22"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: CLI runs dependency-free
+        run: node server/cli.js config
+      - name: Eval (token-reduction + file:line shape gate, mock LSP — no toolchain)
+        run: node eval/run.mjs
+      - name: Install MCP server deps
+        working-directory: server
+        run: npm install --no-audit --no-fund
+      - name: MCP server boots + lists tools
+        shell: bash
+        run: node server/index.js < .github/smoke/mcp-init.jsonl
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install dev tooling
+        run: npm install --no-audit --no-fund
+      - name: ESLint
+        run: npx eslint .
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate plugin manifests (directory-submission gate)
+        run: claude plugin validate . --strict

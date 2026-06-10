@@ -1,0 +1,78 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** paste private or company source, paths, or symbol
+        names — redact anything proprietary. Aggregate counts and sanitized snippets are fine.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Which backend?
+      options:
+        - clangd (C/C++)
+        - roslyn (C#/.NET)
+        - both / not sure
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin / package version
+      description: From `/plugin` in Claude Code, or `vts --help` build (e.g. 0.1.0).
+    validations:
+      required: true
+  - type: input
+    id: cc-version
+    attributes:
+      label: Claude Code version
+      description: From `claude --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: engine-version
+    attributes:
+      label: Language-server version
+      description: e.g. `clangd --version`, or `csharp-ls --version` — leave blank if not applicable.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Error messages or tool output. Redact anything private.
+      render: shell
+  - type: checkboxes
+    id: no-private-data
+    attributes:
+      label: Confirmation
+      options:
+        - label: This report contains no private or company-confidential code, paths, or symbol names.
+          required: true

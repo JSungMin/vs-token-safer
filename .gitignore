@@ -1,0 +1,9 @@
+node_modules/
+**/node_modules/
+.omc/
+*.log
+.DS_Store
+# local token-savings ledger + throwaway test artifacts
+*stats.json
+eval/_t_*
+# NOTE: eval/_mock-lsp.mjs IS committed (CI eval needs it); do not add a broad eval/_*.mjs ignore.

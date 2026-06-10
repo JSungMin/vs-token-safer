@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or usage help
+    url: https://github.com/JSungMin/vs-token-safer#readme
+    about: Check the README first — setup, troubleshooting, and tuning live there.

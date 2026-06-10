@@ -1,0 +1,17 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release with categorized, PR-linked notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --generate-notes --title "${GITHUB_REF_NAME}"
