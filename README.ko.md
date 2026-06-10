@@ -167,7 +167,8 @@ vts는 이를 IDE처럼 처리합니다:
 **무엇을 먼저 데우느냐가 중요합니다.** clangd는 열린 파일의 인덱싱 우선순위를 높이므로, vts는 warm-up
 대상을 *곧 검색할 것 우선*으로 정렬합니다: **쿼리 이력**(과거 검색이 반환한 파일) → **지금 편집
 중**(`git status` 수정/미추적 + Perforce `p4 opened`) → **git 커밋 최근성** → **include 중심성**(여러
-후보가 `#include`하는 헤더, `VTS_CENTRALITY_MAX`로 제한) → mtime. 거대한 트리에선 일부(언리얼의 수만
+후보가 `#include`하는 헤더 — **적응형**: 영속 include-그래프 캐시를 매 warm-up마다 시간예산만큼 채워
+커버리지가 회차에 걸쳐 늘어남) → mtime. 거대한 트리에선 일부(언리얼의 수만
 TU 중 수백 개)만 데울 수 있으므로, 이 정렬이 warm 윈도가 실제 검색 대상을 포함하게 만드는 핵심입니다.
 git·Perforce 모두 지원.
 
@@ -314,7 +315,8 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart 훅도 detached `vts warmup`으로 pre-warm(opt-in; 주로 CLI/비-MCP). |
 | — | `VTS_CLANGD_REMOTE` | — | 공유/사전구축 clangd 인덱스 서버 주소(`--remote-index-address`); 개발자별 warmup ~0. |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | 쿼리 이력 원장 위치(warm-up 세트를 곧-검색-우선으로 정렬하는 데 사용). |
-| — | `VTS_CENTRALITY_MAX` | `1500` | warm-up이 include 중심성을 계산할 후보 최대 수(파일을 읽음); `0`이면 비활성. 더 큰 세트는 건너뜀. |
+| — | `VTS_CENTRALITY_MAX` | `20000` | 중심성 스캔이 순회할 후보 상한; `0`이면 중심성 비활성. |
+| — | `VTS_CENTRALITY_BUDGET_MS` | `400` | warm-up당 *신규* include-프리픽스 읽기 예산. 중심성은 **적응형** — 매 warm-up이 예산만큼 새/변경 파일을 영속 include-그래프 캐시(`VTS_INCLUDE_GRAPH`)에 채워 회차마다 커버리지가 늘어남(`0`=캐시만). |
 | — | `VTS_ENFORCE` | `1` | `0`/`false`/`off`이면 Bash 코드 grep 허용(언어 서버 불가 시 탈출구). |
 
 ## 강제(enforcement) 동작 방식

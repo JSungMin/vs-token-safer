@@ -6,7 +6,8 @@
  *   query-history  (LFU + recency) — files that answered past searches (strongest evidence)
  *   working-now    — files open/modified right now (git status / Perforce `p4 opened`)
  *   git-recency    — recently-committed files (git log)
- *   centrality     — include fan-in among candidates (bounded; widely-reused headers help many queries)
+ *   centrality     — include fan-in among candidates (adaptive: prefix-read + per-warmup time budget +
+ *                    a persistent include-graph cache that GROWS coverage across warmups)
  *   mtime          — filesystem recency fallback (p4 edit/sync updates mtime too)
  * Background indexing still covers everything eventually; this only front-loads the likely targets.
  * Keep the open-set small (cap) — over-prewarming pollutes/saturates the worker.
@@ -17,8 +18,28 @@ import os from "node:os";
 import path from "node:path";
 
 const HIST_FILE = process.env.VTS_QUERY_HISTORY || path.join(os.homedir(), ".vs-token-safer", "query-history.json");
+const GRAPH_FILE = process.env.VTS_INCLUDE_GRAPH || path.join(os.homedir(), ".vs-token-safer", "include-graph.json");
 const norm = (p) => path.resolve(p).replace(/\\/g, "/").toLowerCase();
 const envInt = (name, def) => { const v = parseInt(process.env[name], 10); return Number.isFinite(v) && v >= 0 ? v : def; };
+
+// Read only the top of a file (where #includes live) — cheap enough to scan many files for centrality.
+function readIncludePrefix(f, maxBytes = 65536) {
+  let fd;
+  try { fd = fs.openSync(f, "r"); } catch { return null; }
+  try { const buf = Buffer.alloc(maxBytes); const n = fs.readSync(fd, buf, 0, maxBytes, 0); return buf.toString("utf8", 0, n); }
+  catch { return null; }
+  finally { try { fs.closeSync(fd); } catch { /* ignore */ } }
+}
+function parseIncludes(txt) {
+  const out = []; const re = /#\s*include\s*["<]([^">]+)[">]/g; let m;
+  while ((m = re.exec(txt))) out.push(path.basename(m[1]).toLowerCase());
+  return out;
+}
+// Persistent include-graph cache ({ normPath: { m: mtimeMs, i: [includedBasename,...] } }) so centrality
+// scanning AMORTIZES across warmups instead of re-reading every file each time. mtime invalidates stale
+// entries automatically.
+function loadGraph() { try { return JSON.parse(fs.readFileSync(GRAPH_FILE, "utf8")) || {}; } catch { return {}; } }
+function saveGraph(g) { try { fs.mkdirSync(path.dirname(GRAPH_FILE), { recursive: true }); fs.writeFileSync(GRAPH_FILE, JSON.stringify(g)); } catch { /* best-effort */ } }
 const readHist = () => { try { return JSON.parse(fs.readFileSync(HIST_FILE, "utf8")) || {}; } catch { return {}; } };
 // LFU with a recency tiebreak (scan-resistant-ish: a one-off scan adds n=1, repeated use compounds).
 const score = (e, now) => e.n + 1 / (1 + (now - e.t));
@@ -100,25 +121,45 @@ function workingFiles(root) {
   return set;
 }
 
-// ③ Dependency centrality (bounded): among candidates, count include fan-in — how many candidates
-// `#include` each one. High fan-in = reused widely → warming it helps many queries. Reads files, so it's
-// gated to a max candidate count (VTS_CENTRALITY_MAX, default 1500; 0 disables) to stay cheap on huge
-// trees, where clangd's preamble already pulls central headers transitively when a TU is opened.
+// ③ Dependency centrality — among candidates, count include fan-in (how many candidates `#include`
+// each one). High fan-in = reused widely → warming it helps many queries. ADAPTIVE so it doesn't all-or-
+// nothing-skip big trees: it reads only each file's include-prefix, spends at most VTS_CENTRALITY_BUDGET_MS
+// per warmup on NEW/changed files, and persists what it scans to an include-graph cache (mtime-keyed).
+// So coverage GROWS across warmups — first run scans a budget's worth, later runs reuse the cache and
+// extend it, until the whole module is mapped (then only changed files are rescanned). VTS_CENTRALITY_MAX
+// bounds the stat loop (0 = disable centrality); VTS_CENTRALITY_BUDGET_MS bounds fresh reads (0 = cache-only).
 function centralityRank(candidates) {
-  const max = envInt("VTS_CENTRALITY_MAX", 1500);
-  if (!max || candidates.length > max) return new Map();
+  const maxIter = envInt("VTS_CENTRALITY_MAX", 20000);
+  if (maxIter === 0) return new Map(); // disabled
+  const list = candidates.slice(0, maxIter);
+  const budgetMs = envInt("VTS_CENTRALITY_BUDGET_MS", 400);
   const byName = new Map();
-  for (const f of candidates) { const b = path.basename(f).toLowerCase(); if (!byName.has(b)) byName.set(b, norm(f)); }
+  for (const f of list) { const b = path.basename(f).toLowerCase(); if (!byName.has(b)) byName.set(b, norm(f)); }
+  const graph = loadGraph();
+  const start = Date.now();
+  let dirty = false;
   const fanin = new Map();
-  for (const f of candidates) {
-    let txt; try { txt = fs.readFileSync(f, "utf8"); } catch { continue; }
-    const self = norm(f); const seen = new Set();
-    const re = /#\s*include\s*["<]([^">]+)[">]/g; let m;
-    while ((m = re.exec(txt))) {
-      const target = byName.get(path.basename(m[1]).toLowerCase());
-      if (target && target !== self && !seen.has(target)) { seen.add(target); fanin.set(target, (fanin.get(target) || 0) + 1); }
+  for (const f of list) {
+    const nf = norm(f);
+    let st; try { st = fs.statSync(f).mtimeMs; } catch { continue; }
+    const cached = graph[nf];
+    let inc;
+    if (cached && cached.m === st) inc = cached.i;
+    else if (Date.now() - start < budgetMs) {
+      const txt = readIncludePrefix(f);
+      if (txt == null) continue;
+      inc = parseIncludes(txt);
+      graph[nf] = { m: st, i: inc };
+      dirty = true;
+    } else inc = cached ? cached.i : null; // budget spent → reuse stale cache, else defer to a later warmup
+    if (!inc) continue;
+    const seen = new Set();
+    for (const b of inc) {
+      const target = byName.get(b);
+      if (target && target !== nf && !seen.has(target)) { seen.add(target); fanin.set(target, (fanin.get(target) || 0) + 1); }
     }
   }
+  if (dirty) saveGraph(graph);
   return fanin;
 }
 
