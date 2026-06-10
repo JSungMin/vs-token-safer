@@ -14,6 +14,8 @@ Steps:
    - C/C++ → needs `compile_commands.json` in (or under) the root → **clangd**. Unreal: generate via
      UBT `-mode=GenerateClangDatabase` (add **`-Compiler=VisualCpp`** if the targets build with clang-cl,
      else clang-toolchain validation fails); CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
+     **Use clangd ≥ 22** — the VS-bundled clangd 19.1.x deadlocks indexing Unreal TUs; if vts prints a
+     clangd-version advisory, point `VTS_CLANGD_CMD` at a current clangd (https://github.com/clangd/clangd/releases).
    - C#/.NET → a `.sln`/`.csproj` → **roslyn** (default engine `csharp-ls`; install with
      `dotnet tool install --global csharp-ls`, or point `VTS_ROSLYN_CMD` at MS C# LSP).
 3. **Gather values** (ask one at a time, or an `AskUserQuestion` for the common ones):

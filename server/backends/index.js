@@ -4,6 +4,7 @@
 //
 // Each backend is { cmd, args(root), detect(root) }. cmd/args are overridable via config/env
 // (VTS_<NAME>_CMD / VTS_<NAME>_ARGS) so users can point at their own clangd / csharp-ls / MS C# LSP.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,33 @@ import { toUri, envInt } from "../lsp.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
+
+// clangd ≥ this is recommended for large Unreal projects. Older clangd (notably the 19.1.x bundled with
+// Visual Studio) can DEADLOCK indexing real UE translation units in LSP-server mode — clangd --check
+// parses the same TU fine, but every async path (didOpen + background-index) never finishes. Verified:
+// VS-bundled clangd 19.1.5 deadlocks (>250s, 0 symbols); standalone clangd 22.1.6 parses it in ~13s and
+// returns symbols. See https://github.com/clangd/clangd/releases for a current build.
+export const MIN_CLANGD = 22;
+export function parseClangdMajor(versionText) {
+  const m = /clangd version (\d+)/i.exec(String(versionText || ""));
+  return m ? parseInt(m[1], 10) : null;
+}
+// Run `<cmd> --version` once and return the major version (or null if it can't be determined).
+let _clangdMajorCache;
+export function clangdMajor(cmd) {
+  if (_clangdMajorCache !== undefined) return _clangdMajorCache;
+  try { _clangdMajorCache = parseClangdMajor(execFileSync(cmd, ["--version"], { encoding: "utf8", timeout: 10000 })); }
+  catch { _clangdMajorCache = null; }
+  return _clangdMajorCache;
+}
+// One-line advisory if the resolved clangd is older than recommended; "" otherwise. Best-effort: a
+// clangd we can't version-probe (null) is left alone rather than nagged.
+export function clangdAdvisory(cmd) {
+  const major = clangdMajor(cmd);
+  if (major != null && major < MIN_CLANGD)
+    return `⚠ clangd ${major}.x detected — clangd ≥ ${MIN_CLANGD} is recommended for large Unreal/C++ projects. Older clangd (e.g. the 19.1.x bundled with Visual Studio) can hang indexing UE translation units. Point VTS_CLANGD_CMD at a newer clangd (https://github.com/clangd/clangd/releases).`;
+  return "";
+}
 
 // Collect every file (up to `depth`) whose name matches `re` — used to open all .csproj for Roslyn.
 function findAllShallow(root, re, depth = 2) {

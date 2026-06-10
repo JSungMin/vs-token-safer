@@ -69,7 +69,7 @@ vs-token-safer drives an official engine; install the one(s) you need:
 
 | Backend | Language | Engine | Install | Needs |
 | --- | --- | --- | --- | --- |
-| `clangd` | C/C++ | clangd (LLVM) | [LLVM releases](https://github.com/clangd/clangd/releases) or your package manager | `compile_commands.json` |
+| `clangd` | C/C++ | clangd (LLVM) — **use clangd ≥ 22** ([clangd releases](https://github.com/clangd/clangd/releases)); the clangd 19.1.x bundled with Visual Studio can deadlock on Unreal | [clangd releases](https://github.com/clangd/clangd/releases) or your package manager | `compile_commands.json` |
 | `roslyn` | C#/.NET | **Microsoft.CodeAnalysis.LanguageServer** (the engine Visual Studio / the C# Dev Kit use), `csharp-ls` fallback | install the **VS Code C# extension** (`ms-dotnettools.csharp`) — bundles the engine + its runtime; or `dotnet tool install --global csharp-ls` | `.sln` / `.csproj` |
 
 **clangd needs a compile database** (`compile_commands.json`):
@@ -77,6 +77,10 @@ vs-token-safer drives an official engine; install the one(s) you need:
   - If your targets are configured to **build with clang-cl**, add **`-Compiler=VisualCpp`** — otherwise
     `GenerateClangDatabase` fails clang-toolchain validation (`Unable to find valid <ver> C++ toolchain for
     Clang x64`). The MSVC-compiler database still resolves the full engine include graph for clangd.
+  - **Use clangd ≥ 22.** The clangd 19.1.x bundled with Visual Studio (`…/VC/Tools/Llvm/bin/clangd.exe`)
+    **deadlocks** indexing real UE translation units in server mode (`clangd --check` parses them, but
+    queries never return). Standalone clangd 22.1.6 handles the same project in seconds and returns
+    symbols. Point `VTS_CLANGD_CMD` at a current clangd; vts warns if it detects an older one.
   - The database is large (a full editor target ≈ tens of thousands of entries). On a **cold** index the
     first query can be slow while clangd indexes the engine headers — see `VTS_LSP_TIMEOUT_MS` /
     `VTS_LSP_INDEX_WAIT_MS` below, or keep the MCP server running so the index stays warm.
@@ -156,7 +160,7 @@ unavailable, set `VTS_ENFORCE=0` so grep isn't blocked.
 
 | Backend | Status | Notes |
 | --- | --- | --- |
-| `clangd` (C/C++) | ✅ live-verified | `search_symbol` / `find_references` / `goto_definition` confirmed against real clangd on a `compile_commands.json` project. Needs a **correct** compile DB (with include dirs — Unreal: generate via UBT) so system/3rd-party headers resolve; otherwise only header-free symbols index. Checked on a real Unreal 5.x project: clangd resolves the full engine include graph (engine base types + `*.generated.h`). On a **cold** UE-scale index the first query may need a raised `VTS_LSP_TIMEOUT_MS`. VS ships clangd at `…/VC/Tools/Llvm/bin/clangd.exe`. |
+| `clangd` (C/C++) | ✅ live-verified (incl. real Unreal 5.x) | `search_symbol` / `find_references` / `goto_definition` confirmed against real clangd on a `compile_commands.json` project, **including a real Unreal 5.x game project end-to-end** (returned the game `UCLASS` + its `*.generated.h` symbols). Needs a **correct** compile DB (with include dirs — Unreal: generate via UBT, `-Compiler=VisualCpp` for clang-cl targets). **Use clangd ≥ 22** — the VS-bundled clangd 19.1.x (`…/VC/Tools/Llvm/bin/clangd.exe`) deadlocks on real UE TUs; vts warns if it detects an older one. Cold UE-scale indexes: raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS`. |
 | `roslyn` (C#/.NET) | ✅ live-verified | `search_symbol` / `find_references` / `goto_definition` confirmed against **Microsoft.CodeAnalysis.LanguageServer** (the actual VS engine) on a real `.csproj`. Auto-detected; `csharp-ls` fallback. |
 
 ---

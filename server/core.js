@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { LspClient, fromUri } from "./lsp.js";
-import { pickBackend, BACKENDS } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -84,6 +84,16 @@ export async function disposeClients() {
   clients.clear();
 }
 
+// Surface a one-time advisory if the resolved clangd is too old (older clangd deadlocks on large UE
+// projects — see backends/index.js MIN_CLANGD). Shown once per process, prepended to the first result.
+let _advisoryShown = false;
+function backendAdvisory(backendName) {
+  if (backendName !== "clangd" || _advisoryShown) return "";
+  const a = clangdAdvisory(BACKENDS.clangd.cmd);
+  if (a) _advisoryShown = true;
+  return a ? a + "\n\n" : "";
+}
+
 // ---- token-capping formatters: LSP results → compact file:line (no bodies) ----
 const locLine = (uri, range) => `${fromUri(uri).replace(/\\/g, "/")}:${(range.start.line + 1)}`;
 function fmtSymbols(syms, max) {
@@ -133,20 +143,21 @@ export async function runTool(name, a = {}) {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
       const c = await getClient(root, backendName);
       const syms = (await c.symbol(String(a.q))) || [];
-      if (!syms.length) return finishOut([], `No symbols matching "${a.q}" (backend: ${backendName}).`);
-      return finishOut(syms, `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
+      const adv = backendAdvisory(backendName);
+      if (!syms.length) return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).`);
+      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {
       if (!a.path || a.line == null || a.character == null) return err("find_references needs path, line, character (0-based position of the symbol).");
       const c = await getClient(root, backendName);
       const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
-      return finishOut(locs, `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
+      return finishOut(locs, backendAdvisory(backendName) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
       const c = await getClient(root, backendName);
       const locs = (await c.definition(a.path, Number(a.line), Number(a.character))) || [];
-      return finishOut(locs, `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
+      return finishOut(locs, backendAdvisory(backendName) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
     }
     return err(`Unknown tool: ${name}`);
   } catch (e) {
