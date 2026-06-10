@@ -9,9 +9,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
 [![Stars](https://img.shields.io/github/stars/JSungMin/rider-mcp-enforcer?style=social)](https://github.com/JSungMin/rider-mcp-enforcer/stargazers)
 
-A **Claude Code plugin** that reads huge editor logs **token-efficiently**. Unreal `Saved/Logs/*.log`
-and Unity `Editor.log` are often tens of MB of repeated spam — `cat`/`grep` floods the context. This
-plugin parses, **deduplicates**, and classifies them instead. **No IDE required** — pure file parsing.
+A Claude Code plugin that reads huge editor logs without blowing up the context. Unreal
+`Saved/Logs/*.log` and Unity `Editor.log` are often tens of MB of repeated spam, and `cat`/`grep` dumps
+all of it into the conversation. This plugin parses, deduplicates, and classifies the log instead. No
+IDE needed; it's pure file parsing.
 
 ## Why it's fast (measured)
 
@@ -23,8 +24,8 @@ Real numbers on a live Unreal log (no project source reproduced):
 | Search one trace tag (9,226 hits) | ~690,000 tok | ~1,700 tok (callsite rollup) | **~99.8% (~410×)** |
 | Pull decisive scalars from a window | ~35,000 tok (raw dump) | ~160 tok (`log_fields`) | **~99.5%** |
 
-The win: never put raw log lines in context — emit deduped groups, a callsite rollup, or just the
-scalar columns that decide the answer.
+The idea is simple: never put raw log lines in the context. Emit deduped groups, a callsite rollup, or
+just the scalar columns that actually decide the answer.
 
 ## What it does
 
@@ -41,6 +42,12 @@ scalar columns that decide the answer.
 - **`log_diff`:** compare two logs (before/after) and emit **only the delta** — new errors, errors that
   disappeared, and groups whose count changed. Unchanged groups are omitted, so a regression-triage diff
   across runs costs a fraction of re-reading either log.
+- **Enforcement (opt-out):** a `PreToolUse` hook catches raw Bash log dumps (`grep`/`tail`/`cat`/`rg`
+  over a `.log`/`.jsonl`/`Logs` path) and unbounded `Read`s of large (≥ 200 KB) logs, and points them
+  here, so the cheap path is the default rather than something you have to remember. A sliced `Read`
+  (`offset`/`limit`) always goes through. `warn` (the default) runs the command and nudges, `block`
+  denies it, `off` turns the hook off; switch with `gamedev-log enforce <mode>` or `GDLOG_ENFORCE`. You
+  can also hand the whole job to the `log-analyst` subagent.
 
 ## Supported log formats
 
@@ -82,7 +89,7 @@ node "${CLAUDE_PLUGIN_ROOT}/server/cli.js" <command> [--flags]
 
 **Commands** (`gamedev-log <command>`): `detect`, `summary`, `search`, `fields` (`--stats` for
 per-column min/max/avg/Δ), `diff`, `locate`, `tail`, `learnings`, `learnings-reset`, `savings`,
-`savings-reset`, `setup`, `config`.
+`savings-reset`, `enforce` (`block`/`warn`/`off`), `setup`, `config`.
 
 ```bash
 # Run directly too — in scripts, CI, or any agent (pure Node, no dependencies):
@@ -94,9 +101,71 @@ node server/cli.js locate --path Editor.log --severityMin Error --basename
 node server/cli.js --help
 ```
 
-**Jump from a log error to the source** — `locate` emits just the distinct `file:line` (no message
+To jump from a log error to its source, `locate` emits just the distinct `file:line` (no message
 bodies). If [rider-mcp-enforcer](../README.md) is installed, resolve each basename via its
-`find_files_by_name_keyword`, then `read_file` a small window at that line — never dump whole files.
+`find_files_by_name_keyword`, then `read_file` a small window at that line instead of dumping whole files.
+
+## The `log-analyst` subagent
+
+The plugin ships a subagent, `gamedev-log-analyzer:log-analyst`. Rather than run the CLI in your own
+context, hand it the task and let it do the parsing in a separate context, returning only the answer.
+The raw log lines never reach your main context, so a multi-MB log costs a few hundred tokens and your
+working set stays small.
+
+Ask for it in plain language and Claude routes to it from the agent's description:
+
+> "analyze `…/Saved/Logs/Editor.log` — top errors and warnings, and roll the build warnings up by code"
+
+You can also name it directly. It picks the right command (`summary`/`search`/`diff`/`locate`/`fields`/
+`--groupBy code`), runs it, and replies with a deduped severity picture and the `file:line`s worth
+opening, not a raw dump. It only needs Node, since it shells out to the CLI. The enforcement hook below
+is the fallback for when a raw `grep` or `Read` slips through.
+
+## Enforcement
+
+Reading a log with `tail … | grep …`, or opening a multi-MB log with the `Read` tool, dumps raw lines
+straight into the context, which is exactly what this plugin exists to avoid. A `PreToolUse` hook closes
+both gaps:
+
+- **Bash**: an **unbounded** read (`cat`, a bare `grep`/`rg`, `tail -f`, `tail -n +N`, or a large
+  `tail -n N`) of a **log target** (`.log`, `.jsonl`, rotated `.log.N`, or a path under `Logs/` /
+  `Saved/Logs/`) is intercepted — including when the path is held in a shell variable
+  (`log="….log"; cat "$log"`), where the read and the path live in different segments. A **bounded
+  peek** — `tail`/`head` of ≤ 50 lines (default 10), or a count-only `grep -c`/`rg -c` — **passes**,
+  since its output is a handful of lines or a single number, not a context flood (the Bash analogue of
+  the Read-slice escape). (A non-`.log`/`.jsonl` extension like `.output` is **not** matched unless it
+  sits under a `Logs/` path — by design, since it can't be size-gated on Bash.)
+- **Read tool**: an **unbounded** read of a **large** log file (≥ 200 KB) is intercepted. A *sliced*
+  read (`offset`/`limit` present) always passes — that's a one-step escape and the fallback for any
+  format the analyzer parses poorly, so a blocked Read never strands you. Small logs (< 200 KB) pass
+  (a raw read is already cheap).
+
+Code grep (`.cpp`/`.cs`/`src/…`) and non-log reads pass through untouched — that domain belongs to
+[rider-mcp-enforcer](../README.md), which deliberately lets logs through. The `Grep` tool is left
+alone: it's already line-scoped and result-capped, so it isn't a context flood.
+
+| Mode | Behavior |
+| --- | --- |
+| `warn` *(default)* | Allow the command, but inject the `gamedev-log` equivalent into the model's context as a nudge. Steers without friction. |
+| `block` | Deny the command (exit 2) and show the nudge — the raw read does **not** run. Opt-in hard enforcement. |
+| `off` | Silent passthrough — no enforcement. |
+
+Why `warn` by default: the hard-block guarantee was always porous — the `Grep` tool, MCP search, and
+the `Read` tool bypass enforcement entirely — so denying-by-default paid friction (false-blocks on
+commands that merely *mention* a log path) for a guarantee that didn't hold. `warn` keeps the steering,
+drops the friction; `block` remains one command away when you want a hard gate.
+
+```bash
+gamedev-log enforce            # show current mode + source
+gamedev-log enforce block      # opt into hard denial
+gamedev-log enforce off        # disable entirely
+gamedev-log enforce warn       # back to the default (nudge only)
+GDLOG_ENFORCE=block <cmd>      # per-shell override (env beats config)
+```
+
+Mode is read **env `GDLOG_ENFORCE` > `~/.gamedev-log-analyzer/config.json` > default `warn`**. The hook
+fails open — any parse/IO error (missing file, permission denied, a directory, an unstattable path)
+allows the action, so it never wedges your workflow.
 
 ## Optional: enable the MCP server
 The same engine ([`server/logs.js`](server/logs.js) + [`server/core.js`](server/core.js)) also runs as
