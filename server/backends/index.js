@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { toUri } from "../lsp.js";
+import { toUri, envInt } from "../lsp.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
@@ -108,9 +108,18 @@ export const BACKENDS = {
         try { files = JSON.parse(fs.readFileSync(cc, "utf8")).map((e) => e.file).filter(Boolean); } catch { /* ignore */ }
       }
       const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2);
-      const open = [...new Set([...files, ...extra])].slice(0, 100); // cap for huge trees
+      const open = [...new Set([...files, ...extra])].slice(0, envInt("VTS_CLANGD_OPEN_CAP", 100)); // cap for huge trees
       for (const f of open) client.didOpen(f, "cpp");
-      if (open.length) await client.waitForNotification("textDocument/publishDiagnostics", 30000);
+      if (open.length) {
+        // On a huge tree (e.g. a cold UE-scale index) the dynamic index isn't ready when the first
+        // file's diagnostics fire, so waiting on diagnostics alone races the still-building index and
+        // the first query times out. Prefer clangd's background-index completion ($/progress kind:end),
+        // bounded by VTS_LSP_INDEX_WAIT_MS; fall back to diagnostics if the server emits no work-done
+        // progress (older clangd / a server without that capability).
+        const idxWait = envInt("VTS_LSP_INDEX_WAIT_MS", 120000);
+        const indexed = await client.waitForNotification("$/progress", idxWait, (p) => p && p.value && p.value.kind === "end");
+        if (!indexed) await client.waitForNotification("textDocument/publishDiagnostics", Math.min(idxWait, 30000));
+      }
     },
   },
   // C#/.NET via a Roslyn-based LSP. Preferred engine: Microsoft.CodeAnalysis.LanguageServer (the exact

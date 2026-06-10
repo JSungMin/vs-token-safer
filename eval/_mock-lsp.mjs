@@ -14,8 +14,15 @@ process.stdin.on("data", (d) => {
     const msg = JSON.parse(buf.slice(he + 4, he + 4 + len).toString("utf8"));
     buf = buf.slice(he + 4 + len);
     if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { workspaceSymbolProvider: true, referencesProvider: true } } });
-    else if (msg.method === "workspace/symbol") {
+    else if (msg.method === "initialized") {
+      // Simulate clangd's background-index work-done progress: a begin then an end notification.
+      // The clangd backend's afterInit waits for the kind:"end" before the first query.
+      send({ jsonrpc: "2.0", method: "$/progress", params: { token: "backgroundIndexProgress", value: { kind: "begin", title: "indexing" } } });
+      send({ jsonrpc: "2.0", method: "$/progress", params: { token: "backgroundIndexProgress", value: { kind: "end" } } });
+    } else if (msg.method === "workspace/symbol") {
       const q = (msg.params && msg.params.query) || "";
+      // "SLOW" delays past a short request timeout — exercises VTS_LSP_TIMEOUT_MS handling.
+      if (q === "SLOW") { setTimeout(() => send({ jsonrpc: "2.0", id: msg.id, result: [] }), 300); continue; }
       let result;
       if (q === "ALL") {
         // big result set with verbose container names — to exercise the token cap
