@@ -4,7 +4,7 @@
 for C/C++, a Roslyn-based LSP for C#/.NET — instead of Bash `grep`, and token-cap the result to a
 compact `file:line` list.** Faster and far fewer tokens on large Unreal C++ / .NET codebases.
 **Local-only. No IDE required.** Ships as a Claude Code plugin (MCP server + hook + skill) and as a
-standalone CLI (`vts`) on npm.
+standalone CLI (`vts`) you run from a clone.
 
 > 🇰🇷 한국어 문서: [README.ko.md](README.ko.md)
 
@@ -57,10 +57,13 @@ directory.
 
 ### As a standalone CLI (no IDE, no Claude Code)
 
+Not published to npm — install from a clone:
+
 ```
-npm i -g vs-token-safer      # provides `vts`
-# or one-off:
-npx -p vs-token-safer vts symbol --q SpawnActor --projectPath /path/to/proj
+git clone https://github.com/JSungMin/vs-token-safer
+cd vs-token-safer/server && npm install && npm link   # provides `vts`
+# or run directly, no link:
+node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
 ```
 
 ### Prerequisites — the language server
@@ -84,6 +87,14 @@ vs-token-safer drives an official engine; install the one(s) you need:
   - The database is large (a full editor target ≈ tens of thousands of entries). On a **cold** index the
     first query can be slow while clangd indexes the engine headers — see `VTS_LSP_TIMEOUT_MS` /
     `VTS_LSP_INDEX_WAIT_MS` below, or keep the MCP server running so the index stays warm.
+  - **Pre-warm like an IDE:** the MCP server indexes the configured `projectPath` at boot (`VTS_PREWARM`,
+    on by default) so the first search is already warm; or run **`vts warmup`** once to build clangd's
+    on-disk index (`.cache/clangd`) up front. Either way you pay the warmup once, not per query.
+  - **Warm-up ordering (hit-rate):** the open-set is ordered likely-query-first — by query history (files
+    that answered past searches), then VCS recency (**git** `log` and **Perforce** `p4 opened`), then mtime.
+    This steers clangd's per-file index priority so the warm window covers what you actually search.
+  - **Shared/prebuilt index (teams/CI):** set `VTS_CLANGD_REMOTE` to a clangd-index-server address so
+    everyone queries one prebuilt index — near-zero per-developer warmup.
 - **CMake:** configure with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
 **C# uses the official Visual Studio Roslyn engine automatically.** vs-token-safer auto-detects
@@ -136,6 +147,10 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large (e.g. UE) index |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index |
+| — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style) so the first search is warm; set `0` to disable |
+| — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly for CLI/non-MCP use) |
+| — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup |
+| — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set by likely-query-first) |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll` |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args |
 | — | `VTS_ENFORCE` | `1` | Set `0`/`false`/`off` to let Bash code-grep through (escape hatch) |
@@ -194,6 +209,38 @@ raw index ~57,308 tok → capped output ~1,515 tok      = 97.4% reduction (1,000
 
 That is the response-shaping win (raw index response → capped list). Versus pasting `grep` output
 into context, the saving is typically larger still, because grep returns full matching lines.
+
+---
+
+## Pre-warming & hit-rate
+
+clangd indexes asynchronously, so the *first* search after the server starts pays a one-time warm-up
+(it indexes the engine headers). vts handles this like an IDE:
+
+- **The MCP server pre-warms at boot** (`VTS_PREWARM`, on by default when `projectPath` is set) — by the
+  time you run your first search the index is already warming, and the client is cached for the server's
+  lifetime, so you pay the warm-up **once per session, not per query** (later searches are sub-second).
+- **`vts warmup`** builds clangd's on-disk index (`.cache/clangd`) up front, for CLI/CI use.
+- **`VTS_CLANGD_REMOTE`** points clangd at a shared/prebuilt index server → near-zero per-developer warm-up.
+
+**Which files get warmed first matters.** clangd boosts the indexing priority of files you open, so vts
+orders the warm-up set *likely-query-first*: by **query history** (files that answered past searches),
+then **VCS recency** (git `log` + Perforce `p4 opened`), then mtime. On a huge tree you can only warm a
+small slice, so this ordering is what makes the warm window actually contain what you search for.
+
+Measured lift (`node eval/bench-hitrate.mjs` — the real `orderForWarm()` over a synthetic workload with
+realistic locality, 2,000 files):
+
+| warm-up cap | arbitrary order | history-ordered | lift |
+| --- | --- | --- | --- |
+| 3% of files | 1.5% | **54.3%** | **36×** |
+| 5% | 7.8% | **56.5%** | 7.3× |
+| 10% | 11.3% | **62.5%** | 5.6× |
+| 20% | 24.8% | **68.5%** | 2.8× |
+| 50% | 46.3% | **80.5%** | 1.7× |
+
+The smaller the slice you can afford to warm (e.g. ~hundreds of TUs out of tens of thousands in Unreal),
+the bigger the win — arbitrary order hits almost nothing; ordering hits the majority.
 
 ---
 

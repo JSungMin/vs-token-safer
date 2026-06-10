@@ -23,6 +23,7 @@ Commands:
                  [--path <file> --line N --character N --includeDeclaration]
   definition     Go to the definition of the symbol at a position.
                  [--path <file> --line N --character N]
+  warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
@@ -50,7 +51,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", warmup: "vts_warmup" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }

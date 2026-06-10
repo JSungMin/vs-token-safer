@@ -3,10 +3,17 @@
 // needed) to exercise the genuinely-new layer: the LSP client, the token-capping symbol/reference
 // formatter, and the runTool dispatch. Asserts the token win + correct file:line shape. CI-friendly.
 import { LspClient } from "../server/lsp.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 process.env.VTS_CLANGD_CMD = process.execPath;
 process.env.VTS_CLANGD_ARGS = new URL("./_mock-lsp.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const { runTool, disposeClients } = await import("../server/core.js");
+// Isolate the query-history ledger to a temp file (set BEFORE core/warmset load — read at module init)
+// so the eval's recordQueryResults calls never touch the user's real ~/.vs-token-safer ledger.
+const QH = path.join(os.tmpdir(), `vts-eval-qh-${process.pid}.json`);
+process.env.VTS_QUERY_HISTORY = QH;
+const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 
@@ -60,14 +67,37 @@ const indexReadyOk = !!ready;
 // clangd deadlocks on large UE projects; ≥ MIN_CLANGD is the verified-good floor).
 // Dynamic import: static would load backends/index.js (capturing BACKENDS.clangd.cmd) before the
 // VTS_CLANGD_CMD env above is set; by here core.js has already loaded it with the mock cmd in place.
-const { parseClangdMajor, MIN_CLANGD } = await import("../server/backends/index.js");
+const { parseClangdMajor, MIN_CLANGD, BACKENDS } = await import("../server/backends/index.js");
 const verParseOk = parseClangdMajor("clangd version 19.1.5") === 19
   && parseClangdMajor("clangd version 22.1.6 (https://github.com/llvm/llvm-project abc123)") === 22
   && parseClangdMajor("not a version") === null;
 const verGateOk = MIN_CLANGD >= 22 && 19 < MIN_CLANGD && 22 >= MIN_CLANGD;
 const advisoryOk = verParseOk && verGateOk;
 
+// 9) pre-warm + vts_warmup — IDE-style index warming. prewarm guards bad args; vts_warmup runs the
+// warmup path (spawn + afterInit) without a query and reports success.
+const prewarmGuardOk = (await prewarm("", "")) === null && (await prewarm("/x", "nope")) === null;
+const w = await runTool("vts_warmup", { projectPath: process.cwd(), backend: "clangd" });
+const warmupOk = !w.isError && /Warmed clangd/.test(w.text);
+const warmOk = prewarmGuardOk && warmupOk;
+
+// 10) prewarm ORDERING — query-history ranks a hot file first (hit-rate), and the remote-index arg
+// (⑥ prebuilt/shared index) is wired. git/p4 recency + mtime are best-effort and not asserted here.
+const { orderForWarm, recordQueryResults } = await import("../server/warmset.js");
+const qhRoot = "/proj/warmtest";
+recordQueryResults(qhRoot, ["/proj/warmtest/hot.cpp"]); // seed history → hot.cpp should rank first
+const ordered = orderForWarm(qhRoot, ["/proj/warmtest/cold.cpp", "/proj/warmtest/hot.cpp"], 10);
+const orderHotFirst = (ordered[0] || "").toLowerCase().endsWith("hot.cpp");
+process.env.VTS_CLANGD_REMOTE = "localhost:9000";
+const savedArgs = process.env.VTS_CLANGD_ARGS;
+delete process.env.VTS_CLANGD_ARGS; // the explicit ARGS override short-circuits args(); clear it to test the built args
+const remoteWired = BACKENDS.clangd.args("/proj").some((x) => x.includes("--remote-index-address=localhost:9000"));
+process.env.VTS_CLANGD_ARGS = savedArgs;
+delete process.env.VTS_CLANGD_REMOTE;
+const orderingOk = orderHotFirst && remoteWired;
+
 await disposeClients();
+try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -79,6 +109,8 @@ const rows = [
   ["VTS_LSP_TIMEOUT_MS honored", timeoutHonored, "true", timeoutHonored],
   ["index-ready ($/progress end) wait", indexReadyOk, "true", indexReadyOk],
   ["clangd version advisory + gate", advisoryOk, "true", advisoryOk],
+  ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
+  ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

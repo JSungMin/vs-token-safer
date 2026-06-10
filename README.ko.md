@@ -3,7 +3,7 @@
 **Claude Code가 C++/C# 코드를 Bash `grep` 대신 공식 언어 서버 인덱스로 검색하도록 강제한다** —
 C/C++은 clangd(LLVM), C#/.NET은 Roslyn 기반 LSP. 결과는 간결한 `file:line` 목록으로 **토큰 캡**한다.
 대규모 Unreal C++ / .NET 코드베이스에서 더 빠르고 토큰을 훨씬 적게 쓴다. **로컬 전용, IDE 불필요.**
-Claude Code 플러그인(MCP 서버 + 훅 + 스킬)과 독립 CLI(`vts`, npm)로 제공된다.
+Claude Code 플러그인(MCP 서버 + 훅 + 스킬)과 클론해서 쓰는 독립 CLI(`vts`)로 제공된다.
 
 > 🇺🇸 English: [README.md](README.md)
 
@@ -53,10 +53,13 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
 
 ### 독립 CLI로 (IDE·Claude Code 불필요)
 
+npm 미배포 — 클론해서 설치한다:
+
 ```
-npm i -g vs-token-safer      # `vts` 제공
-# 또는 일회성:
-npx -p vs-token-safer vts symbol --q SpawnActor --projectPath /path/to/proj
+git clone https://github.com/JSungMin/vs-token-safer
+cd vs-token-safer/server && npm install && npm link   # `vts` 제공
+# 또는 link 없이 직접 실행:
+node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
 ```
 
 ### 사전 준비 — 언어 서버
@@ -174,6 +177,37 @@ raw index ~57,308 tok → capped output ~1,515 tok      = 97.4% 절감 (심볼 1
 
 이는 응답 정형화 절감(원시 인덱스 응답 → 캡된 목록)이다. `grep` 출력을 컨텍스트에 붙이는 것 대비
 절감은 보통 더 크다 — grep은 매칭 줄 전체를 반환하기 때문이다.
+
+---
+
+## 사전 인덱싱(pre-warm)과 hit-rate
+
+clangd는 비동기로 인덱싱하므로 서버 기동 후 *첫* 검색은 1회 warm-up 비용(엔진 헤더 인덱싱)을 치른다.
+vts는 이를 IDE처럼 처리한다:
+
+- **MCP 서버가 기동 시 pre-warm** (`VTS_PREWARM`, `projectPath` 설정 시 기본 on) — 첫 검색 시점엔 이미
+  인덱스가 데워지는 중이고, 클라이언트는 서버 수명 동안 캐시된다. 따라서 warm-up은 **세션당 1회이지
+  쿼리마다가 아니다**(이후 검색은 sub-초).
+- **`vts warmup`** — CLI/CI용으로 clangd 온디스크 인덱스(`.cache/clangd`)를 미리 구축.
+- **`VTS_CLANGD_REMOTE`** — clangd를 공유/사전구축 인덱스 서버로 연결 → 개발자별 warm-up ~0.
+
+**무엇을 먼저 데우느냐가 중요하다.** clangd는 열린(open) 파일의 인덱싱 우선순위를 높이므로, vts는 warm-up
+대상을 *곧 검색할 것 우선*으로 정렬한다: **쿼리 이력**(과거 검색이 반환한 파일) → **VCS 최근성**(git
+`log` + Perforce `p4 opened`) → mtime. 거대한 트리에선 일부만 데울 수 있으므로, 이 정렬이 warm 윈도가
+실제로 검색 대상을 포함하게 만드는 핵심이다.
+
+측정된 향상 (`node eval/bench-hitrate.mjs` — 실제 `orderForWarm()`, 현실적 locality 합성 워크로드, 2,000 파일):
+
+| warm-up cap | 임의 순서 | 이력 기반 정렬 | 향상 |
+| --- | --- | --- | --- |
+| 파일의 3% | 1.5% | **54.3%** | **36×** |
+| 5% | 7.8% | **56.5%** | 7.3× |
+| 10% | 11.3% | **62.5%** | 5.6× |
+| 20% | 24.8% | **68.5%** | 2.8× |
+| 50% | 46.3% | **80.5%** | 1.7× |
+
+데울 수 있는 비율이 작을수록(예: 언리얼의 수만 TU 중 수백 개) 효과가 크다 — 임의 순서는 거의 못 맞히고,
+정렬은 대부분을 맞힌다.
 
 ---
 
