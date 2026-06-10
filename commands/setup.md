@@ -12,7 +12,8 @@ Steps:
 1. **Show current settings:** call `vts_config`.
 2. **Detect/confirm the backend.** Backend auto-detects from the project root:
    - C/C++ → needs `compile_commands.json` in (or under) the root → **clangd**. Unreal: generate via
-     UBT `-mode=GenerateClangDatabase`; CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
+     UBT `-mode=GenerateClangDatabase` (add **`-Compiler=VisualCpp`** if the targets build with clang-cl,
+     else clang-toolchain validation fails); CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
    - C#/.NET → a `.sln`/`.csproj` → **roslyn** (default engine `csharp-ls`; install with
      `dotnet tool install --global csharp-ls`, or point `VTS_ROSLYN_CMD` at MS C# LSP).
 3. **Gather values** (ask one at a time, or an `AskUserQuestion` for the common ones):
@@ -27,6 +28,9 @@ Notes:
 - Precedence is **environment variable (`VTS_*`) > config file > default**; a same-named env var wins.
 - Shell alternative: `vts setup --projectPath <root> --backend clangd`, then `vts config`.
 - Engine overrides: `VTS_CLANGD_CMD`/`VTS_CLANGD_ARGS`, `VTS_ROSLYN_CMD`/`VTS_ROSLYN_ARGS`.
+- Cold/large (e.g. UE) index: raise `VTS_LSP_TIMEOUT_MS` (default 30000) and `VTS_LSP_INDEX_WAIT_MS`
+  (default 120000) so the first query doesn't time out while clangd indexes engine headers; tune the
+  warm-up open set with `VTS_CLANGD_OPEN_CAP` (default 100).
 - Never write internal project paths or symbol names into any public/shared location.
 
 $ARGUMENTS
