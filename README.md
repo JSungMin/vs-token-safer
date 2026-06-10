@@ -151,6 +151,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly for CLI/non-MCP use) |
 | — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set by likely-query-first) |
+| — | `VTS_CENTRALITY_MAX` | `1500` | Max candidates for which warm-up computes include-centrality (reads files); `0` disables. Skipped on bigger sets |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll` |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args |
 | — | `VTS_ENFORCE` | `1` | Set `0`/`false`/`off` to let Bash code-grep through (escape hatch) |
@@ -224,9 +225,11 @@ clangd indexes asynchronously, so the *first* search after the server starts pay
 - **`VTS_CLANGD_REMOTE`** points clangd at a shared/prebuilt index server → near-zero per-developer warm-up.
 
 **Which files get warmed first matters.** clangd boosts the indexing priority of files you open, so vts
-orders the warm-up set *likely-query-first*: by **query history** (files that answered past searches),
-then **VCS recency** (git `log` + Perforce `p4 opened`), then mtime. On a huge tree you can only warm a
-small slice, so this ordering is what makes the warm window actually contain what you search for.
+orders the warm-up set *likely-query-first*: **query history** (files that answered past searches) →
+**what you're editing now** (`git status` modified/untracked + Perforce `p4 opened`) → **git-log recency**
+→ **include centrality** (headers many candidates `#include`, bounded by `VTS_CENTRALITY_MAX`) → mtime.
+On a huge tree you can only warm a small slice, so this ordering is what makes the warm window actually
+contain what you search for. Works with both git and Perforce.
 
 Measured lift (`node eval/bench-hitrate.mjs` — the real `orderForWarm()` over a synthetic workload with
 realistic locality, 2,000 files):
