@@ -209,6 +209,38 @@ into context, the saving is typically larger still, because grep returns full ma
 
 ---
 
+## Pre-warming & hit-rate
+
+clangd indexes asynchronously, so the *first* search after the server starts pays a one-time warm-up
+(it indexes the engine headers). vts handles this like an IDE:
+
+- **The MCP server pre-warms at boot** (`VTS_PREWARM`, on by default when `projectPath` is set) — by the
+  time you run your first search the index is already warming, and the client is cached for the server's
+  lifetime, so you pay the warm-up **once per session, not per query** (later searches are sub-second).
+- **`vts warmup`** builds clangd's on-disk index (`.cache/clangd`) up front, for CLI/CI use.
+- **`VTS_CLANGD_REMOTE`** points clangd at a shared/prebuilt index server → near-zero per-developer warm-up.
+
+**Which files get warmed first matters.** clangd boosts the indexing priority of files you open, so vts
+orders the warm-up set *likely-query-first*: by **query history** (files that answered past searches),
+then **VCS recency** (git `log` + Perforce `p4 opened`), then mtime. On a huge tree you can only warm a
+small slice, so this ordering is what makes the warm window actually contain what you search for.
+
+Measured lift (`node eval/bench-hitrate.mjs` — the real `orderForWarm()` over a synthetic workload with
+realistic locality, 2,000 files):
+
+| warm-up cap | arbitrary order | history-ordered | lift |
+| --- | --- | --- | --- |
+| 3% of files | 1.5% | **54.3%** | **36×** |
+| 5% | 7.8% | **56.5%** | 7.3× |
+| 10% | 11.3% | **62.5%** | 5.6× |
+| 20% | 24.8% | **68.5%** | 2.8× |
+| 50% | 46.3% | **80.5%** | 1.7× |
+
+The smaller the slice you can afford to warm (e.g. ~hundreds of TUs out of tens of thousands in Unreal),
+the bigger the win — arbitrary order hits almost nothing; ordering hits the majority.
+
+---
+
 ## Privacy & security
 
 **Local-only, zero transmission.** The language server runs on your machine over stdio; the only
