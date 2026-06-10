@@ -29,7 +29,8 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
 - `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > working-now [`git status` /
-  `p4 opened`] > git-log recency > include-centrality [bounded by `VTS_CENTRALITY_MAX`] > mtime) +
+  `p4 opened`] > git-log recency > include-centrality [adaptive: prefix-read + `VTS_CENTRALITY_BUDGET_MS`
+  + persistent include-graph cache that grows across warmups; `VTS_CENTRALITY_MAX` bounds the loop] > mtime) +
   `recordQueryResults`. Steers clangd's open-set so the warm window hits likely queries; git + Perforce.
   Used by `backends/index.js` afterInit + `core.js` (records result files per search).
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block (escape hatch `VTS_ENFORCE=0`).

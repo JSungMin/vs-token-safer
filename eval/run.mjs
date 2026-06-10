@@ -13,6 +13,8 @@ process.env.VTS_CLANGD_ARGS = new URL("./_mock-lsp.mjs", import.meta.url).pathna
 // so the eval's recordQueryResults calls never touch the user's real ~/.vs-token-safer ledger.
 const QH = path.join(os.tmpdir(), `vts-eval-qh-${process.pid}.json`);
 process.env.VTS_QUERY_HISTORY = QH;
+const IG = path.join(os.tmpdir(), `vts-eval-ig-${process.pid}.json`); // isolate the include-graph cache
+process.env.VTS_INCLUDE_GRAPH = IG;
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -107,11 +109,20 @@ fs.writeFileSync(path.join(cdir, "leaf.cpp"), "int x;\n");
 const cands = ["a.cpp", "b.cpp", "leaf.cpp", "hub.h"].map((f) => path.join(cdir, f));
 const cord = orderForWarm(cdir, cands, 10).map((p) => p.toLowerCase());
 const idx = (n) => cord.findIndex((p) => p.endsWith(n));
-const centralityOk = idx("hub.h") !== -1 && idx("hub.h") < idx("leaf.cpp");
+const centralityRankOk = idx("hub.h") !== -1 && idx("hub.h") < idx("leaf.cpp");
+// adaptive cache: the first run persisted the include-graph; a second run with the read budget at 0
+// (cache-only — no fresh file reads) must still rank hub.h first, proving the cache is reused & grows.
+const graphPersisted = fs.existsSync(IG);
+process.env.VTS_CENTRALITY_BUDGET_MS = "0";
+const cord2 = orderForWarm(cdir, cands, 10).map((p) => p.toLowerCase());
+delete process.env.VTS_CENTRALITY_BUDGET_MS;
+const cacheReuseOk = cord2.findIndex((p) => p.endsWith("hub.h")) < cord2.findIndex((p) => p.endsWith("leaf.cpp"));
+const centralityOk = centralityRankOk && graphPersisted && cacheReuseOk;
 try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
+try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -125,7 +136,7 @@ const rows = [
   ["clangd version advisory + gate", advisoryOk, "true", advisoryOk],
   ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
-  ["centrality ranks hub > leaf", centralityOk, "true", centralityOk],
+  ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

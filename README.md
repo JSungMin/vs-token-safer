@@ -170,7 +170,8 @@ clangd indexes asynchronously, so the *first* search after the server starts pay
 **Which files get warmed first matters.** clangd boosts the indexing priority of files you open, so vts
 orders the warm-up set *likely-query-first*: **query history** (files that answered past searches) →
 **what you're editing now** (`git status` modified/untracked + Perforce `p4 opened`) → **git-log
-recency** → **include centrality** (headers many candidates `#include`, bounded by `VTS_CENTRALITY_MAX`)
+recency** → **include centrality** (headers many candidates `#include` — computed adaptively: a
+persistent include-graph cache that fills a time budget's worth each warm-up, growing coverage over runs)
 → mtime. On a huge tree you can only warm a small slice (hundreds of TUs out of tens of thousands in
 Unreal), so this ordering is what makes the warm window actually contain what you search for. Works with
 both **git** and **Perforce**.
@@ -325,7 +326,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly CLI/non-MCP). |
 | — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup. |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set likely-query-first). |
-| — | `VTS_CENTRALITY_MAX` | `1500` | Max candidates for which warm-up computes include-centrality (reads files); `0` disables. Skipped on bigger sets. |
+| — | `VTS_CENTRALITY_MAX` | `20000` | Upper bound on candidates the centrality scan iterates; `0` disables centrality entirely. |
+| — | `VTS_CENTRALITY_BUDGET_MS` | `400` | Per-warm-up budget for *new* include-prefix reads. Centrality is **adaptive**: each warm-up scans a budget's worth of new/changed files into a persistent include-graph cache (`VTS_INCLUDE_GRAPH`), so coverage grows across warm-ups (`0` = cache only). |
 | — | `VTS_ENFORCE` | `1` | `0`/`false`/`off` lets Bash code-grep through (escape hatch when the language server is unavailable). |
 
 ## How enforcement works
