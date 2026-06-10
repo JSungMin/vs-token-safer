@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { detectLogs, readText, analyzeLog, extractFields, collectLearnings, diffLogs, locateLog } from "./logs.js";
+import { enforceMode, enforceSource, writeEnforceMode } from "./enforce.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".gamedev-log-analyzer");
 export const CONFIG_FILE = process.env.GDLOG_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -178,6 +179,25 @@ export function runTool(name, a = {}) {
     if (name === "log_learnings_reset") {
       try { fs.writeFileSync(LEARN_FILE, "{}"); } catch { /* ignore */ }
       return out("Learnings ledger cleared.");
+    }
+    if (name === "log_enforce") {
+      const set = a.mode !== undefined ? a.mode : a.set;
+      if (set === undefined || set === "" || String(set).toLowerCase() === "status") {
+        const m = enforceMode();
+        const what = m === "off" ? "allowed (no enforcement)" : m === "warn" ? "allowed with a nudge (soft)" : "blocked (denied + nudge)";
+        return out(
+          `Log-grep enforcement: ${m}  (source: ${enforceSource()})\n` +
+            `Raw Bash log reads (grep/tail/cat/… over .log/.jsonl/Logs) are ${what}.\n\n` +
+            `Change: gamedev-log enforce <block|warn|off>  (or env GDLOG_ENFORCE=<mode> per shell).`
+        );
+      }
+      try {
+        const m = writeEnforceMode(set);
+        const what = m === "off" ? "ALLOWED (no enforcement)" : m === "warn" ? "ALLOWED with a nudge (soft)" : "BLOCKED (denied + nudge)";
+        return out(`Enforcement set to '${m}'. Raw Bash log reads are now ${what}.\nConfig: ${CONFIG_FILE}\nRun /reload-plugins if a hook is active.`);
+      } catch (e) {
+        return err(e.message);
+      }
     }
     if (name === "log_savings") return out(savingsReport());
     if (name === "log_savings_reset") {

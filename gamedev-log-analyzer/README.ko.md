@@ -9,9 +9,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
 [![Stars](https://img.shields.io/github/stars/JSungMin/rider-mcp-enforcer?style=social)](https://github.com/JSungMin/rider-mcp-enforcer/stargazers)
 
-거대한 에디터 로그를 **토큰 효율적으로** 읽는 **Claude Code 플러그인**. Unreal `Saved/Logs/*.log`,
-Unity `Editor.log`는 보통 수십 MB의 반복 스팸이라 `cat`/`grep`하면 컨텍스트가 터집니다. 이 플러그인은
-대신 파싱·**중복제거(dedup)**·분류합니다. **IDE 불필요** — 순수 파일 파싱.
+거대한 에디터 로그를 컨텍스트를 터뜨리지 않고 읽는 Claude Code 플러그인입니다. Unreal
+`Saved/Logs/*.log`나 Unity `Editor.log`는 보통 수십 MB짜리 반복 스팸이라, `cat`이나 `grep`으로 열면
+그게 전부 대화로 쏟아집니다. 이 플러그인은 로그를 대신 파싱하고 중복을 제거하고 분류합니다. IDE는
+필요 없고, 순수 파일 파싱입니다.
 
 ## 왜 빠른가 (실측)
 
@@ -38,6 +39,11 @@ Unity `Editor.log`는 보통 수십 MB의 반복 스팸이라 `cat`/`grep`하면
   `Key.Y|.P|.R`, `ts`, `dts`, `d:Key`, `step:Key`).
 - **`log_diff`:** 두 로그 비교 후 **델타만**(신규/사라짐/카운트변경, 변경없는 그룹 생략).
 - **`log_locate`:** 매칭 엔트리의 distinct `file:line` 점프 리스트(소스 열기용).
+- **강제(enforcement, opt-out):** `PreToolUse` 훅이 Bash 생(raw) 로그 덤프(`grep`/`tail`/`cat`/`rg`
+  로 `.log`/`.jsonl`/`Logs` 대상) **및 대용량(≥ 200 KB) 로그의 무제한 `Read`**를 가로채 이 도구로
+  유도 — 토큰 절약 경로가 기본이 됨. 슬라이스 `Read`(`offset`/`limit`)는 항상 통과(막혀도 막다른 길
+  없음). `warn`(기본)=허용+안내, `block`=차단+안내, `off`=해제. `gamedev-log enforce <mode>` 또는
+  `GDLOG_ENFORCE`로 전환.
 
 ## 지원 로그 포맷
 
@@ -76,7 +82,62 @@ node "${CLAUDE_PLUGIN_ROOT}/server/cli.js" <command> [--flags]
 
 **명령어**(`gamedev-log <command>`): `detect`, `summary`, `search`, `fields`(`--stats`로 컬럼별
 min/max/avg/Δ), `diff`, `locate`, `tail`, `learnings`, `learnings-reset`, `savings`, `savings-reset`,
-`setup`, `config`.
+`enforce`(`block`/`warn`/`off`), `setup`, `config`.
+
+## `log-analyst` 서브에이전트
+
+플러그인은 `gamedev-log-analyzer:log-analyst` 서브에이전트를 제공합니다. CLI를 내 컨텍스트에서 돌리는
+대신 작업을 통째로 넘기면, 서브에이전트가 자기 컨텍스트에서 파싱과 읽기를 하고 답만 돌려줍니다. raw
+로그 줄이 메인 컨텍스트에 들어오지 않으므로, 수십 MB 로그도 수백 토큰으로 끝나고 작업 세트도 작게
+유지됩니다.
+
+그냥 자연스럽게 물으면 Claude가 description을 보고 알아서 위임합니다:
+
+> "`…/Saved/Logs/Editor.log` 분석해줘 — 주요 에러/경고, 빌드 경고는 코드별로 묶어서"
+
+`gamedev-log-analyst`로 직접 부를 수도 있습니다. 알맞은 명령(`summary`/`search`/`diff`/`locate`/
+`fields`/`--groupBy code`)을 골라 실행하고, dedup된 severity 그림과 열어볼 `file:line`만 답합니다.
+raw 덤프는 없습니다. Node만 있으면 됩니다(CLI를 셸 호출). 아래 강제 훅은 raw `grep`이나 `Read`가
+새어나갈 때를 위한 폴백입니다.
+
+## 강제(enforcement)
+
+`tail … | grep …`으로, 또는 `Read` 도구로 대용량 로그를 열면 생 라인이 그대로 컨텍스트에 쏟아집니다.
+`PreToolUse` 훅이 두 경로를 모두 막습니다:
+
+- **Bash**: **로그 대상**(`.log`/`.jsonl`/회전된 `.log.N`/`Logs`·`Saved/Logs` 경로)에 대한 **무제한**
+  읽기(`cat`, 맨 `grep`/`rg`, `tail -f`, `tail -n +N`, 큰 `tail -n N`)를 가로챔 — 경로가 셸 변수에
+  담겨 읽기와 경로가 다른 세그먼트여도(`log="….log"; cat "$log"`) 잡음. **bounded peek**(≤50줄
+  `tail`/`head`(기본10), count-only `grep -c`/`rg -c`)는 **통과** — 출력이 몇 줄/숫자 1개라 폭주 아님
+  (Read slice escape의 Bash판). (`.output` 같은 비-`.log`/`.jsonl` 확장자는 `Logs/` 아래가 아니면
+  미매칭 — Bash size-gate 불가라 의도적.)
+- **Read 도구**: 대용량(≥ 200 KB) 로그의 **무제한** 읽기를 가로챔. 슬라이스 읽기(`offset`/`limit`)는
+  항상 통과 — 한 단계 escape이자 분석기가 잘 못 파싱하는 포맷의 fallback이라, 막힌 Read가 막다른 길이
+  되지 않음. 작은 로그(< 200 KB)는 통과(이미 쌈).
+
+코드 grep(`.cpp`/`.cs`/`src/…`)·비로그 읽기는 통과 — 그 도메인은 [rider-mcp-enforcer](../README.md)
+담당(로그는 일부러 통과). `Grep` 도구는 건드리지 않음 — 이미 line-scoped + 결과 cap이라 컨텍스트 폭주 아님.
+
+| 모드 | 동작 |
+| --- | --- |
+| `warn` *(기본)* | 명령 허용 + `gamedev-log` 대안을 모델 컨텍스트에 nudge 주입. 마찰 없이 유도. |
+| `block` | 명령 차단(exit 2) + 안내. 생 읽기 **실행 안 됨**. opt-in 강제. |
+| `off` | 조용히 통과 — 강제 없음. |
+
+`warn` 기본 이유: hard-block 보장은 항상 구멍이 있었음 — `Grep` 툴·MCP 검색·`Read`가 enforcement를
+완전 우회 — 그래서 기본 차단은 (로그 경로를 *언급만* 한 명령까지 막는) 마찰을 지키지도 못할 보장 위해
+지불. `warn`은 유도는 유지, 마찰만 제거; hard gate 필요하면 `block` 한 명령이면 됨.
+
+```bash
+gamedev-log enforce            # 현재 모드+출처 표시
+gamedev-log enforce block      # hard 차단 opt-in
+gamedev-log enforce off        # 완전 해제
+gamedev-log enforce warn       # 기본(nudge만)으로 복귀
+GDLOG_ENFORCE=block <cmd>      # 셸 단위 오버라이드(env가 config보다 우선)
+```
+
+모드 읽기 순서: **env `GDLOG_ENFORCE` > `~/.gamedev-log-analyzer/config.json` > 기본 `warn`**. 훅은
+fail-open — 파싱/IO 오류(파일 없음·권한 거부·디렉터리·stat 불가) 시 허용(워크플로를 막지 않음).
 
 ```bash
 # 직접 실행도 가능 — 스크립트/CI/임의 에이전트에서 (순수 Node, 의존성 0):
