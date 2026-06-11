@@ -43,6 +43,15 @@ process.stdin.on("data", (d) => {
       send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Foo", kind: 12, range: { start: { line: 4, character: 0 }, end: { line: 4, character: 10 } }, selectionRange: { start: { line: 4, character: 4 }, end: { line: 4, character: 7 } } }] });
     } else if (msg.method === "textDocument/rename") {
       const uri = msg.params.textDocument.uri, p = msg.params.position;
+      if (msg.params.newName === "MULTI") {
+        // Two non-overlapping edits on the SAME line, supplied front-to-back. applyEditsToText must
+        // apply them back-to-front or the first edit shifts the second edit's offsets and corrupts.
+        send({ jsonrpc: "2.0", id: msg.id, result: { changes: { [uri]: [
+          { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "X" },
+          { range: { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } }, newText: "ZZZZ" },
+        ] } } });
+        continue;
+      }
       send({ jsonrpc: "2.0", id: msg.id, result: { changes: { [uri]: [{ range: { start: { line: p.line, character: p.character }, end: { line: p.line, character: p.character + 3 } }, newText: msg.params.newName }] } } });
     } else if (msg.method === "shutdown") send({ jsonrpc: "2.0", id: msg.id, result: null });
     else if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: null });

@@ -145,8 +145,14 @@ const rp = await runTool("rename", { path: rfile, line: 0, character: 0, newName
 const renamePreviewOk = !rp.isError && /PREVIEW/.test(rp.text) && /r\.cpp:1/.test(rp.text) && fs.readFileSync(rfile, "utf8").startsWith("abc");
 const ra = await runTool("rename", { path: rfile, line: 0, character: 0, newName: "NEW", backend: "clangd", apply: true });
 const renameApplyOk = !ra.isError && /APPLIED/.test(ra.text) && fs.readFileSync(rfile, "utf8").startsWith("NEW");
+// multi-edit-per-file: mock returns two same-line edits front-to-back; back-to-front offset apply must
+// yield "X bbb ZZZZ\n". A forward (un-sorted) apply would shift offsets and corrupt the second edit.
+const rfile2 = path.join(rdir, "r2.cpp");
+fs.writeFileSync(rfile2, "aaa bbb ccc\n");
+const rm = await runTool("rename", { path: rfile2, line: 0, character: 0, newName: "MULTI", backend: "clangd", apply: true });
+const renameMultiOk = !rm.isError && /APPLIED/.test(rm.text) && fs.readFileSync(rfile2, "utf8") === "X bbb ZZZZ\n";
 try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
-const renameOk = renamePreviewOk && renameApplyOk;
+const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk;
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -166,7 +172,7 @@ const rows = [
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
   ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
   ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
-  ["rename preview + apply", renameOk, "true", renameOk],
+  ["rename preview + apply + multi-edit", renameOk, "true", renameOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
