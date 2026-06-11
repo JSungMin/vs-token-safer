@@ -19,12 +19,33 @@ export const fromUri = (u) => {
   try { return fileURLToPath(u); } catch { return u.replace(/^file:\/\//, ""); }
 };
 
+// LSP `textDocument/didOpen` wants a languageId. One backend can serve several extensions
+// (typescript-language-server handles .ts/.tsx/.js/.jsx; pyright handles .py/.pyi), so derive the id
+// from the file extension and fall back to the backend's primary language when the extension is unknown.
+const EXT_LANG = {
+  ".c": "c", ".cc": "cpp", ".cxx": "cpp", ".cpp": "cpp", ".h": "cpp", ".hpp": "cpp", ".hh": "cpp", ".inl": "cpp", ".ipp": "cpp", ".tpp": "cpp",
+  ".cs": "csharp",
+  ".ts": "typescript", ".tsx": "typescriptreact", ".mts": "typescript", ".cts": "typescript",
+  ".js": "javascript", ".jsx": "javascriptreact", ".mjs": "javascript", ".cjs": "javascript",
+  ".py": "python", ".pyi": "python",
+};
+const BACKEND_LANG = { clangd: "cpp", roslyn: "csharp", typescript: "typescript", pyright: "python" };
+export function langIdForPath(p, backend) {
+  const m = String(p || "").toLowerCase().match(/\.[^.\\/]+$/);
+  return (m && EXT_LANG[m[0]]) || BACKEND_LANG[backend] || "cpp";
+}
+
 export class LspClient {
-  constructor(cmd, args = [], { cwd = process.cwd(), env = process.env } = {}) {
+  constructor(cmd, args = [], { cwd = process.cwd(), env = process.env, shell = false } = {}) {
     this.cmd = cmd;
     this.args = args;
     this.cwd = cwd;
     this.env = env;
+    // On Windows, npm-installed LSP CLIs (typescript-language-server, pyright-langserver) are `.cmd`
+    // shims that child_process.spawn can't launch without a shell. Enabled per-backend (winShell) only
+    // for those — clangd.exe / the dotnet host resolve directly and may sit under a path with spaces
+    // that shell-quoting would mangle, so they stay shell:false.
+    this.shell = shell;
     this.proc = null;
     this.nextId = 1;
     this.pending = new Map(); // id -> {resolve, reject}
@@ -36,7 +57,12 @@ export class LspClient {
   }
 
   start() {
-    this.proc = spawn(this.cmd, this.args, { cwd: this.cwd, env: this.env, stdio: ["pipe", "pipe", "pipe"] });
+    // In shell mode, fold args into the command string and pass [] — spawn(cmd, [non-empty], {shell:true})
+    // is deprecated (DEP0190: args aren't escaped). Our shell-mode args are simple flags (`--stdio`); a
+    // user override with spaces should quote inside VTS_TS_CMD/VTS_PY_CMD.
+    const cmd = this.shell ? [this.cmd, ...this.args].join(" ") : this.cmd;
+    const args = this.shell ? [] : this.args;
+    this.proc = spawn(cmd, args, { cwd: this.cwd, env: this.env, stdio: ["pipe", "pipe", "pipe"], shell: this.shell });
     this.proc.stdout.on("data", (d) => this._onData(d));
     this.proc.stderr.on("data", (d) => { this.stderr += d.toString(); if (this.stderr.length > 20000) this.stderr = this.stderr.slice(-20000); });
     this.proc.on("error", (e) => this._failAll(new Error(`failed to spawn ${this.cmd}: ${e.message}`)));

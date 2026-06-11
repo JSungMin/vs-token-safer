@@ -28,7 +28,7 @@ const TOOLS = [
       properties: {
         q: { type: "string", description: "Symbol name or substring to search for." },
         projectPath: { type: "string", description: "Project root (default: configured projectPath or cwd)." },
-        backend: { type: "string", description: "clangd | roslyn (default: auto-detect from the root)." },
+        backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto-detect from the root)." },
         maxResults: { type: "number", description: "Cap on returned locations (default 60)." },
       },
       required: ["q"],
@@ -167,7 +167,7 @@ const TOOLS = [
       type: "object",
       properties: {
         projectPath: { type: "string", description: "Default project root." },
-        backend: { type: "string", description: "clangd | roslyn (default: auto)." },
+        backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto)." },
         maxResults: { type: "number", description: "Default cap on returned locations." },
       },
     },
@@ -190,7 +190,7 @@ const TOOLS = [
   {
     name: "vts_warmup",
     description: "Pre-build the language-server index (IDE-style) so later searches are fast. Spawns + warms the backend without running a query.",
-    inputSchema: { type: "object", properties: { projectPath: { type: "string" }, backend: { type: "string", enum: ["clangd", "roslyn"] } } },
+    inputSchema: { type: "object", properties: { projectPath: { type: "string" }, backend: { type: "string", enum: ["clangd", "roslyn", "typescript", "pyright"] } } },
   },
 ];
 

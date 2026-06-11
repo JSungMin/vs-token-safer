@@ -10,8 +10,13 @@
   "license": "MIT",
   "author": { "name": "JSungMin" },
   "bin": { "vts": "cli.js", "vs-token-safer": "index.js" },
-  "files": ["index.js", "cli.js", "core.js", "lsp.js", "sdk.js", "backends/"],
+  "files": ["index.js", "cli.js", "core.js", "lsp.js", "sdk.js", "resolve-bin.js", "warmset.js", "ensure-deps.mjs", "backends/"],
   "scripts": { "start": "node index.js", "test": "node ../eval/run.mjs" },
-  "optionalDependencies": { "@modelcontextprotocol/sdk": "^1.12.0" },
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "typescript-language-server": "^5.0.0",
+    "typescript": "^5.0.0",
+    "pyright": "^1.1.400"
+  },
   "engines": { "node": ">=18" }
 }

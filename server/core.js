@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LspClient, fromUri } from "./lsp.js";
+import { LspClient, fromUri, langIdForPath } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
 import { recordQueryResults } from "./warmset.js";
 
@@ -30,7 +30,14 @@ export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 
 const CONFIG_KEYS = ["projectPath", "backend", "maxResults"];
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
-const SYMBOL_KIND = { 5: "class", 6: "method", 9: "ctor", 12: "func", 13: "var", 23: "struct", 26: "type", 11: "interface", 10: "enum" };
+// LSP SymbolKind → short label (kept terse for the token cap). Covers the full enum so JS/TS/Python
+// symbols (constants, properties, fields, enum members…) render with a name instead of a raw `kN`.
+const SYMBOL_KIND = {
+  1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class", 6: "method", 7: "prop", 8: "field",
+  9: "ctor", 10: "enum", 11: "interface", 12: "func", 13: "var", 14: "const", 15: "str", 16: "num",
+  17: "bool", 18: "array", 19: "obj", 20: "key", 22: "enum-member", 23: "struct", 24: "event",
+  25: "operator", 26: "type",
+};
 
 function applySetup(args) {
   let current = {};
@@ -77,7 +84,7 @@ function getClient(root, backendName) {
   if (clients.has(key)) return clients.get(key);
   const b = BACKENDS[backendName];
   const p = (async () => {
-    const c = new LspClient(b.cmd, b.args(root), { cwd: root });
+    const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell });
     await c.initialize(root);
     if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
     return c;
@@ -263,9 +270,9 @@ export async function runTool(name, a = {}) {
 
     const root = a.projectPath || PROJECT_PATH || process.cwd();
     const backendName = a.backend || BACKEND || pickBackend(root);
-    if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++) or a .sln/.csproj (C#).`);
+    if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn|typescript|pyright, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++), a .sln/.csproj (C#), a tsconfig/package.json (JS/TS), or a pyproject.toml/*.py (Python).`);
     const max = Number(a.maxResults) || MAX_RESULTS;
-    const lang = backendName === "roslyn" ? "csharp" : "cpp";
+    const lang = langIdForPath(a.path, backendName); // languageId for didOpen (hover/document_symbols/rename); unused by search_symbol
 
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
