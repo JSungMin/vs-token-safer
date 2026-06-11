@@ -120,6 +120,40 @@ const cacheReuseOk = cord2.findIndex((p) => p.endsWith("hub.h")) < cord2.findInd
 const centralityOk = centralityRankOk && graphPersisted && cacheReuseOk;
 try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 12) new read-only tools — hover + document_symbols (mock LSP), find_files + search_text (filesystem).
+const someFile = path.join(process.cwd(), "eval", "run.mjs");
+const hv = await runTool("hover", { path: someFile, line: 0, character: 0, backend: "clangd" });
+const hoverOk = !hv.isError && /Foo/.test(hv.text);
+const ds = await runTool("document_symbols", { path: someFile, backend: "clangd" });
+const docSymOk = !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text);
+const tdir = path.join(os.tmpdir(), `vts-files-${process.pid}`);
+fs.mkdirSync(tdir, { recursive: true });
+fs.writeFileSync(path.join(tdir, "Widget.cpp"), "int NEEDLE_TOKEN = 1;\n");
+const ff = await runTool("find_files", { q: "*.cpp", projectPath: tdir });
+const findFilesOk = !ff.isError && /Widget\.cpp/.test(ff.text);
+const st = await runTool("search_text", { q: "NEEDLE_TOKEN", projectPath: tdir });
+const searchTextOk = !st.isError && /NEEDLE_TOKEN/.test(st.text) && /Widget\.cpp:1/.test(st.text);
+try { fs.rmSync(tdir, { recursive: true, force: true }); } catch { /* ignore */ }
+const newToolsOk = hoverOk && docSymOk && findFilesOk && searchTextOk;
+
+// 13) rename — preview returns affected file:line and does NOT write; apply writes the edit to disk.
+const rdir = path.join(os.tmpdir(), `vts-rename-${process.pid}`);
+fs.mkdirSync(rdir, { recursive: true });
+const rfile = path.join(rdir, "r.cpp");
+fs.writeFileSync(rfile, "abcXYZ rest\n"); // mock replaces [0,0]-[0,3] ("abc") with newName
+const rp = await runTool("rename", { path: rfile, line: 0, character: 0, newName: "NEW", backend: "clangd" });
+const renamePreviewOk = !rp.isError && /PREVIEW/.test(rp.text) && /r\.cpp:1/.test(rp.text) && fs.readFileSync(rfile, "utf8").startsWith("abc");
+const ra = await runTool("rename", { path: rfile, line: 0, character: 0, newName: "NEW", backend: "clangd", apply: true });
+const renameApplyOk = !ra.isError && /APPLIED/.test(ra.text) && fs.readFileSync(rfile, "utf8").startsWith("NEW");
+// multi-edit-per-file: mock returns two same-line edits front-to-back; back-to-front offset apply must
+// yield "X bbb ZZZZ\n". A forward (un-sorted) apply would shift offsets and corrupt the second edit.
+const rfile2 = path.join(rdir, "r2.cpp");
+fs.writeFileSync(rfile2, "aaa bbb ccc\n");
+const rm = await runTool("rename", { path: rfile2, line: 0, character: 0, newName: "MULTI", backend: "clangd", apply: true });
+const renameMultiOk = !rm.isError && /APPLIED/.test(rm.text) && fs.readFileSync(rfile2, "utf8") === "X bbb ZZZZ\n";
+try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
+const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -137,6 +171,8 @@ const rows = [
   ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
   ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
+  ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
+  ["rename preview + apply + multi-edit", renameOk, "true", renameOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

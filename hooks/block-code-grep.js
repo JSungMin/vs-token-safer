@@ -68,10 +68,13 @@ process.stdin.on("end", () => {
       "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
       "  - references / usages of a symbol  → find_references (args: path, line, character — 0-based)\n" +
       "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
-      "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>`.\n" +
+      "  - raw text / string / comment      → search_text     (args: q, projectPath) — token-capped grep\n" +
+      "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
+      "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
+      "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
       "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn);\n" +
       "override with backend=… or VTS_BACKEND, set the root via projectPath or VTS_PROJECT_PATH.\n" +
-      "For raw non-code text (logs, config), re-run targeting a non-code file, or set VTS_ENFORCE=0."
+      "For logs/config text, target a non-code file, or set VTS_ENFORCE=0."
   );
   process.exit(2); // block
 });

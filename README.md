@@ -10,9 +10,9 @@
 [![Stars](https://img.shields.io/github/stars/JSungMin/vs-token-safer?style=social)](https://github.com/JSungMin/vs-token-safer/stargazers)
 
 > Two Claude Code plugins for large Unreal C++, Visual Studio, and .NET projects. Search the codebase
-> through an **official language server's index** (clangd / Roslyn) instead of `grep`, and read
-> tens-of-MB editor logs without dumping them into the conversation. Both cost about 99% fewer tokens
-> than the naive approach. **Local-only. No IDE required.**
+> through an official language server's index (clangd / Roslyn) instead of `grep`, and read tens-of-MB
+> editor logs without dumping them into the conversation. Both cost about 99% fewer tokens than the
+> naive approach. **Local-only. No IDE required.**
 
 ### What it looks like
 ```text
@@ -35,10 +35,10 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 <sub>Illustrative output with public Unreal Engine symbols.</sub>
 
 ### Sound familiar?
-- `grep` on a giant Unreal C++ or .NET repo floods the context. Searching through clangd/Roslyn's index instead stays token-capped, around 97–99% smaller ([benchmarks](#performance-measured)).
-- A 50 MB editor log is unreadable as-is. Parsing, deduplicating, and classifying it brings it down to a few hundred tokens.
+- `grep` on a giant Unreal C++ or .NET repo floods the context. Searching clangd/Roslyn's index instead stays token-capped, around 97–99% smaller ([benchmarks](#performance-measured)).
+- A 50 MB editor log is unreadable as-is. Parse it, dedupe it, classify it, and you're down to a few hundred tokens.
 - Claude keeps reaching for `grep` on code. A hook catches that and points it at the indexed tools.
-- Unlike an IDE-proxy approach, the language server runs **headlessly** — no editor needs to be open.
+- Unlike an IDE-proxy approach, the language server runs headlessly. No editor needs to be open.
 
 ### Contents
 - [Marketplace — two plugins](#marketplace--two-plugins) · [Combined savings](#combined-token-savings-measured) · [Using both together](#using-both-together)
@@ -49,20 +49,20 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 ---
 
 A Claude Code plugin that routes symbol search, find-references, and go-to-definition through an
-**official language server's index** — **clangd** (LLVM) for C/C++, a **Roslyn-based LSP**
-(`Microsoft.CodeAnalysis.LanguageServer`, the engine Visual Studio / the C# Dev Kit use) for C#/.NET —
-instead of Bash `grep`, and caps the tokens a search flood can spend by returning a compact `file:line`
-list (never source bodies). It's built for large Unreal C++ and .NET/C# codebases, where `grep` is slow
-and burns context.
+official language server's index instead of Bash `grep`: **clangd** (LLVM) for C/C++, and a Roslyn-based
+LSP (`Microsoft.CodeAnalysis.LanguageServer`, the engine Visual Studio and the C# Dev Kit use) for
+C#/.NET. It caps the tokens a search flood can spend by returning a compact `file:line` list, never
+source bodies. It's built for large Unreal C++ and .NET/C# codebases, where `grep` is slow and burns
+context.
 
-It is the IDE-agnostic sibling of
-[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer): same token-efficiency goal, but
-instead of proxying a running IDE's MCP server, it spawns the official language server **headlessly** —
-so it works with Visual Studio / any C++/C# project without an editor open.
+It's the IDE-agnostic sibling of
+[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer). Same token-efficiency goal, but
+instead of proxying a running IDE's MCP server, it spawns the official language server headlessly, so it
+works with Visual Studio or any C++/C# project without an editor open.
 
 ## Marketplace — two plugins
 
-This repo is a Claude Code plugin marketplace. It holds two plugins built around the same goal: read
+This repo is a Claude Code plugin marketplace. It holds two plugins built around the same goal: reading
 big things without paying for all of it in tokens.
 
 | Plugin | Does | Needs |
@@ -71,7 +71,8 @@ big things without paying for all of it in tokens.
 | **[gamedev-log-analyzer](gamedev-log-analyzer/README.md)** | Parse/dedup/classify huge Unreal/Unity/Godot/MSVC-UBT-MSBuild logs (CLI-first), search + diff + locate + extract scalars | Node only (no IDE) |
 
 One-step install: `vs-token-safer` declares `gamedev-log-analyzer` as a dependency, so installing it
-pulls in both. Each server's `npm install` runs on the first session, so there's no manual setup:
+pulls in both. Each server's `npm install` runs on the first session, so you don't set anything up by
+hand:
 ```bash
 /plugin marketplace add JSungMin/vs-token-safer
 /plugin install vs-token-safer@vs-token-safer        # also auto-installs gamedev-log-analyzer
@@ -91,20 +92,20 @@ The log analyzer emits `file:line` for each entry; vs-token-safer turns a `file:
 symbol/source. A typical loop:
 1. `/gamedev-log-analyzer:logs` → find the error/warning and its `file:line`.
 2. Hand that location to vs-token-safer's `goto_definition` / `find_references` (or `search_symbol`) to
-   open and understand the code — without ever grepping or dumping the raw log.
+   open and understand the code, without ever grepping or dumping the raw log.
 
 ## What it does
 
 clangd and Roslyn already do semantic symbol/reference analysis on their own. What this plugin adds on
-top is the **enforcement**, the **token cap**, and the **headless spawn + warm-up** so Claude actually
-uses the index instead of grep:
+top is enforcement, a token cap, and a headless spawn plus warm-up, so Claude actually uses the index
+instead of grep:
 
 | Layer | File | Effect |
 | --- | --- | --- |
-| **Enforcement hook** | `hooks/block-code-grep.js` | Intercepts Bash `grep`/`rg`/`ack`/`ag`/`findstr` and `find -name` over source files (`.c/.cc/.cpp/.h/.hpp/.cs`, or `src/`, `source/`, `engine/`, `plugins/`) and steers Claude to the indexed tools. **Surgical**: only fires when a search tool is the actual executable of a command segment; lets raw-text searches (logs, `.md`, `.json`, config, build/intermediate dirs) through untouched. Escape hatch `VTS_ENFORCE=0`. |
-| **Routing skill** | `skills/vs-search/SKILL.md` | Rules that bias Claude toward the indexed tools first: symbol/reference/definition lookups → `search_symbol` / `find_references` / `goto_definition`; grep is last resort. |
-| **Token-capping core** | `server/core.js` | `runTool()` shared by both adapters: turns LSP results into `kind name (in container) @ file:line`, caps at `maxResults`, appends a `… N more` footer — never ranges, kinds, or source bodies. Records a local savings ledger. |
-| **Headless LSP client** | `server/lsp.js` + `server/backends/index.js` | A minimal, fully-owned LSP client (JSON-RPC 2.0, `Content-Length` framing) that spawns the official engine over stdio, plus the spawn configs + `pickBackend(root)` autodetect and the IDE-style pre-warm (`afterInit`). |
+| **Enforcement hook** | `hooks/block-code-grep.js` | Intercepts Bash `grep`/`rg`/`ack`/`ag`/`findstr` and `find -name` over source files (`.c/.cc/.cpp/.h/.hpp/.cs`, or `src/`, `source/`, `engine/`, `plugins/`) and steers Claude to the indexed tools. It's surgical: it only fires when a search tool is the actual executable of a command segment, and lets raw-text searches (logs, `.md`, `.json`, config, build/intermediate dirs) through untouched. Escape hatch `VTS_ENFORCE=0`. |
+| **Routing skill** | `skills/vs-search/SKILL.md` | Rules that bias Claude toward the indexed tools first: symbol/reference/definition lookups go to `search_symbol` / `find_references` / `goto_definition`, and grep is a last resort. |
+| **Token-capping core** | `server/core.js` | `runTool()` shared by both adapters: turns LSP results into `kind name (in container) @ file:line`, caps at `maxResults`, appends a `… N more` footer. Never ranges, kinds, or source bodies. Records a local savings ledger. |
+| **Headless LSP client** | `server/lsp.js` + `server/backends/index.js` | A minimal, fully-owned LSP client (JSON-RPC 2.0, `Content-Length` framing) that spawns the official engine over stdio, plus the spawn configs, `pickBackend(root)` autodetect, and the IDE-style pre-warm (`afterInit`). |
 
 > **Engine = official, glue = ours.** clangd (LLVM) and Roslyn (Microsoft) do the analysis; this repo
 > only writes the LSP↔MCP glue. No third-party MCP server runs over your source.
@@ -112,10 +113,15 @@ uses the index instead of grep:
 ### Commands & tools
 - `/vs-token-safer:setup` — configure the plugin (see [Setup](#setup--configuration-command)).
 - `/vs-token-safer:savings` — show cumulative token savings.
-- MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `vts_warmup`,
-  `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`.
-- CLI (`vts`): `symbol`, `references`, `definition`, `warmup`, `setup`, `config`, `savings`,
-  `savings-reset`.
+- MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `hover`,
+  `document_symbols`, `rename`, `find_files`, `search_text`, `vts_warmup`, `vts_setup`, `vts_config`,
+  `vts_savings`, `vts_savings_reset`. `find_files` and `search_text` are the token-capped stand-ins for
+  `find -name` and `grep` when you genuinely need a filename or raw text rather than a symbol. `rename`
+  is a semantic, project-wide rename: preview by default, `apply=true` to write the edits.
+- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`,
+  `warmup`, `setup`, `config`, `savings`, `savings-reset`.
+- Or hand a whole "where is X / what calls Y / find file W" lookup to the `code-locator` subagent. It
+  does the searching in its own context and gives you back only the `file:line` table.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame
@@ -129,8 +135,8 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
 
 ## Performance (measured)
 
-Real A/B on a large Unreal Engine 5 project — finding one public engine symbol (`FGameplayTag`) via
-Bash grep-and-paste vs this plugin. No project source is reproduced; only aggregate counts. See
+A real A/B on a large Unreal Engine 5 project: finding one public engine symbol (`FGameplayTag`) via
+Bash grep-and-paste vs this plugin. No project source is reproduced, only aggregate counts. See
 [BENCHMARK.md](BENCHMARK.md) for method.
 
 | | Bash grep-and-paste (whole repo) | **Plugin (clangd index, capped)** |
@@ -138,8 +144,8 @@ Bash grep-and-paste vs this plugin. No project source is reproduced; only aggreg
 | What the model receives | 5,654 lines / 1,010 files | 47 semantic decls (`file:line`) |
 | Tokens to the model | ~282,194 | **~2,048** |
 
-- **Tokens: ~99.3% fewer (~138×).** grep returns the full text of every matching line (and matches by
-  text, so it returns more — comments, strings, unrelated identifiers); the plugin returns one
+- **Tokens: ~99.3% fewer (~138×).** grep returns the full text of every matching line, and it matches by
+  text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
   raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (12/12 checks).
@@ -147,36 +153,38 @@ Bash grep-and-paste vs this plugin. No project source is reproduced; only aggreg
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
 - **Recall:** the plugin returns the top `N` (cap), not every textual occurrence. The withheld tail is
-  mostly comments/includes/substring noise. Need an exhaustive list? Raise `maxResults` / use grep.
-- **Precision:** grep matches every substring (a `Foo` query also hits `FooBar`), over-reporting
-  heavily; the index returns distinct **semantic** declarations — `search_symbol` is a symbol-index
-  query, `find_references`/`goto_definition` resolve the symbol at a position, not a text match.
+  mostly comments, includes, and substring noise. Need an exhaustive list? Raise `maxResults`, or use
+  grep.
+- **Precision:** grep matches every substring (a `Foo` query also hits `FooBar`), so it over-reports
+  heavily. The index returns distinct semantic declarations: `search_symbol` is a symbol-index query,
+  and `find_references`/`goto_definition` resolve the symbol at a position rather than a text match.
 
-> So: for navigation (a definition plus representative usages) the plugin is both more accurate and far
+> So for navigation (a definition plus representative usages) the plugin is both more accurate and far
 > cheaper. For an exhaustive occurrence audit, raise the cap or fall back to grep on purpose.
 
 ## Pre-warming & hit-rate
 
-clangd indexes asynchronously, so the *first* search after the server starts pays a one-time warm-up
-(it indexes the engine headers). vs-token-safer handles this like an IDE:
+clangd indexes asynchronously, so the *first* search after the server starts pays a one-time warm-up: it
+indexes the engine headers. vs-token-safer handles this like an IDE.
 
-- **The MCP server pre-warms at boot** (`VTS_PREWARM`, on by default when `projectPath` is set) — by the
+- **The MCP server pre-warms at boot** (`VTS_PREWARM`, on by default when `projectPath` is set). By the
   time you run your first search the index is already warming, and the client is cached for the server's
-  lifetime, so you pay the warm-up **once per session, not per query** (later searches are sub-second).
+  lifetime, so you pay the warm-up once per session rather than per query (later searches are
+  sub-second).
 - **`vts warmup`** builds clangd's on-disk index (`.cache/clangd`) up front, for CLI/CI use.
-- **`VTS_CLANGD_REMOTE`** points clangd at a shared/prebuilt clangd-index-server → near-zero
+- **`VTS_CLANGD_REMOTE`** points clangd at a shared/prebuilt clangd-index-server, for near-zero
   per-developer warm-up (teams/CI query one prebuilt index).
 
-**Which files get warmed first matters.** clangd boosts the indexing priority of files you open, so vts
-orders the warm-up set *likely-query-first*: **query history** (files that answered past searches) →
-**what you're editing now** (`git status` modified/untracked + Perforce `p4 opened`) → **git-log
-recency** → **include centrality** (headers many candidates `#include` — computed adaptively: a
-persistent include-graph cache that fills a time budget's worth each warm-up, growing coverage over runs)
-→ mtime. On a huge tree you can only warm a small slice (hundreds of TUs out of tens of thousands in
-Unreal), so this ordering is what makes the warm window actually contain what you search for. Works with
-both **git** and **Perforce**.
+Which files get warmed first matters. clangd boosts the indexing priority of files you open, so vts
+orders the warm-up set likely-query-first: **query history** (files that answered past searches), then
+**what you're editing now** (`git status` modified/untracked + Perforce `p4 opened`), then **git-log
+recency**, then **include centrality** (headers that many candidates `#include`, computed adaptively via
+a persistent include-graph cache that fills a time budget's worth each warm-up, growing coverage over
+runs), then mtime. On a huge tree you can only warm a small slice (hundreds of TUs out of tens of
+thousands in Unreal), so this ordering is what makes the warm window actually contain what you search
+for. Works with both git and Perforce.
 
-Measured lift (`node eval/bench-hitrate.mjs` — the real `orderForWarm()` over a synthetic workload with
+Measured lift (`node eval/bench-hitrate.mjs`, the real `orderForWarm()` over a synthetic workload with
 realistic locality, 2,000 files):
 
 | warm-up cap | arbitrary order | history-ordered | lift |
@@ -187,12 +195,12 @@ realistic locality, 2,000 files):
 | 20% | 24.8% | **68.5%** | 2.8× |
 | 50% | 46.3% | **80.5%** | 1.7× |
 
-The smaller the slice you can afford to warm, the bigger the win — arbitrary order hits almost nothing;
+The smaller the slice you can afford to warm, the bigger the win. Arbitrary order hits almost nothing;
 ordering hits the majority.
 
 ## How much did it save? (token-savings command)
 
-The core records, per search, the tokens it saved vs forwarding the language server's raw index
+For each search, the core records the tokens it saved vs forwarding the language server's raw index
 response. Check the running total any of these ways:
 
 - **In Claude Code:** run `/vs-token-safer:savings` (or just ask "how much has the plugin saved?"). It
@@ -207,27 +215,27 @@ vs-token-safer savings (local, 1 search(es))
   raw → output: 4,340 → 140 tok (~31× smaller)
   biggest single run: 4,340 → 140 tok
 ```
-> "Saved" here is vs the language server's *raw* index response. Savings vs **Bash grep** are typically
-> far larger — see [BENCHMARK.md](BENCHMARK.md).
+> "Saved" here is vs the language server's *raw* index response. Savings vs Bash grep are typically far
+> larger; see [BENCHMARK.md](BENCHMARK.md).
 
 ## Prerequisites
 
 - **Node.js ≥ 18** on PATH.
 - A language server for the language(s) you search:
   - **C/C++ → clangd ≥ 22** ([clangd releases](https://github.com/clangd/clangd/releases)). The clangd
-    19.1.x bundled with Visual Studio (`…/VC/Tools/Llvm/bin/clangd.exe`) **deadlocks** indexing real
-    Unreal translation units in server mode — vts warns if it detects an older one. Needs a
+    19.1.x bundled with Visual Studio (`…/VC/Tools/Llvm/bin/clangd.exe`) deadlocks indexing real
+    Unreal translation units in server mode, and vts warns if it detects an older one. Needs a
     `compile_commands.json` compile database.
-  - **C#/.NET → a Roslyn LSP.** Install the **VS Code C# extension** (`ms-dotnettools.csharp`) — vts
+  - **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) and vts
     auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its private .NET runtime from the bundle.
     Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`.
 - No IDE has to be running.
 
-**clangd needs a compile database** (`compile_commands.json`):
-- **Unreal Engine:** generate via UBT — `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`.
-  If your targets build with **clang-cl**, add **`-Compiler=VisualCpp`** — otherwise
+clangd needs a compile database (`compile_commands.json`):
+- **Unreal Engine:** generate via UBT, `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`.
+  If your targets build with clang-cl, add **`-Compiler=VisualCpp`**, otherwise
   `GenerateClangDatabase` fails clang-toolchain validation (`Unable to find valid C++ toolchain for
-  Clang x64`); the MSVC-compiler database still resolves the full engine include graph for clangd.
+  Clang x64`). The MSVC-compiler database still resolves the full engine include graph for clangd.
 - **CMake:** configure with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
 ## Install
@@ -245,12 +253,12 @@ vs-token-safer savings (local, 1 search(es))
 
 Verify the `vs-search` MCP server and its tools appear, and that a `grep src/**/*.cpp` is blocked with a
 nudge toward the indexed tools (or runs freely under `VTS_ENFORCE=0`). The MCP server's one dependency
-(`@modelcontextprotocol/sdk`) installs automatically on the first session into the plugin's data
+(`@modelcontextprotocol/sdk`) installs automatically on the first session, into the plugin's data
 directory.
 
 ### As a standalone CLI (no IDE, no Claude Code)
 
-vs-token-safer is **not published to npm** — install the `vts` CLI from a clone:
+vs-token-safer isn't published to npm, so install the `vts` CLI from a clone:
 
 ```bash
 git clone https://github.com/JSungMin/vs-token-safer
@@ -264,21 +272,21 @@ node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /
 You don't edit OS environment variables. Settings live in a config file
 (`~/.vs-token-safer/config.json`) the CLI and MCP server read at startup. Configure it any of these ways:
 
-- **In Claude Code (recommended):** `/vs-token-safer:setup` — guided: it shows current settings
+- **In Claude Code (recommended):** `/vs-token-safer:setup` is guided. It shows current settings
   (`vts_config`), detects the backend, asks for `projectPath`, and applies via the `vts_setup` tool.
   Then `/reload-plugins`.
-- **Ad-hoc via tools:** ask Claude to call `vts_setup { "projectPath": "…", "backend": "clangd" }`,
-  `vts_config` (show effective settings).
+- **Ad-hoc via tools:** ask Claude to call `vts_setup { "projectPath": "…", "backend": "clangd" }`, or
+  `vts_config` to show effective settings.
 - **From a shell:**
   ```bash
   vts setup --projectPath <root> --backend clangd
   vts config
   ```
 
-Backend auto-detects from the root: `compile_commands.json` (or a `.uproject`) → **clangd**; a
-`.sln`/`.csproj` → **roslyn**. Settings are read at startup → **run `/reload-plugins` after changing
-them**. Precedence: **environment variable (`VTS_*`) > config file > built-in default** (so a same-named
-env var still wins).
+Backend auto-detects from the root: `compile_commands.json` (or a `.uproject`) picks **clangd**; a
+`.sln`/`.csproj` picks **roslyn**. Settings are read at startup, so **run `/reload-plugins` after
+changing them**. Precedence: **environment variable (`VTS_*`) > config file > built-in default**, so a
+same-named env var still wins.
 
 ## Updating to a new version
 
@@ -298,11 +306,11 @@ version of this plugin:
 ```
 
 Check what's installed with `/plugin` (it lists each plugin's version). If a command like
-`/vs-token-safer:setup` is missing, your installed copy predates it — update as above.
+`/vs-token-safer:setup` is missing, your installed copy predates it, so update as above.
 
 > Maintainer note: the `version` field in `.claude-plugin/plugin.json` (and the marketplace entry) gates
-> updates — bump it when you want clients to pick up changes. The headline plugin must bump even when the
-> change lands only in the bundled `gamedev-log-analyzer` (which keeps its own independent semver),
+> updates, so bump it when you want clients to pick up changes. The headline plugin must bump even when
+> the change lands only in the bundled `gamedev-log-analyzer` (which keeps its own independent semver),
 > otherwise clients see "already at latest". Version history lives in
 > [Releases](https://github.com/JSungMin/vs-token-safer/releases) (auto-generated on each `v*` tag), not
 > in this README.
@@ -327,7 +335,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup. |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set likely-query-first). |
 | — | `VTS_CENTRALITY_MAX` | `20000` | Upper bound on candidates the centrality scan iterates; `0` disables centrality entirely. |
-| — | `VTS_CENTRALITY_BUDGET_MS` | `400` | Per-warm-up budget for *new* include-prefix reads. Centrality is **adaptive**: each warm-up scans a budget's worth of new/changed files into a persistent include-graph cache (`VTS_INCLUDE_GRAPH`), so coverage grows across warm-ups (`0` = cache only). |
+| — | `VTS_CENTRALITY_BUDGET_MS` | `400` | Per-warm-up budget for *new* include-prefix reads. Centrality is adaptive: each warm-up scans a budget's worth of new/changed files into a persistent include-graph cache (`VTS_INCLUDE_GRAPH`), so coverage grows across warm-ups (`0` = cache only). |
 | — | `VTS_ENFORCE` | `1` | `0`/`false`/`off` lets Bash code-grep through (escape hatch when the language server is unavailable). |
 
 ## How enforcement works
@@ -337,16 +345,16 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
   *not* aimed at a log/md/json/build path, it blocks the command and tells Claude to use the indexed
   tool instead. Otherwise it allows the command. `VTS_ENFORCE=0` disables it entirely.
 - The **skill** biases Claude toward the indexed tools proactively.
-- The **core** guarantees the token cap regardless of how Claude calls the tool.
+- The **core** guarantees the token cap no matter how Claude calls the tool.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `/vs-token-safer:setup` not in autocomplete | Plugin not installed (only marketplace added), or stale | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. Check version with `/plugin`. |
-| First clangd query is very slow or times out | Cold UE-scale index — clangd is indexing engine headers | Pre-warm (`VTS_PREWARM` on, or run `vts warmup`); raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS`. Keep the MCP server running so the index stays warm. |
+| First clangd query is very slow or times out | Cold UE-scale index; clangd is indexing engine headers | Pre-warm (`VTS_PREWARM` on, or run `vts warmup`); raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS`. Keep the MCP server running so the index stays warm. |
 | clangd query never returns (hangs) on a real UE project | The clangd 19.1.x bundled with Visual Studio **deadlocks** on UE TUs | Install **clangd ≥ 22** and point `VTS_CLANGD_CMD` at it. vts prints a version advisory when it detects an old clangd. |
-| `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl; UBT validates a Clang toolchain | Add **`-Compiler=VisualCpp`** to the UBT command — the MSVC database still resolves the include graph. |
+| `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl; UBT validates a Clang toolchain | Add **`-Compiler=VisualCpp`** to the UBT command; the MSVC database still resolves the include graph. |
 | clangd resolves only header-free symbols | Compile DB has no include dirs → system/3rd-party headers don't resolve | Use a UBT-generated DB (it includes the paths); a hand-rolled `compile_commands.json` must list the include dirs. |
 | No C# results / "No backend resolved" | Roslyn engine not found | Install the VS Code C# extension (`ms-dotnettools.csharp`), or `dotnet tool install --global csharp-ls`; or set `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD`. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | Set `VTS_ENFORCE=0` to let grep through (e.g. when the language server is unavailable). |
@@ -354,13 +362,14 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 
 ## Status / caveats
 
-- **clangd live-verified** — `search_symbol` / `find_references` / `goto_definition` confirmed against
-  real clangd on a `compile_commands.json` project, **including a real Unreal 5.x game project
-  end-to-end** (returned the game `UCLASS` + its `*.generated.h` symbols). Needs a **correct** compile
-  DB (with include dirs) and **clangd ≥ 22** — older clangd deadlocks on real UE TUs.
-- **Roslyn live-verified** — confirmed against **Microsoft.CodeAnalysis.LanguageServer** (the actual VS
-  engine) on a real `.csproj`. Auto-detected from the VS Code C# extension bundle; `csharp-ls` fallback.
-- Cold UE-scale indexes are slow on the first query — pre-warm or raise the LSP wait/timeout envs.
+- **clangd live-verified.** `search_symbol` / `find_references` / `goto_definition` confirmed against
+  real clangd on a `compile_commands.json` project, including a real Unreal 5.x game project
+  end-to-end (it returned the game `UCLASS` plus its `*.generated.h` symbols). Needs a correct compile
+  DB (with include dirs) and **clangd ≥ 22**; older clangd deadlocks on real UE TUs.
+- **Roslyn live-verified.** Confirmed against **Microsoft.CodeAnalysis.LanguageServer** (the actual VS
+  engine) on a real `.csproj`. Auto-detected from the VS Code C# extension bundle, with a `csharp-ls`
+  fallback.
+- Cold UE-scale indexes are slow on the first query, so pre-warm or raise the LSP wait/timeout envs.
 - The savings ledger and benchmark numbers are response-shaping (raw index → capped). Savings vs grep
   are larger; see [BENCHMARK.md](BENCHMARK.md).
 
@@ -369,17 +378,17 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 Everything runs locally and nothing is uploaded:
 
 - The **hook** (`PreToolUse` on Bash) only inspects the command string to decide whether to redirect a
-  code-grep to the index — it does not read file contents or run anything. It honors `VTS_ENFORCE=0`.
+  code-grep to the index. It doesn't read file contents or run anything. It honors `VTS_ENFORCE=0`.
 - The **language server** runs on your machine over stdio. The only outbound network call is the
-  first-run `npm install` of the MCP SDK. No telemetry, no source, no queries leave your machine — it
-  writes only its config + a local token-savings ledger under `~/.vs-token-safer/`.
+  first-run `npm install` of the MCP SDK. No telemetry, no source, and no queries leave your machine; it
+  writes only its config and a local token-savings ledger under `~/.vs-token-safer/`.
 - **gamedev-log-analyzer** reads local log files you point it at and prints summaries.
 
 See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 
 ## Version history
 
-See the **[Releases](https://github.com/JSungMin/vs-token-safer/releases)** page — every version tag
+See the **[Releases](https://github.com/JSungMin/vs-token-safer/releases)** page. Every version tag
 publishes categorized, PR-linked notes (🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance),
 generated automatically. The badge at the top always points at the latest. Highlights so far:
 
@@ -391,10 +400,14 @@ generated automatically. The badge at the top always points at the latest. Highl
   remote index (`VTS_CLANGD_REMOTE`).
 - **v0.4.0** — warm-up ordering extended with working-now (`git status` / `p4 opened`) and include
   centrality; gamedev-log-analyzer 0.10.1.
+- **v0.5.0** — README and community files brought up to a mature-repo standard (badges, env table,
+  troubleshooting, version history).
+- **v0.6.0** — adaptive include-centrality: prefix reads, a per-warm-up time budget, and a persistent
+  include-graph cache that grows coverage across warm-ups instead of skipping big modules.
 
 ## Contributing
 
-Issues and PRs welcome — bug reports, new backends/engines, additional language mappings, or docs.
+Issues and PRs welcome: bug reports, new backends/engines, additional language mappings, or docs.
 
 This repo is maintained with AI-assisted review, so PRs are judged from the diff, description, and
 evidence. Keep them small, clearly described, backed by evidence, and free of any proprietary data
@@ -405,7 +418,7 @@ If this saved you tokens or debugging time, a star helps others find it. ⭐
 
 ## Privacy
 
-These plugins collect no personal data and process everything locally — see [PRIVACY.md](PRIVACY.md).
+These plugins collect no personal data and process everything locally. See [PRIVACY.md](PRIVACY.md).
 
 ## License
 
