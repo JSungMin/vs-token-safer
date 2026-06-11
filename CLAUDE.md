@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (15/15) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (17/17) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -99,7 +99,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   through a shell (clangd.exe / dotnet host stay shell:false to survive paths with spaces). `langIdForPath`
   (lsp.js) maps file ext → LSP languageId so one backend serves several extensions.
 - **grep-block hook** now covers `js/jsx/mjs/cjs/ts/tsx/mts/cts/py/pyi` too (default on, per user) so vts
-  self-enforces while we develop it; `VTS_ENFORCE=0` still the escape hatch.
+  self-enforces while we develop it; `VTS_ENFORCE=0` still the escape hatch. matcher is `Bash|Grep`: Bash
+  code-grep BLOCKS (vts default), the built-in **Grep tool** WARNS-only (never block — it's the fallback),
+  and a search aimed at a LOG (`Logs/` dir or `.log/.jsonl`) WARNS+allows with a gamedev-log pointer.
+- **log steer (rider 0.2.8 parity).** `core.js` `looksLogTarget(a)` (path/projectPath/paths vs `LOG_PATHISH`)
+  appends a one-line gamedev-log pointer (`LOG_STEER`) to ANY tool result whose target is a log; empty
+  symbol results carry `EMPTY_HINT` (stale-index + definitions-only + log→gamedev-log), find_files/search_text
+  empties carry `LOG_EMPTY_HINT`. Additive text only, never blocks. Mirrors `../rider-mcp-enforcer` proxy steer.
 
 ## Next (see wiki "Status and TODO")
 P1 DONE: core rename, `index.js`/`sdk.js`/`ensure-deps.mjs`, grep-block `hooks/`, `skills/`+`commands/`,

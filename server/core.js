@@ -39,6 +39,27 @@ const SYMBOL_KIND = {
   25: "operator", 26: "type",
 };
 
+// --- log steer (mirrors rider-mcp-enforcer 0.2.8): a code search aimed at a LOG should go to the
+// gamedev-log analyzer, not the language-server index. The index only covers source — a hover/read/search
+// pointed at a log returns empty or errors, and the model often burns calls before switching tools.
+// A log-ish target: a Logs/ (or Saved/Logs/) dir, or a .log/.jsonl/.log.N file. Precise enough to skip
+// "log" inside "catalog" and ordinary source paths.
+const LOG_PATHISH = /(^|[/\\])(saved[/\\])?logs([/\\]|$)|\.(log|jsonl)(\.\d+)?$/i;
+function looksLogTarget(a) {
+  return [a.path, a.projectPath, a.paths].flat().filter((v) => typeof v === "string").some((v) => LOG_PATHISH.test(v));
+}
+const LOG_STEER =
+  "\n\n↪ This looks like a LOG target. The language-server index only covers source code, not logs — use " +
+  "the gamedev-log tools (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate / " +
+  "fields / diff) for log analysis instead.";
+// Appended to an empty symbol result (mirrors rider's honest empty-result hint): an empty answer can be a
+// stale index, a definitions-only match, or a string that only lives in a log (excluded from the index).
+const EMPTY_HINT =
+  " If you JUST edited the target, the index may lag the save — retry, or use search_text for a literal " +
+  "match. search_symbol matches DEFINITIONS, not every reference. Looking for something in a LOG? Logs " +
+  "aren't indexed — use gamedev-log.";
+const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
+
 function applySetup(args) {
   let current = {};
   try { current = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { /* new */ }
@@ -229,7 +250,8 @@ export async function runTool(name, a = {}) {
   const finishOut = (rawObj, body) => {
     const rawTok = tok(JSON.stringify(rawObj)), outTok = tok(body);
     try { recordSavings(rawTok, outTok); } catch { /* best-effort */ }
-    return out(body + savingsLine(rawTok, outTok));
+    // Additive log steer (never blocks): if this call targets a log path, point at gamedev-log.
+    return out(body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok));
   };
   try {
     if (name === "vts_setup") {
@@ -256,7 +278,7 @@ export async function runTool(name, a = {}) {
       const root = a.projectPath || PROJECT_PATH || process.cwd();
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
-      if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.`);
+      if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
       return finishOut(files, `${files.length} file(s) matching "${a.q}":\n` + files.join("\n"));
     }
     if (name === "search_text") {
@@ -264,7 +286,7 @@ export async function runTool(name, a = {}) {
       const root = a.projectPath || PROJECT_PATH || process.cwd();
       const max = Number(a.maxResults) || MAX_RESULTS;
       const hits = scanTextUnder(root, String(a.q), max);
-      if (!hits.length) return finishOut([], `No text matches for "${a.q}" under ${root}.`);
+      if (!hits.length) return finishOut([], `No text matches for "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
       return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol):\n` + hits.join("\n"));
     }
 
@@ -280,7 +302,7 @@ export async function runTool(name, a = {}) {
       const syms = (await c.symbol(String(a.q))) || [];
       try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
       const adv = backendAdvisory(backendName);
-      if (!syms.length) return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).`);
+      if (!syms.length) return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
       return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {

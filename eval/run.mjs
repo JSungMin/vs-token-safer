@@ -195,6 +195,36 @@ const wiringOk =
 const multiLangOk = detectOk && langOk && wiringOk;
 for (const d of [tsDir, pyDir, pkgDir, mixDir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
 
+// 16) log steer (rider 0.2.8 parity) — a search aimed at a Logs/ path appends a gamedev-log pointer to the
+// result (additive, never blocks); an empty result carries the same hint for the path-less case.
+const logRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-Logs`);
+const logDir = path.join(logRoot, "Logs", "sub"); // projectPath contains a `Logs/` segment → LOG_PATHISH hits
+fs.mkdirSync(logDir, { recursive: true });
+const lsRes = await runTool("search_text", { q: "anything", projectPath: logDir }); // log target → LOG_STEER
+const ffRes = await runTool("find_files", { q: "no_such_file_xyz", projectPath: os.tmpdir() }); // empty, non-log
+const logSteerOk =
+  !lsRes.isError && /This looks like a LOG target/.test(lsRes.text) && // path-based steer (LOG_STEER)
+  !ffRes.isError && /gamedev-log/.test(ffRes.text);                    // path-less empty hint (LOG_EMPTY_HINT)
+try { fs.rmSync(logRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 17) PreToolUse hook vectors: Bash code-grep BLOCKS (exit 2), Bash log-grep WARNS+allows (gamedev-log),
+// Grep tool on code WARNS+allows. Runs the actual hook as a child with JSON stdin.
+const { spawnSync } = await import("node:child_process");
+const hookPath = new URL("../hooks/block-code-grep.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+const runHook = (payload) => {
+  const r = spawnSync(process.execPath, [hookPath], { input: JSON.stringify(payload), encoding: "utf8" });
+  return { status: r.status, out: r.stdout || "", err: r.stderr || "" };
+};
+const hCode = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } });
+const hLog = runHook({ tool_name: "Bash", tool_input: { command: "grep Error Saved/Logs/run.log" } });
+const hGrep = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } });
+const hGrepLog = runHook({ tool_name: "Grep", tool_input: { pattern: "Error", path: "Saved/Logs" } }); // bare Logs dir
+const hookOk =
+  hCode.status === 2 && /Blocked/.test(hCode.err) &&
+  hLog.status === 0 && /gamedev-log/.test(hLog.out) &&
+  hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
+  hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -215,6 +245,8 @@ const rows = [
   ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
   ["rename preview + apply + multi-edit", renameOk, "true", renameOk],
   ["js/ts + python backends: detect + langId", multiLangOk, "true", multiLangOk],
+  ["log steer + empty hint → gamedev-log", logSteerOk, "true", logSteerOk],
+  ["hook: block code / warn log+grep", hookOk, "true", hookOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
