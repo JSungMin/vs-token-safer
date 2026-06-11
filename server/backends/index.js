@@ -122,7 +122,10 @@ function findShallow(root, re, depth = 2) {
 function nodeLspBackend(binJs, cmdOverride, globalName, argsEnv, rest) {
   const extra = ["--stdio"];
   if (cmdOverride) return { cmd: cmdOverride, args: () => splitArgs(env(argsEnv)) || extra, winShell: true, ...rest };
-  if (binJs) return { cmd: process.execPath, args: () => splitArgs(env(argsEnv)) || [binJs, ...extra], winShell: false, ...rest };
+  // Bundled bin: cmd is `node`, so the bin path MUST stay argv[0]. A VTS_*_ARGS override replaces only
+  // the trailing flags (the user can't know the bundled bin path) — without this, `node <user-flags>`
+  // would spawn bare node with no server script and hang.
+  if (binJs) return { cmd: process.execPath, args: () => [binJs, ...(splitArgs(env(argsEnv)) || extra)], winShell: false, ...rest };
   return { cmd: globalName, args: () => splitArgs(env(argsEnv)) || extra, winShell: true, ...rest };
 }
 const TS_BIN = resolveBinJs("typescript-language-server", "typescript-language-server");

@@ -224,7 +224,8 @@ vs-token-safer savings (local, 1 search(es))
   - **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 동봉되어 첫 세션에
     자동 설치됩니다 — 따로 할 일 없습니다. vts가 번들 복사본을 `node`로 실행하니 전역 설치나 PATH 설정이
     필요 없습니다. 원하면 `VTS_TS_CMD`/`VTS_PY_CMD`로 직접 지정하세요. (참고: 동봉으로 첫 실행 `npm
-    install`에 1회 ~50MB가 추가됩니다.)
+    install`에 1회 ~50MB가 추가되고, JS/TS 서버는 **Node 20+**를 권장합니다 — Node 18에서는 건너뛰며
+    나머지 백엔드는 정상 동작합니다.)
 - IDE는 실행 중이지 않아도 됩니다.
 
 clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:

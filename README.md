@@ -234,7 +234,8 @@ vs-token-safer savings (local, 1 search(es))
   - **JS/TS → typescript-language-server, Python → pyright.** These ship as plugin dependencies and
     install automatically on the first session — nothing to set up. vts launches the bundled copy with
     `node`, so there's no global install or PATH dance. Point `VTS_TS_CMD`/`VTS_PY_CMD` at your own if you
-    prefer. (Heads-up: bundling them adds a one-time ~50 MB to the plugin's first-run `npm install`.)
+    prefer. (Heads-up: bundling them adds a one-time ~50 MB to the plugin's first-run `npm install`, and
+    the JS/TS server wants **Node 20+** — on Node 18 it's skipped and the other backends still work.)
 - No IDE has to be running.
 
 clangd needs a compile database (`compile_commands.json`):
