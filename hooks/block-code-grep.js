@@ -64,6 +64,34 @@ const TEXT_TARGET_RE = /\.(log|txt|md|markdown|json|ya?ml|csv|tsv|xml|html?|ini|
 // while `(^|sep)` anchoring still rejects "catalog"/"dialogs"/"mylogs".
 const LOG_TARGET_RE = /(^|[\s"'/\\])(saved[/\\])?logs([/\\]|$)|\.(log|jsonl)(\.\d+)?\b/i;
 
+// Quote-aware command splitting: cut on |, ||, &&, ;, &, newline ONLY outside single/double quotes.
+// The naive split broke a quoted alternation pattern apart — `grep -rn "FooA|FooB" src/Thing.cpp`
+// became two non-matching segments and sailed through the hook entirely (the top bypass pattern
+// `vts discover` surfaced). A pipe INSIDE quotes is part of the pattern, not a pipeline.
+function splitSegments(cmd) {
+  const out = [];
+  let cur = "", q = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) {
+      // bash: inside DOUBLE quotes `\"` is an escaped literal quote, not a terminator (single quotes
+      // have no escapes). Consume the pair so the quote context doesn't close early.
+      if (q === '"' && c === "\\" && i + 1 < cmd.length) { cur += c + cmd[i + 1]; i++; continue; }
+      cur += c; if (c === q) q = null; continue;
+    }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === "|" || c === ";" || c === "&" || c === "\n") {
+      if (c === "|" && cmd[i + 1] === "|") i++;
+      else if (c === "&" && cmd[i + 1] === "&") i++;
+      out.push(cur); cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out.filter((s) => s.trim());
+}
+
 function execOf(segment) {
   const tokens = segment.trim().split(/\s+/);
   let i = 0;
@@ -103,6 +131,12 @@ const excludeKeyOf = (segment) => execOf(segment);
 // then falls back to blocking — never a wrong rewrite). Conservative on purpose: only the common shape
 // `<grep> [bool-flags] PATTERN [paths]` / `find … -name GLOB`, and only a shell-safe literal pattern.
 const VALUE_FLAG_LETTERS = /[efmABCDd]/; // short flags that consume a value (-e PATTERN, -m N, -A N …)
+// A pattern token may arrive quoted (`"FooA|FooB"`, `'^#include'`) — strip ONE matching outer pair so the
+// safety gate sees the actual pattern. A token with an unmatched quote stays as-is (and fails the gate).
+function stripQuotes(t) {
+  if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) return t.slice(1, -1);
+  return t;
+}
 function extractGrepPattern(segment, isGit) {
   const toks = segment.trim().split(/\s+/);
   let i = 0;
@@ -117,7 +151,7 @@ function extractGrepPattern(segment, isGit) {
       if (VALUE_FLAG_LETTERS.test(t)) return null; // value-taking short flag — pattern position unclear
       continue;                                    // boolean short flag cluster (-rn, -i, …)
     }
-    return t;                                       // first bare token = PATTERN (grep puts it before files)
+    return stripQuotes(t);                          // first bare token = PATTERN (grep puts it before files)
   }
   return null;
 }
@@ -125,7 +159,11 @@ function extractFindName(segment) {
   const m = segment.match(/\s-name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
 }
-const SAFE_TEXT = /^[A-Za-z0-9_.:-]+$/;     // shell-safe literal (no quoting needed; valid literal regex)
+// Shell-safe pattern: alnum/_/./:/- plus the regex chars `|` `^` `#` (alternations like `FooA|FooB` and
+// anchors like `^#include` are the most-bypassed real queries, and search_text takes a regex). The rewrite
+// always double-quotes the -q arg, and these chars are literal inside double quotes in bash AND cmd.exe.
+// `$` stays excluded (variable expansion in double quotes), as do spaces/quotes/backslashes/backticks.
+const SAFE_TEXT = /^[A-Za-z0-9_.:|^#-]+$/;
 const SAFE_GLOB = /^[A-Za-z0-9_.*?-]+$/;    // filename glob
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;   // a bare identifier → route to semantic search_symbol (synergy A)
 const quote = (s) => `"${s}"`;
@@ -189,12 +227,25 @@ function emitWarn(text) {
   );
 }
 
-const GREP_NUDGE =
-  "[vs-token-safer] Code search via the Grep tool. For symbol / references / definition on ESTABLISHED " +
-  "code, prefer the vs-search MCP tools (search_symbol / find_references / goto_definition) — semantic " +
-  "(language-server index) and token-capped to file:line — or search_text / find_files, or the " +
-  "code-locator subagent. For a JUST-edited / unindexed file or a quick literal peek, Grep is fine — carry " +
-  "on. Disable: VTS_ENFORCE=0.";
+// The Grep tool can't be rewritten to an MCP tool (a PreToolUse hook may only modify the SAME tool's
+// input), so the next best thing is a READY-TO-USE equivalent call in the nudge — a model handed the
+// exact tool + args complies far more often than one handed a generic pointer. Identifier → semantic
+// search_symbol; anything else → search_text (it takes a regex, so alternations/anchors work).
+function grepNudgeFor(ti) {
+  const pat = String(ti.pattern || "");
+  let concrete = "";
+  if (pat && pat.length <= 120 && !/[\r\n"]/.test(pat)) {
+    const tool = /^[A-Za-z_][A-Za-z0-9_]*$/.test(pat) ? "search_symbol" : "search_text";
+    concrete = ` Equivalent token-capped call: ${tool} q="${pat}"${tool === "search_symbol" ? " (semantic decls; search_text for every textual hit)" : ""}.`;
+  }
+  return (
+    "[vs-token-safer] Code search via the Grep tool. For symbol / references / definition on ESTABLISHED " +
+    "code, prefer the vs-search MCP tools (search_symbol / find_references / goto_definition) — semantic " +
+    "(language-server index) and token-capped to file:line — or search_text / find_files, or the " +
+    "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
+    "Grep is fine — carry on. Disable: VTS_ENFORCE=0."
+  );
+}
 const LOG_NUDGE =
   "[vs-token-safer] This search targets a LOG. The language-server index only covers source code — for log " +
   "analysis use gamedev-log (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate " +
@@ -241,7 +292,7 @@ process.stdin.on("end", () => {
   // Grep TOOL — warn-only, never block (Grep is the sanctioned fallback).
   if (toolName === "Grep") {
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
-    else if (isCodeGrepTool(ti)) emitWarn(GREP_NUDGE + setup);
+    else if (isCodeGrepTool(ti)) emitWarn(grepNudgeFor(ti) + setup);
     process.exit(0);
   }
 
@@ -249,7 +300,7 @@ process.stdin.on("end", () => {
   // log-targeted search is steered (warn) but allowed.
   const cmd = ti.command || "";
   if (!cmd) process.exit(0);
-  const segments = cmd.split(/\|\||&&|[|;&\n]/g).filter((s) => s.trim());
+  const segments = splitSegments(cmd);
 
   // #5 honor excludeCommands — drop excluded execs from enforcement.
   const excluded = excludedCommands();

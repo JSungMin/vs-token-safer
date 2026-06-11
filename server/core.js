@@ -221,11 +221,14 @@ function matchBypass(name, input) {
   }
   return null;
 }
-function discoverReport(a = {}) {
+// Shared transcript scan: find bypassed code searches and (always, cheaply) harvest the source-file
+// paths their results contained. discoverReport formats this; autoLearn feeds the harvest straight into
+// the warm-set so the loop closes without a human in it.
+function scanBypasses(a = {}) {
   const base = process.env.VTS_CLAUDE_PROJECTS || path.join(os.homedir(), ".claude", "projects");
   let dirs;
   try { dirs = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(base, d.name)); }
-  catch { return `No Claude transcripts found at ${base} (set VTS_CLAUDE_PROJECTS to override).`; }
+  catch { return { error: `No Claude transcripts found at ${base} (set VTS_CLAUDE_PROJECTS to override).` }; }
   const all = a.all === true || a.all === "true";
   const since = Number(a.since) || 7;
   const cutoff = Date.now() - since * 86400000;
@@ -241,9 +244,7 @@ function discoverReport(a = {}) {
   }
   files.sort((x, y) => y.m - x.m);
   if (files.length > 200) files = files.slice(0, 200); // bound the scan
-  const learn = a.learn === true || a.learn === "true";
-  const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
-  const learned = new Set(); // file paths recovered from bypassed-search results → fed to the warm-set
+  const learned = new Set(); // file paths recovered from bypassed-search results → warm-set candidates
   const PATH_RE = /([A-Za-z]:)?[\w./\\-]+\.(?:c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/g;
   const cand = new Map(); // tool_use_id → {tool,q}
   const missed = []; let rawTokTotal = 0; let lines = 0; const MAX_LINES = 300000;
@@ -262,11 +263,28 @@ function discoverReport(a = {}) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
           const rt = tok(o); rawTokTotal += rt; missed.push({ ...meta, rawTok: rt });
-          if (learn) { let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o)) && learned.size < 500) learned.add(pm[0]); }
+          let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o)) && learned.size < 500) learned.add(pm[0]);
         }
       }
     }
   }
+  return { missed, rawTokTotal, learned, filesCount: files.length, all, since };
+}
+// Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
+// files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
+// Best-effort and bounded (200 transcripts / 300k lines / 500 files); returns the count for logging.
+export function autoLearn(root, since = 7) {
+  const r = scanBypasses({ since });
+  if (r.error || !r.learned || !r.learned.size) return 0;
+  try { recordQueryResults(root, [...r.learned]); return r.learned.size; } catch { return 0; }
+}
+function discoverReport(a = {}) {
+  const r = scanBypasses(a);
+  if (r.error) return r.error;
+  const { missed, rawTokTotal, learned, filesCount: fc, all, since } = r;
+  const files = { length: fc };
+  const learn = a.learn === true || a.learn === "true";
+  const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
   const scope = all ? "all time" : `last ${since} day(s)`;
   // Synergy B: feed the files those bypassed searches actually hit into the warm-set's query-history, so
   // prewarm front-loads them next time — vts learns from the greps it didn't run.

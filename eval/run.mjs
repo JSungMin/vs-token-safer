@@ -256,6 +256,11 @@ const parseRw = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutp
 const hFind = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "find . -name *.cpp" } }));
 const hGitGrep = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git grep SpawnActor" } }));
 const hDotted = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo.Bar src/Thing.cpp" } })); // dotted → literal text
+// Quote-aware splitting (self-improve round): a quoted alternation / anchored pattern — the top bypass
+// shapes `vts discover` surfaced — is ONE segment now, and the regex-safe gate lets it rewrite to
+// search_text (which takes a regex). A REAL pipe (outside quotes) still splits → still blocks.
+const hAlt = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'grep -rn "FooA|FooB" src/Thing.cpp' } }));
+const hAnchor = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'grep -rn "^#include" src/Thing.cpp' } }));
 const hComplex = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn 'a b' src/Thing.cpp" } }); // space → unsafe → block
 const hPipe = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp | head" } }); // pipeline → block
 const hExcluded = runHook({ tool_name: "Bash", tool_input: { command: "rg Foo src/Thing.cpp" } }, { VTS_EXCLUDE_COMMANDS: "rg" });
@@ -263,6 +268,8 @@ const rewriteOk =
   /cli\.js" files --q "\*\.cpp"/.test(hFind.updatedInput?.command || "") &&
   /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep.updatedInput?.command || "") &&  // git grep identifier → symbol
   /cli\.js" text --q "Foo\.Bar"/.test(hDotted.updatedInput?.command || "") &&        // dotted literal → text
+  /cli\.js" text --q "FooA\|FooB"/.test(hAlt.updatedInput?.command || "") &&         // quoted alternation → text (regex)
+  /cli\.js" text --q "\^#include"/.test(hAnchor.updatedInput?.command || "") &&      // quoted anchor → text (regex)
   hComplex.status === 2 && /Blocked/.test(hComplex.err) &&
   hPipe.status === 2 &&
   hExcluded.status === 0 && !/Blocked/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
@@ -502,6 +509,31 @@ const noBe = await runTool("search_symbol", { q: "Anything", projectPath: nobeDi
 const symbolNoBackendOk = !noBe.isError && /No backend resolved/.test(noBe.text); // graceful, not an error
 try { fs.rmSync(nobeDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 32) self-improve round: (a) the Grep-tool nudge carries a READY-TO-USE equivalent call (identifier →
+// search_symbol, regex → search_text) since the hook can't reroute a Grep call to an MCP tool; (b)
+// autoLearn() — the boot-time hook — harvests bypassed-search result files into the warm-set with no
+// human in the loop (same write as discover --learn).
+const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutput?.additionalContext || ""; } catch { return ""; } };
+const nIdent = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }));
+const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
+const nudgeOk =
+  /search_symbol q="Foo"/.test(nIdent) &&   // identifier → semantic suggestion
+  /search_text q="FooA\|FooB"/.test(nRegex); // regex → text suggestion
+const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
+fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
+fs.writeFileSync(path.join(alRoot, "P--x", "s.jsonl"), [
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "al1", name: "Bash", input: { command: "grep -rn Widget src/Gear.cpp" } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "al1", content: "src/Gear.cpp:7:Widget\n" }] } },
+].map((e) => JSON.stringify(e)).join("\n"));
+const { autoLearn } = await import("../server/core.js");
+process.env.VTS_CLAUDE_PROJECTS = alRoot;
+const alCount = autoLearn("/proj/alroot", 7);
+delete process.env.VTS_CLAUDE_PROJECTS;
+const qhAl = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
+const autoLearnOk = alCount > 0 && /gear\.cpp/i.test(qhAl); // harvested file landed in query-history
+try { fs.rmSync(alRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const selfImproveOk = nudgeOk && autoLearnOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -542,6 +574,7 @@ const rows = [
   ["tee: truncated result written to recovery file", teeOk, "true", teeOk],
   ["discover: bypassed searches + catch-rate + learn (synergy B/C)", discoverOk, "true", discoverOk],
   ["synergy A: search_symbol no-backend → text (no hard error)", symbolNoBackendOk, "true", symbolNoBackendOk],
+  ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
