@@ -43,7 +43,15 @@ process.stdin.on("data", (d) => {
     } else if (msg.method === "textDocument/hover") {
       send({ jsonrpc: "2.0", id: msg.id, result: { contents: { kind: "plaintext", value: "int Foo(int x)" } } });
     } else if (msg.method === "textDocument/documentSymbol") {
-      send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Foo", kind: 12, range: { start: { line: 4, character: 0 }, end: { line: 4, character: 10 } }, selectionRange: { start: { line: 4, character: 4 }, end: { line: 4, character: 7 } } }] });
+      // Foo (top-level func) with children: a real method (kept), an anonymous callback + a nested local
+      // var (both outline noise → hidden by default; shown under VTS_OUTLINE_RAW=1).
+      const rng = { start: { line: 4, character: 0 }, end: { line: 4, character: 10 } };
+      const sel = { start: { line: 4, character: 4 }, end: { line: 4, character: 7 } };
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Foo", kind: 12, range: rng, selectionRange: sel, children: [
+        { name: "keepMethod", kind: 6, range: rng, selectionRange: sel },
+        { name: "arr.map() callback", kind: 12, range: rng, selectionRange: sel },
+        { name: "localTmp", kind: 13, range: rng, selectionRange: sel },
+      ] }] });
     } else if (msg.method === "textDocument/rename") {
       const uri = msg.params.textDocument.uri, p = msg.params.position;
       if (msg.params.newName === "MULTI") {

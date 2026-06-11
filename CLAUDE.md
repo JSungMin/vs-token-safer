@@ -119,6 +119,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - **pyright** (Python): `pyright-langserver --stdio` (`npm i -g pyright`). Detect:
   pyproject/setup.py/setup.cfg/requirements/Pipfile or `*.py`. `afterInit` opens top-N
   (`VTS_PY_OPEN_CAP`). Override `VTS_PY_CMD/ARGS`. Same generic glue as typescript.
+- **document_symbols outline filter (dogfood-found).** `fmtDocSymbols` hides outline noise by default —
+  anonymous callbacks/function-expressions (`arr.map() callback`, `<function>`) and NESTED var/const/key
+  locals (kinds 13/14/20 at depth>0) — keeping the declaration structure (classes/functions/methods/
+  fields/types). A `(N local/anonymous hidden …)` note shows the count; `VTS_OUTLINE_RAW=1` shows all,
+  `VTS_OUTLINE_DEPTH` caps nesting (default 4). Live: a 105-symbol warmset.js outline → 32. Token + clarity win.
 - **ts/py search_symbol fallback (dogfood-found).** tsserver/pyright answer `workspace/symbol` from
   OPEN/indexed files, so a symbol whose file the warm-up didn't open (or a non-exported local) returns 0.
   `search_symbol` then falls back to a bounded literal text search (`scanTextUnder`, labeled "Literal text

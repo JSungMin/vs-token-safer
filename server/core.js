@@ -246,20 +246,31 @@ function fmtHover(h) {
   return lines.join("\n") || "(no hover info)";
 }
 // document symbols (hierarchical DocumentSymbol[] or flat SymbolInformation[]) → kind name @ file:line.
+// An outline wants the DECLARATION structure (classes/functions/methods/fields/types), not every
+// function-body local and anonymous callback. tsserver in particular floods documentSymbol with
+// `arr.map() callback` artifacts and nested var/const locals (dogfood: a 200-symbol core.js outline was
+// mostly noise). Hide those by default — VTS_OUTLINE_RAW=1 shows everything; VTS_OUTLINE_DEPTH caps nesting.
+const OUTLINE_NOISE = /\(\)\s*callback$|=>\s*$|^<.*>$|\bcallback$/i;
 function fmtDocSymbols(syms, max, file) {
+  const raw = process.env.VTS_OUTLINE_RAW === "1" || process.env.VTS_OUTLINE_RAW === "true";
+  const maxDepth = envInt("VTS_OUTLINE_DEPTH", 4);
   const rows = [];
-  const walk = (arr, parent) => {
+  let dropped = 0;
+  const walk = (arr, parent, depth) => {
     for (const s of arr || []) {
+      // anonymous callback / function-expression, OR a NESTED var/const/key (a function-local, not a decl).
+      if (!raw && (OUTLINE_NOISE.test(s.name || "") || (depth > 0 && (s.kind === 13 || s.kind === 14 || s.kind === 20)))) { dropped++; continue; }
       const r = s.range || (s.location && s.location.range);
       const ln = r ? r.start.line + 1 : 1;
       const loc = s.location ? fromUri(s.location.uri).replace(/\\/g, "/") : file;
       rows.push(`${SYMBOL_KIND[s.kind] || `k${s.kind}`} ${parent ? parent + "::" : ""}${s.name}  @ ${loc}:${ln}`);
-      if (s.children) walk(s.children, (parent ? parent + "::" : "") + s.name);
+      if (s.children && depth < maxDepth) walk(s.children, (parent ? parent + "::" : "") + s.name, depth + 1);
     }
   };
-  walk(syms, "");
+  walk(syms, "", 0);
   const shown = rows.slice(0, max);
-  return `${rows.length} symbol(s):\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
+  const note = dropped && !raw ? ` (${dropped} local/anonymous hidden; VTS_OUTLINE_RAW=1 to show)` : "";
+  return `${rows.length} symbol(s)${note}:\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
 }
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).

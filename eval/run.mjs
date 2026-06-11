@@ -128,7 +128,15 @@ const someFile = path.join(process.cwd(), "eval", "run.mjs");
 const hv = await runTool("hover", { path: someFile, line: 0, character: 0, backend: "clangd" });
 const hoverOk = !hv.isError && /Foo/.test(hv.text);
 const ds = await runTool("document_symbols", { path: someFile, backend: "clangd" });
-const docSymOk = !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text);
+process.env.VTS_OUTLINE_RAW = "1";
+const dsRaw = await runTool("document_symbols", { path: someFile, backend: "clangd" });
+delete process.env.VTS_OUTLINE_RAW;
+const docSymOk =
+  !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text) &&
+  /keepMethod/.test(ds.text) &&                  // real method kept
+  !/map\(\) callback/.test(ds.text) && !/localTmp/.test(ds.text) && // anonymous + nested local hidden
+  /local\/anonymous hidden/.test(ds.text) &&     // the hidden-count note
+  /map\(\) callback/.test(dsRaw.text) && /localTmp/.test(dsRaw.text); // VTS_OUTLINE_RAW=1 shows everything
 const tdir = path.join(os.tmpdir(), `vts-files-${process.pid}`);
 fs.mkdirSync(tdir, { recursive: true });
 fs.writeFileSync(path.join(tdir, "Widget.cpp"), "int NEEDLE_TOKEN = 1;\n");
