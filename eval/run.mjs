@@ -302,6 +302,27 @@ const manifestOk =
   mEntry("vs-token-safer").version === rd("../.claude-plugin/plugin.json").version &&
   mEntry("gamedev-log-analyzer").version === rd("../gamedev-log-analyzer/.claude-plugin/plugin.json").version;
 
+// 23) buffer freshness: didOpen on a NEW doc → didOpen(v1); re-didOpen an already-open doc → didChange
+// (bumped version, current disk text — refreshes a file changed after warm-up); a since-deleted file →
+// didClose. Capture the wire by spying on notify().
+const fc = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+await fc.initialize(process.cwd());
+const sent = [];
+const realNotify = fc.notify.bind(fc);
+fc.notify = (m, p) => { sent.push(m); return realNotify(m, p); };
+const ftmp = path.join(os.tmpdir(), `vts-eval-${process.pid}-fresh.cpp`);
+fs.writeFileSync(ftmp, "int A = 1;\n");
+fc.didOpen(ftmp, "cpp"); // → didOpen v1
+fs.writeFileSync(ftmp, "int B = 2;\n");
+fc.didOpen(ftmp, "cpp"); // already open → didChange v2
+fs.rmSync(ftmp, { force: true });
+fc.didOpen(ftmp, "cpp"); // read fails → didClose
+await fc.shutdown();
+const freshOk =
+  sent.filter((m) => m === "textDocument/didOpen").length === 1 &&
+  sent.includes("textDocument/didChange") &&
+  sent.includes("textDocument/didClose");
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -330,6 +351,7 @@ const rows = [
   ["vts_setup language census auto-config", setupOk, "true", setupOk],
   ["first-use setup nudge (tool + hook)", setupNudgeOk, "true", setupNudgeOk],
   ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
+  ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

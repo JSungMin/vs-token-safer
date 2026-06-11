@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (22/22) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (23/23) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -21,7 +21,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   added under this name beyond C++/C# search.
 
 ## Layout
-- `server/lsp.js` — generic LSP client (JSON-RPC/stdio). The one new, careful piece.
+- `server/lsp.js` — generic LSP client (JSON-RPC/stdio). The one new, careful piece. `didOpen` is
+  open-or-refresh: first call → `didOpen(v1)`, a re-call on an already-open doc → `didChange` (bumped
+  version, current disk text) so a file changed after warm-up isn't answered from a stale buffer; a
+  since-deleted file → `didClose`. Position tools re-call `didOpen` before each query, so hover/goto/
+  outline/rename always re-read the file. The LSP engine keeps UNOPENED files fresh itself (clangd
+  file-watch + background re-index); our warmset caches self-invalidate (include-graph by mtime,
+  query-history by re-record; `_censusCache` is process-lifetime → restart/re-setup to refresh).
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,

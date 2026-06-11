@@ -50,6 +50,7 @@ export class LspClient {
     this.nextId = 1;
     this.pending = new Map(); // id -> {resolve, reject}
     this.notified = new Map(); // server-notification method -> latest params (for late waiters)
+    this.openDocs = new Map(); // uri -> last didOpen/didChange version (re-sync stale buffers, spec-correctly)
     this.notifyWaiters = new Map(); // method -> [resolve, …]
     this.buf = Buffer.alloc(0);
     this.stderr = "";
@@ -141,14 +142,34 @@ export class LspClient {
     });
   }
 
-  // Tell the server a document is open (forces clangd to parse + dynamically index that TU, so
-  // workspace/symbol returns its symbols without waiting for the full background index).
+  // Sync a document's CURRENT disk content to the server. First time → didOpen (forces clangd/tsserver to
+  // parse + dynamically index that TU so workspace/symbol returns its symbols before the full background
+  // index). Already open → didChange with a bumped version, so a file that changed on disk after warm-up
+  // (an edit, a branch switch) is refreshed instead of the server answering from a stale in-memory buffer.
+  // Position tools call this before every query, so each hover/goto/outline/rename re-reads the file. This
+  // is also spec-correct — repeatedly sending didOpen (version 1) for an already-open doc is a soft
+  // protocol violation that clangd/Roslyn merely tolerate.
   didOpen(filePath, languageId = "cpp") {
-    let text = "";
-    try { text = fs.readFileSync(filePath, "utf8"); } catch { return; }
-    this.notify("textDocument/didOpen", {
-      textDocument: { uri: toUri(filePath), languageId, version: 1, text },
-    });
+    let text;
+    try { text = fs.readFileSync(filePath, "utf8"); } catch { this.didClose(filePath); return; }
+    const uri = toUri(filePath);
+    const prev = this.openDocs.get(uri);
+    if (prev === undefined) {
+      this.openDocs.set(uri, 1);
+      this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
+    } else {
+      const version = prev + 1;
+      this.openDocs.set(uri, version);
+      this.notify("textDocument/didChange", { textDocument: { uri, version }, contentChanges: [{ text }] });
+    }
+  }
+  // Drop a document the server may be holding (e.g. it was deleted/moved on disk) so it stops answering
+  // from a stale buffer. No-op if we never opened it.
+  didClose(filePath) {
+    const uri = toUri(filePath);
+    if (!this.openDocs.has(uri)) return;
+    this.openDocs.delete(uri);
+    this.notify("textDocument/didClose", { textDocument: { uri } });
   }
 
   request(method, params, timeoutMs = envInt("VTS_LSP_TIMEOUT_MS", 30000)) {
