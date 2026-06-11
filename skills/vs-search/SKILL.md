@@ -28,14 +28,18 @@ CLI equivalent (no MCP needed): `vts symbol --q <name> --projectPath <root>`,
 `vts hover …`, `vts symbols --path <file>`, `vts text --q <pattern>`, `vts files --q <glob>`.
 
 ## Backends & projectPath
-- Backend auto-detects from the project root: `compile_commands.json` (or a `.uproject`) → **clangd**;
-  a `.sln`/`.csproj` → **roslyn**. Override with `backend=clangd|roslyn` or env `VTS_BACKEND`.
+- Backend auto-detects from the project root (strongest build-artifact first): `compile_commands.json`
+  (or a `.uproject`) → **clangd**; a `.sln`/`.csproj` → **roslyn**; a `tsconfig`/`jsconfig`/`package.json`
+  → **typescript** (tsserver); a `pyproject.toml`/`*.py` → **pyright**. Override with
+  `backend=clangd|roslyn|typescript|pyright` or env `VTS_BACKEND` when a root carries more than one.
 - Set the root via `projectPath` or env `VTS_PROJECT_PATH` (default: cwd).
 - **clangd needs `compile_commands.json`.** Unreal: generate via UBT
   `-mode=GenerateClangDatabase`; CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. Without it, clangd
   indexes nothing useful — tell the user to generate it.
 - **roslyn** defaults to the `csharp-ls` dotnet tool; point `VTS_ROSLYN_CMD`/`VTS_ROSLYN_ARGS` at
   `Microsoft.CodeAnalysis.LanguageServer` for the exact Visual Studio engine. Currently best-effort.
+- **typescript** (JS/TS) and **pyright** (Python) ship as plugin deps and auto-install — no setup. vts
+  launches the bundled copy with `node`. Override via `VTS_TS_CMD`/`VTS_PY_CMD`.
 
 ## Truncated results
 Symbol/reference lists are capped at `maxResults` (default 60). A trailing `… N more` means the set
@@ -52,6 +56,7 @@ partial set and claim it's complete.
 
 ## Fallback
 If a `vs-search` tool errors (engine missing/failed to spawn): clangd not installed → install LLVM
-clangd; roslyn not installed → `dotnet tool install --global csharp-ls`. Until the engine works,
+clangd; roslyn not installed → `dotnet tool install --global csharp-ls`; typescript/pyright not found →
+re-run the session so the bundled deps reinstall (or set `VTS_TS_CMD`/`VTS_PY_CMD`). Until the engine works,
 code-grep is blocked by the hook — the user can set `VTS_ENFORCE=0` to allow grep as a fallback. Do
 not loop on blocked grep; surface the fix and move on.

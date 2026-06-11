@@ -8,8 +8,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { toUri, envInt } from "../lsp.js";
+import { toUri, envInt, langIdForPath } from "../lsp.js";
 import { orderForWarm } from "../warmset.js";
+import { resolveBinJs } from "../resolve-bin.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
@@ -115,6 +116,18 @@ function findShallow(root, re, depth = 2) {
   return null;
 }
 
+// Build a backend def for a Node-based LSP shipped as an npm dep. Prefer the bundled bin (launched via
+// `node <bin.js>` — no PATH lookup, no Windows `.cmd`/shell quoting, spaces-safe). Honor a VTS_*_CMD
+// override; otherwise fall back to the global PATH binary (winShell on Windows for its `.cmd` shim).
+function nodeLspBackend(binJs, cmdOverride, globalName, argsEnv, rest) {
+  const extra = ["--stdio"];
+  if (cmdOverride) return { cmd: cmdOverride, args: () => splitArgs(env(argsEnv)) || extra, winShell: true, ...rest };
+  if (binJs) return { cmd: process.execPath, args: () => splitArgs(env(argsEnv)) || [binJs, ...extra], winShell: false, ...rest };
+  return { cmd: globalName, args: () => splitArgs(env(argsEnv)) || extra, winShell: true, ...rest };
+}
+const TS_BIN = resolveBinJs("typescript-language-server", "typescript-language-server");
+const PY_BIN = resolveBinJs("pyright", "pyright-langserver");
+
 export const BACKENDS = {
   // C/C++ via clangd (LLVM). Needs compile_commands.json (Unreal: generate via UBT
   // `-mode=GenerateClangDatabase`, or CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). LIVE-TARGET.
@@ -192,11 +205,39 @@ export const BACKENDS = {
         }
       : null,
   },
+  // JS/TS via typescript-language-server (wraps the official tsserver). Shipped as an npm dep in
+  // server/package.json → auto-installed for every user (no manual `npm i -g`); we resolve its bundled
+  // bin and launch `node <cli.mjs> --stdio`. Override via VTS_TS_CMD/ARGS; without the bundled copy it
+  // falls back to a PATH `typescript-language-server` (winShell on Windows for the `.cmd` shim). tsserver
+  // indexes lazily per open document, so the warm-up opens the top-N likely-query files; workspace/symbol
+  // still answers across the project.
+  typescript: nodeLspBackend(TS_BIN, env("VTS_TS_CMD"), "typescript-language-server", "VTS_TS_ARGS", {
+    detect: (root) => exists(root, "tsconfig.json", "jsconfig.json", "package.json") || !!findShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, 1),
+    afterInit: async (client, root) => {
+      const files = findAllShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i, 3);
+      const open = orderForWarm(root, files, envInt("VTS_TS_OPEN_CAP", 60));
+      for (const f of open) client.didOpen(f, langIdForPath(f, "typescript"));
+    },
+  }),
+  // Python via pyright-langserver (Microsoft's type checker / LSP). Same model: npm dep → auto-installed,
+  // launched as `node <langserver.index.js> --stdio`; override via VTS_PY_CMD/ARGS. Pyright analyzes on
+  // open + walks imports; warm-up opens the top-N likely-query files; workspace/symbol answers project-wide.
+  pyright: nodeLspBackend(PY_BIN, env("VTS_PY_CMD"), "pyright-langserver", "VTS_PY_ARGS", {
+    detect: (root) => exists(root, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile") || !!findShallow(root, /\.py$/, 1),
+    afterInit: async (client, root) => {
+      const files = findAllShallow(root, /\.pyi?$/i, 3);
+      const open = orderForWarm(root, files, envInt("VTS_PY_OPEN_CAP", 60));
+      for (const f of open) client.didOpen(f, "python");
+    },
+  }),
 };
 
-// Auto-pick a backend from what's in the project root (C++ compile-db/uproject → clangd; .sln/.csproj → roslyn).
+// Auto-pick a backend from what's in the project root. Order = strongest signal first: a C++ compile
+// database / uproject (clangd) and a .sln/.csproj (roslyn) are unambiguous build artifacts, so they win
+// over the weaker JS/Python markers (a package.json or stray *.py shows up in many repos). Disambiguate
+// explicitly with VTS_BACKEND / backend=… when a root carries more than one.
 export function pickBackend(root) {
-  for (const name of ["clangd", "roslyn"]) {
+  for (const name of ["clangd", "roslyn", "typescript", "pyright"]) {
     try { if (BACKENDS[name].detect(root)) return name; } catch { /* ignore */ }
   }
   return "";
