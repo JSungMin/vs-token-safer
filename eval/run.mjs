@@ -256,6 +256,11 @@ const parseRw = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutp
 const hFind = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "find . -name *.cpp" } }));
 const hGitGrep = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git grep SpawnActor" } }));
 const hDotted = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo.Bar src/Thing.cpp" } })); // dotted → literal text
+// Quote-aware splitting (self-improve round): a quoted alternation / anchored pattern — the top bypass
+// shapes `vts discover` surfaced — is ONE segment now, and the regex-safe gate lets it rewrite to
+// search_text (which takes a regex). A REAL pipe (outside quotes) still splits → still blocks.
+const hAlt = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'grep -rn "FooA|FooB" src/Thing.cpp' } }));
+const hAnchor = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'grep -rn "^#include" src/Thing.cpp' } }));
 const hComplex = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn 'a b' src/Thing.cpp" } }); // space → unsafe → block
 const hPipe = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp | head" } }); // pipeline → block
 const hExcluded = runHook({ tool_name: "Bash", tool_input: { command: "rg Foo src/Thing.cpp" } }, { VTS_EXCLUDE_COMMANDS: "rg" });
@@ -263,6 +268,8 @@ const rewriteOk =
   /cli\.js" files --q "\*\.cpp"/.test(hFind.updatedInput?.command || "") &&
   /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep.updatedInput?.command || "") &&  // git grep identifier → symbol
   /cli\.js" text --q "Foo\.Bar"/.test(hDotted.updatedInput?.command || "") &&        // dotted literal → text
+  /cli\.js" text --q "FooA\|FooB"/.test(hAlt.updatedInput?.command || "") &&         // quoted alternation → text (regex)
+  /cli\.js" text --q "\^#include"/.test(hAnchor.updatedInput?.command || "") &&      // quoted anchor → text (regex)
   hComplex.status === 2 && /Blocked/.test(hComplex.err) &&
   hPipe.status === 2 &&
   hExcluded.status === 0 && !/Blocked/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
@@ -477,6 +484,10 @@ const transcript = [
   { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "many matches\n".repeat(100) }] } },
   { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "grep Error Saved/Logs/run.log" } }] } }, // log → NOT counted
   { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu3", content: "log lines\n".repeat(50) }] } },
+  // quoted alternation — the naive splitter dissolved this into two non-matching halves and discover
+  // MISSED it; the shared quote-aware splitter must count it as one bypassed grep.
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: 'grep -rn "QAlpha|QBeta" src/Quoted.cpp' } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu4", content: "src/Quoted.cpp:3:QAlpha\n".repeat(40) }] } },
 ].map((e) => JSON.stringify(e)).join("\n");
 fs.writeFileSync(path.join(projDir, "session.jsonl"), transcript);
 process.env.VTS_CLAUDE_PROJECTS = projRoot;
@@ -485,9 +496,9 @@ const disc = await runTool("vts_discover", { all: true, learn: true, projectPath
 delete process.env.VTS_CLAUDE_PROJECTS;
 const qhAfter = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
 const discoverOk =
-  !disc.isError && /2 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep, NOT the log grep
-  /grep×1/.test(disc.text) && /Grep×1/.test(disc.text) &&
-  /SpawnActor/.test(disc.text) &&
+  !disc.isError && /3 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep + quoted-pipe grep; NOT the log grep
+  /grep×2/.test(disc.text) && /Grep×1/.test(disc.text) &&
+  /SpawnActor/.test(disc.text) && /QAlpha\|QBeta/.test(disc.text) && // quote-aware: counted, not dissolved
   /catch-rate:/.test(disc.text) &&                  // synergy C: caught-vs-bypassing
   /learned \d+ file\(s\) into the warm-set/.test(disc.text) && // synergy B: learn line
   /foo\.cpp/i.test(qhAfter);                        // src/Foo.cpp from the grep result → query-history
@@ -501,6 +512,39 @@ fs.writeFileSync(path.join(nobeDir, "notes.txt"), "nothing indexable here\n"); /
 const noBe = await runTool("search_symbol", { q: "Anything", projectPath: nobeDir }); // backend unresolved
 const symbolNoBackendOk = !noBe.isError && /No backend resolved/.test(noBe.text); // graceful, not an error
 try { fs.rmSync(nobeDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 32) self-improve round: (a) the Grep-tool nudge carries a READY-TO-USE equivalent call (identifier →
+// search_symbol, regex → search_text) since the hook can't reroute a Grep call to an MCP tool; (b)
+// autoLearn() — the boot-time hook — harvests bypassed-search result files into the warm-set with no
+// human in the loop (same write as discover --learn).
+const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutput?.additionalContext || ""; } catch { return ""; } };
+const nIdent = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }));
+const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
+const nudgeOk =
+  /search_symbol q="Foo"/.test(nIdent) &&   // identifier → semantic suggestion
+  /search_text q="FooA\|FooB"/.test(nRegex); // regex → text suggestion
+const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
+fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
+fs.writeFileSync(path.join(alRoot, "P--x", "s.jsonl"), [
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "al1", name: "Bash", input: { command: "grep -rn Widget src/Gear.cpp" } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "al1", content: "src/Gear.cpp:7:Widget\n" }] } },
+].map((e) => JSON.stringify(e)).join("\n"));
+const { autoLearn } = await import("../server/core.js");
+process.env.VTS_CLAUDE_PROJECTS = alRoot;
+const alCount = autoLearn("/proj/alroot", 7);
+delete process.env.VTS_CLAUDE_PROJECTS;
+const qhAl = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
+const autoLearnOk = alCount > 0 && /gear\.cpp/i.test(qhAl); // harvested file landed in query-history
+try { fs.rmSync(alRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const selfImproveOk = nudgeOk && autoLearnOk;
+
+// 33) round-2 self-improve: (a) an LSP result the formatter would cap ("… N more") tees the FULL set —
+// `big` (guard 3) returned 1000 symbols against maxResults 60, so its header must reference a tee file;
+// (b) the savings ledger now aggregates per tool, so the report shows where the win comes from.
+const lspTeeOk = /written to .*search_symbol/.test(big.text) && /… 940 more/.test(big.text); // tee + cap coexist
+const svTool = await runTool("vts_savings", {});
+const perToolOk = !svTool.isError && /by tool: .*search_symbol ~[\d,]+ \(\d+\)/.test(svTool.text);
+const round2Ok = lspTeeOk && perToolOk;
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -542,6 +586,8 @@ const rows = [
   ["tee: truncated result written to recovery file", teeOk, "true", teeOk],
   ["discover: bypassed searches + catch-rate + learn (synergy B/C)", discoverOk, "true", discoverOk],
   ["synergy A: search_symbol no-backend → text (no hard error)", symbolNoBackendOk, "true", symbolNoBackendOk],
+  ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
+  ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

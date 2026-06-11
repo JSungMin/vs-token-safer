@@ -10,7 +10,7 @@
  * dispose clients on shutdown so no language-server child is left running.
  */
 import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from "./sdk.js";
-import { runTool, disposeClients, prewarm, PROJECT_PATH, BACKEND, PREWARM_BACKENDS } from "./core.js";
+import { runTool, disposeClients, prewarm, autoLearn, PROJECT_PATH, BACKEND, PREWARM_BACKENDS } from "./core.js";
 import { pickBackend } from "./backends/index.js";
 import { prewarmBackends } from "./warmset.js";
 
@@ -235,4 +235,17 @@ if (PROJECT_PATH && envBool("VTS_PREWARM", true)) {
       (e) => log(`pre-warm failed (${backend}): ${e.message}`),
     );
   }
+}
+
+// Boot-time self-improvement (VTS_AUTO_LEARN, default on when projectPath is set): harvest the files
+// that recent BYPASSED code searches actually hit (local transcript scan, bounded, read-only) into the
+// warm-set query-history — the same write `vts discover --learn` does, with no human in the loop. The
+// next warm-up front-loads what past sessions really searched for. Deferred so boot/prewarm goes first.
+if (PROJECT_PATH && envBool("VTS_AUTO_LEARN", true)) {
+  setTimeout(() => {
+    try {
+      const n = autoLearn(PROJECT_PATH, 7);
+      if (n) log(`auto-learn: ${n} file(s) from recent bypassed searches → warm-set for ${PROJECT_PATH}.`);
+    } catch { /* best-effort — never disturb the server */ }
+  }, 3000).unref?.();
 }
