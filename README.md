@@ -113,10 +113,14 @@ instead of grep:
 ### Commands & tools
 - `/vs-token-safer:setup` — configure the plugin (see [Setup](#setup--configuration-command)).
 - `/vs-token-safer:savings` — show cumulative token savings.
-- MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `vts_warmup`,
-  `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`.
-- CLI (`vts`): `symbol`, `references`, `definition`, `warmup`, `setup`, `config`, `savings`,
-  `savings-reset`.
+- MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `hover`,
+  `document_symbols`, `find_files`, `search_text`, `vts_warmup`, `vts_setup`, `vts_config`, `vts_savings`,
+  `vts_savings_reset`. `find_files` and `search_text` are the token-capped stand-ins for `find -name`
+  and `grep` when you genuinely need a filename or raw text rather than a symbol.
+- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `files`, `text`, `warmup`,
+  `setup`, `config`, `savings`, `savings-reset`.
+- Or hand a whole "where is X / what calls Y / find file W" lookup to the `code-locator` subagent. It
+  does the searching in its own context and gives you back only the `file:line` table.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame
@@ -395,6 +399,10 @@ generated automatically. The badge at the top always points at the latest. Highl
   remote index (`VTS_CLANGD_REMOTE`).
 - **v0.4.0** — warm-up ordering extended with working-now (`git status` / `p4 opened`) and include
   centrality; gamedev-log-analyzer 0.10.1.
+- **v0.5.0** — README and community files brought up to a mature-repo standard (badges, env table,
+  troubleshooting, version history).
+- **v0.6.0** — adaptive include-centrality: prefix reads, a per-warm-up time budget, and a persistent
+  include-graph cache that grows coverage across warm-ups instead of skipping big modules.
 
 ## Contributing
 
