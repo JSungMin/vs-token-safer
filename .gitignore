@@ -1,6 +1,7 @@
 node_modules/
 **/node_modules/
 .omc/
+.claude/
 *.log
 .DS_Store
 # local token-savings ledger + throwaway test artifacts

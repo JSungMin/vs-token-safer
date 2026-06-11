@@ -425,6 +425,10 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
   안내); LSP 버퍼 신선도(warm-up 후 디스크에서 바뀐 파일을 `didChange`/`didClose`로 갱신, stale 버퍼로
   답하지 않음)와 LSP 스펙 적합성 강화(서버요청 응답, 타임아웃 시 `$/cancelRequest`, capability 선언).
   `scripts/sync-gamedev.mjs`로 동봉 플러그인 버전 드리프트 방지.
+- **v0.12.0** — `compile_commands.json` 없는 C++ 프로젝트도 조용한 빈 결과 대신: clangd가 DB 생성법을
+  안내하고, `search_symbol`은 리터럴 텍스트 검색으로 폴백하며, `vts_setup`이 미리 경고합니다. 새
+  `vts_gen_compile_db`가 UBT `GenerateClangDatabase` 명령을 구성(옵션으로 실행)합니다 — 풀 semantic
+  clangd와 경량 no-DB 모드 사이의 선택권.
 
 ## 기여
 
