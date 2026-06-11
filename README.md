@@ -163,7 +163,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (34/34 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (36/36 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -287,7 +287,11 @@ index without one. The plugin doesn't fail silently or leave you at a dead end:
    derives the `<Name>Editor` target, locates the engine (`VTS_UE_ROOT`, an `engineRoot` arg, or a
    walk-up from the project), and adds `-Compiler=VisualCpp` for clang-cl targets. **Dry-run by
    default** — it prints the command and runs nothing. Pass `apply=true` and it runs UBT (takes a few
-   minutes), then copies the resulting DB to the project root where clangd looks.
+   minutes), then copies the resulting DB to the project root where clangd looks. It also keeps the DB
+   out of version control: `compile_commands.json` and clangd's `.cache/` are appended to your
+   `.gitignore` (or an existing `P4IGNORE` file — found by walking up to the depot root; if that file is
+   versioned and read-only, you get the exact lines to add after `p4 edit`), and the stray engine-root
+   copy is removed once the DB lives at the project root.
 4. Restart the MCP server (or rerun the query) and `search_symbol` / `find_references` /
    `goto_definition` answer semantically from the full engine index.
 

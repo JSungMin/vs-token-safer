@@ -157,7 +157,7 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
   줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
   캡해서 반환합니다.
 - 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 34/34).
+  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 36/36).
 
 ### 정확도 차이와 그 이유
 "누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
@@ -275,7 +275,10 @@ clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:
    인자, 또는 프로젝트에서 상위로 거슬러 올라가며 탐색), clang-cl로 빌드하는 타깃이면
    `-Compiler=VisualCpp`를 덧붙입니다. 기본 동작은 dry-run이라 명령만 출력하고 아무것도 실행하지
    않습니다. `apply=true`를 주면 그제야 UBT를 돌리고(몇 분 걸립니다), 만들어진 DB를 clangd가 들여다보는
-   프로젝트 루트로 복사합니다.
+   프로젝트 루트로 복사합니다. 생성된 DB가 버전 관리에 올라가는 일도 막아 줍니다.
+   `compile_commands.json`과 clangd의 `.cache/`를 `.gitignore`에 넣어 주고(`P4IGNORE` 파일은 depot
+   루트까지 거슬러 올라가며 찾되, 버전 관리 중이라 읽기 전용이면 `p4 edit` 후 넣을 줄을 그대로
+   알려줍니다), 프로젝트 루트로 복사가 끝난 엔진 루트 쪽 사본은 지워서 떠돌이 파일을 남기지 않습니다.
 4. 이후 MCP 서버를 재시작하거나 쿼리를 다시 실행하면 `search_symbol`, `find_references`,
    `goto_definition`이 엔진 전체 인덱스를 바탕으로 의미 기반 답을 돌려줍니다.
 
