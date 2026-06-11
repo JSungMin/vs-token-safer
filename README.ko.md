@@ -404,6 +404,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 - **v0.7.0** — Rider 형제와 내비게이션 패리티: `hover`, `document_symbols`, `find_files`,
   `search_text`, 컨텍스트 격리형 `code-locator` 서브에이전트 — 그리고 `rename`(기본은 미리보기,
   `apply=true`일 때만 기록하는 의미 기반 프로젝트 전역 이름 변경).
+- **v0.8.0** — 백엔드 두 개 추가: **JS/TS**(typescript-language-server)와 **Python**(pyright). 둘 다
+  플러그인 의존성으로 동봉되어 자동 설치됩니다. 이제 vts가 자기 소스도 검색할 수 있어, 개발하면서 직접
+  dogfood합니다.
 
 ## 기여
 
