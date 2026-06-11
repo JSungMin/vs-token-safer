@@ -25,7 +25,8 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - `server/backends/index.js` — clangd/roslyn spawn configs + `pickBackend(root)`. Override via
   `VTS_CLANGD_CMD/ARGS`, `VTS_ROSLYN_CMD/ARGS`.
 - `server/core.js` — `runTool()` dispatch, token-cap formatters, savings ledger. Tools: `search_symbol`,
-  `find_references`, `goto_definition`, `hover`, `document_symbols` (LSP); `find_files`, `search_text`
+  `find_references`, `goto_definition`, `hover`, `document_symbols`, `rename` (LSP; rename = preview by
+  default, `apply=true` writes — the only mutating tool); `find_files`, `search_text`
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings`, `vts_savings_reset`.
 - `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).

@@ -194,6 +194,26 @@ function scanTextUnder(root, q, max) {
   }
   return out;
 }
+// A LSP WorkspaceEdit comes back as `changes: {uri: TextEdit[]}` and/or `documentChanges: [{textDocument,edits}]`.
+// Collapse both shapes into Map<absPath, TextEdit[]>.
+function editsByFile(we) {
+  const m = new Map();
+  const add = (uri, edits) => { const p = fromUri(uri); m.set(p, (m.get(p) || []).concat(edits || [])); };
+  if (we && we.changes) for (const [uri, edits] of Object.entries(we.changes)) add(uri, edits);
+  if (we && Array.isArray(we.documentChanges)) for (const dc of we.documentChanges) if (dc && dc.textDocument && dc.edits) add(dc.textDocument.uri, dc.edits);
+  return m;
+}
+// Apply TextEdits to file text. Edits are non-overlapping (LSP guarantee); apply back-to-front by offset
+// so earlier offsets stay valid. LSP positions are UTF-16; fine for source code.
+function applyEditsToText(text, edits) {
+  const lineStart = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === "\n") lineStart.push(i + 1);
+  const off = (p) => (lineStart[p.line] !== undefined ? lineStart[p.line] : text.length) + p.character;
+  const sorted = [...edits].sort((a, b) => off(b.range.start) - off(a.range.start));
+  let out = text;
+  for (const e of sorted) out = out.slice(0, off(e.range.start)) + e.newText + out.slice(off(e.range.end));
+  return out;
+}
 
 // ---- single dispatcher (async) ----
 export async function runTool(name, a = {}) {
@@ -284,6 +304,27 @@ export async function runTool(name, a = {}) {
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
       return finishOut(syms, backendAdvisory(backendName) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max, a.path.replace(/\\/g, "/")));
+    }
+    if (name === "rename") {
+      if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");
+      const c = await getClient(root, backendName);
+      c.didOpen(a.path, lang);
+      const we = await c.rename(a.path, Number(a.line), Number(a.character), String(a.newName));
+      const m = editsByFile(we);
+      const total = [...m.values()].reduce((n, e) => n + e.length, 0);
+      if (!total) return finishOut(we || {}, `rename: no edits — the symbol at ${a.path}:${Number(a.line) + 1} may not be renameable (backend: ${backendName}).`);
+      const rows = [];
+      for (const [p, edits] of m) for (const e of edits) rows.push(`${p.replace(/\\/g, "/")}:${e.range.start.line + 1}`);
+      const shown = rows.slice(0, max).join("\n") + (rows.length > max ? `\n… ${rows.length - max} more.` : "");
+      const apply = a.apply === true || a.apply === "true";
+      if (!apply) return finishOut(we, `rename → "${a.newName}" — PREVIEW: ${total} edit(s) across ${m.size} file(s). Pass apply=true to write. Affected:\n${shown}`);
+      let written = 0; const failed = [];
+      for (const [p, edits] of m) {
+        try { fs.writeFileSync(p, applyEditsToText(fs.readFileSync(p, "utf8"), edits)); written++; }
+        catch (e) { failed.push(`${p.replace(/\\/g, "/")} (${e.code || e.message})`); }
+      }
+      const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first): ${failed.slice(0, 5).join("; ")}` : "";
+      return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${note}\n${shown}`);
     }
     return err(`Unknown tool: ${name}`);
   } catch (e) {

@@ -153,6 +153,7 @@ export class LspClient {
           definition: { dynamicRegistration: false },
           hover: { contentFormat: ["plaintext", "markdown"] },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+          rename: { dynamicRegistration: false, prepareSupport: false },
         },
       },
     });
@@ -182,6 +183,13 @@ export class LspClient {
   documentSymbol(uriOrPath) {
     return this.request("textDocument/documentSymbol", {
       textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+    });
+  }
+  rename(uriOrPath, line, character, newName) {
+    return this.request("textDocument/rename", {
+      textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+      position: { line, character },
+      newName,
     });
   }
   async shutdown() {

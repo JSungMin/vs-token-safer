@@ -114,11 +114,12 @@ instead of grep:
 - `/vs-token-safer:setup` — configure the plugin (see [Setup](#setup--configuration-command)).
 - `/vs-token-safer:savings` — show cumulative token savings.
 - MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `hover`,
-  `document_symbols`, `find_files`, `search_text`, `vts_warmup`, `vts_setup`, `vts_config`, `vts_savings`,
-  `vts_savings_reset`. `find_files` and `search_text` are the token-capped stand-ins for `find -name`
-  and `grep` when you genuinely need a filename or raw text rather than a symbol.
-- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `files`, `text`, `warmup`,
-  `setup`, `config`, `savings`, `savings-reset`.
+  `document_symbols`, `rename`, `find_files`, `search_text`, `vts_warmup`, `vts_setup`, `vts_config`,
+  `vts_savings`, `vts_savings_reset`. `find_files` and `search_text` are the token-capped stand-ins for
+  `find -name` and `grep` when you genuinely need a filename or raw text rather than a symbol. `rename`
+  is a semantic, project-wide rename: preview by default, `apply=true` to write the edits.
+- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`,
+  `warmup`, `setup`, `config`, `savings`, `savings-reset`.
 - Or hand a whole "where is X / what calls Y / find file W" lookup to the `code-locator` subagent. It
   does the searching in its own context and gives you back only the `file:line` table.
 

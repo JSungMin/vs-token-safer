@@ -136,6 +136,18 @@ const searchTextOk = !st.isError && /NEEDLE_TOKEN/.test(st.text) && /Widget\.cpp
 try { fs.rmSync(tdir, { recursive: true, force: true }); } catch { /* ignore */ }
 const newToolsOk = hoverOk && docSymOk && findFilesOk && searchTextOk;
 
+// 13) rename — preview returns affected file:line and does NOT write; apply writes the edit to disk.
+const rdir = path.join(os.tmpdir(), `vts-rename-${process.pid}`);
+fs.mkdirSync(rdir, { recursive: true });
+const rfile = path.join(rdir, "r.cpp");
+fs.writeFileSync(rfile, "abcXYZ rest\n"); // mock replaces [0,0]-[0,3] ("abc") with newName
+const rp = await runTool("rename", { path: rfile, line: 0, character: 0, newName: "NEW", backend: "clangd" });
+const renamePreviewOk = !rp.isError && /PREVIEW/.test(rp.text) && /r\.cpp:1/.test(rp.text) && fs.readFileSync(rfile, "utf8").startsWith("abc");
+const ra = await runTool("rename", { path: rfile, line: 0, character: 0, newName: "NEW", backend: "clangd", apply: true });
+const renameApplyOk = !ra.isError && /APPLIED/.test(ra.text) && fs.readFileSync(rfile, "utf8").startsWith("NEW");
+try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
+const renameOk = renamePreviewOk && renameApplyOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -154,6 +166,7 @@ const rows = [
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
   ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
   ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
+  ["rename preview + apply", renameOk, "true", renameOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

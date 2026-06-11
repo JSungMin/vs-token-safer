@@ -14,6 +14,7 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 - Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based).
 - Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
 - Outline a file (its classes/functions) → `document_symbols`  (args: `path`).
+- Rename a symbol project-wide → `rename`  (args: `path`, `line`, `character`, `newName`, `apply`). Semantic (every reference), not a `sed`. Preview by default; `apply=true` writes the edits.
 - Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
 - File by name (substring or glob) → `find_files`  (args: `q`, `projectPath`). Replaces `find -name`.
 - Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`. Pre-warm → `vts_warmup`.
