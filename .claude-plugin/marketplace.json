@@ -17,7 +17,7 @@
     {
       "name": "gamedev-log-analyzer",
       "source": "./gamedev-log-analyzer",
-      "version": "0.10.3",
+      "version": "0.10.5",
       "category": "development",
       "description": "Token-efficient game-engine & build log analysis (Unreal/Unity/Godot/MSVC-UBT-MSBuild + JSONL traces), CLI-first: parse, dedup, classify, diff runs, locate file:line, and extract decisive scalar fields over a time window. Also on npm. No IDE required."
     }
