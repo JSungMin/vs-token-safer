@@ -489,6 +489,13 @@ generated automatically. The badge at the top always points at the latest. Highl
   them next time; and `discover` reports a **catch-rate** (tokens caught by vts vs still bypassing). Also:
   `document_symbols` hides outline noise (anonymous callbacks / nested locals) and truncated sweeps are
   flagged, never silently capped.
+- **v0.14.0** — the self-improvement loop now runs unattended: at boot the server harvests the files that
+  recent bypassed searches actually hit into the warm-up set (`VTS_AUTO_LEARN`, local and read-only).
+  Quote-aware command parsing closes the biggest rewrite gap — `grep "FooA|FooB"` and `grep "^#include"`
+  reroute to the regex-capable `search_text` instead of slipping past the hook (a real pipe still blocks),
+  and `vts discover` uses the same parser, so the meter counts exactly what enforcement sees. The Grep-tool
+  nudge now carries a ready-to-use equivalent call; a capped `search_symbol`/`find_references` writes its
+  full row set to a recovery file; `vts savings` breaks the win down per tool.
 
 ## Contributing
 
