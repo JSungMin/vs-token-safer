@@ -4,8 +4,11 @@
  *
  * Steers code search toward the language-server index (vs-search MCP) instead of text search, and steers
  * LOG analysis toward gamedev-log. Three vectors:
- *   - Bash: grep/rg/ack/ag/findstr (or `find -name`) over C/C++/C#/JS/TS/Py source → BLOCKED by default
- *     (exit 2); VTS_ENFORCE=0 disables. Raw non-code text (md, json, config) passes.
+ *   - Bash: grep/rg/ack/ag/findstr/`git grep` (or `find -name`) over C/C++/C#/JS/TS/Py source → first
+ *     REWRITTEN to the equivalent vts CLI (token-capped) via updatedInput when the command is a single
+ *     safe segment; otherwise BLOCKED (exit 2). VTS_REWRITE=0 → block instead of rewrite; VTS_ENFORCE=0
+ *     disables both; per-command opt-out via excludeCommands (config) / VTS_EXCLUDE_COMMANDS. Raw non-code
+ *     text (md, json, config) passes.
  *   - Grep TOOL (built-in): the model's reflexive code search lives here, not Bash — so a Bash-only hook
  *     never fired where the habit is. The Grep branch nudges too, but is **warn-ONLY, never block**: Grep
  *     is the sanctioned fallback (and the right call on a just-edited/unindexed file), so blocking it would
@@ -24,10 +27,30 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
+const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
 const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
 const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
+
+// #5 excludeCommands — finer than the global VTS_ENFORCE=0 kill switch: a code-grep whose executable is in
+// this list is left alone (no block, no rewrite). Sources: config.json `excludeCommands` (array) +
+// VTS_EXCLUDE_COMMANDS (csv). Keyed by the bare executable name (grep/rg/find/findstr/git).
+function excludedCommands() {
+  const set = new Set();
+  const cfg = readConfig();
+  const list = Array.isArray(cfg.excludeCommands) ? cfg.excludeCommands : String(cfg.excludeCommands || "").split(",");
+  for (const c of list.concat(String(process.env.VTS_EXCLUDE_COMMANDS || "").split(","))) { const t = String(c).trim().toLowerCase(); if (t) set.add(t); }
+  return set;
+}
+
+// #1 rewrite — the project root vts should search when we transparently reroute a grep → vts CLI.
+const rewriteRoot = () => process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
+// Absolute path to the bundled CLI (../server/cli.js relative to this hook) — `vts` may not be on PATH, so
+// the rewrite runs it via `node "<cli.js>"`, which is always available.
+const CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "server", "cli.js");
+const rewriteOff = () => /^(0|false|off|no)$/i.test(String(process.env.VTS_REWRITE ?? "1"));
 
 const SEARCH_EXECS = new Set(["grep", "rg", "ack", "ag", "findstr"]);
 // ripgrep --type aliases for the languages we index (the Grep tool's `type` param forwards to rg).
@@ -49,20 +72,90 @@ function execOf(segment) {
   return exec.replace(/^.*[\\/]/, "").replace(/\.(exe|bat|cmd|ps1)$/, ""); // basename, strip win ext
 }
 
+// `git grep` is inherently a repo CODE search (it scans tracked source by default), so it warrants the
+// same steer even with no explicit code path/ext — unlike a bare `grep` over the cwd.
+function isGitGrepSegment(segment) {
+  return execOf(segment) === "git" && /(^|\s)git\s+grep(\s|$)/i.test(segment);
+}
+
 function isSearchSegment(segment) {
   const exec = execOf(segment);
-  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-name(\s|$)/.test(segment.toLowerCase()));
+  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
 }
 
 function isCodeSearchSegment(segment) {
   if (!isSearchSegment(segment)) return false;
   const s = segment.toLowerCase();
-  const codeExt = CODE_EXT_RE.test(s);
-  const codeDir = CODE_DIR_RE.test(s);
   const textTarget =
     TEXT_TARGET_RE.test(s) ||
     /(^|[\s"'/\\])(logs?|build|intermediate|saved|node_modules|\.git)[\\/]/.test(s);
+  // git grep defaults to searching tracked code → block unless it explicitly targets a text/log path.
+  if (isGitGrepSegment(segment)) return !textTarget;
+  const codeExt = CODE_EXT_RE.test(s);
+  const codeDir = CODE_DIR_RE.test(s);
   return (codeExt || codeDir) && !textTarget;
+}
+
+// The executable key used for excludeCommands matching (git grep → "git").
+const excludeKeyOf = (segment) => execOf(segment);
+
+// #1 Build a vts CLI rewrite for a SINGLE code-search segment, or null if anything is ambiguous (caller
+// then falls back to blocking — never a wrong rewrite). Conservative on purpose: only the common shape
+// `<grep> [bool-flags] PATTERN [paths]` / `find … -name GLOB`, and only a shell-safe literal pattern.
+const VALUE_FLAG_LETTERS = /[efmABCDd]/; // short flags that consume a value (-e PATTERN, -m N, -A N …)
+function extractGrepPattern(segment, isGit) {
+  const toks = segment.trim().split(/\s+/);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // FOO=bar prefixes
+  i++; // the executable (grep/rg/ack/ag/git)
+  if (isGit) { if (toks[i] !== "grep") return null; i++; } // `git grep …`
+  for (; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === "--") return null;                 // explicit option terminator — bail (pathspec ambiguity)
+    if (t.startsWith("--")) return null;          // unknown long option — bail (may consume a value)
+    if (t.startsWith("-")) {
+      if (VALUE_FLAG_LETTERS.test(t)) return null; // value-taking short flag — pattern position unclear
+      continue;                                    // boolean short flag cluster (-rn, -i, …)
+    }
+    return t;                                       // first bare token = PATTERN (grep puts it before files)
+  }
+  return null;
+}
+function extractFindName(segment) {
+  const m = segment.match(/\s-name\s+("([^"]+)"|'([^']+)'|(\S+))/);
+  return m ? (m[2] || m[3] || m[4] || "") : null;
+}
+const SAFE_TEXT = /^[A-Za-z0-9_.:-]+$/;     // shell-safe literal (no quoting needed; valid literal regex)
+const SAFE_GLOB = /^[A-Za-z0-9_.*?-]+$/;    // filename glob
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;   // a bare identifier → route to semantic search_symbol (synergy A)
+const quote = (s) => `"${s}"`;
+// A grep PATTERN → vts command. A bare identifier goes to `vts symbol` (semantic — search_symbol now
+// degrades to literal text when no backend resolves, so this is always safe); a dotted/scoped literal goes
+// to `vts text`. The rewrite thus delivers the BEST engine for the query, not just a grep-equivalent.
+function rewriteForPattern(root, pat) {
+  if (IDENT.test(pat)) return { cmd: `node ${quote(CLI_PATH)} symbol --q ${quote(pat)} --projectPath ${quote(root)}`, tool: "search_symbol", q: pat };
+  if (SAFE_TEXT.test(pat)) return { cmd: `node ${quote(CLI_PATH)} text --q ${quote(pat)} --projectPath ${quote(root)}`, tool: "search_text", q: pat };
+  return null;
+}
+function buildRewrite(segment) {
+  const exec = execOf(segment);
+  const root = rewriteRoot();
+  if (/["\r\n]/.test(root)) return null; // a root with a quote/newline would break shell quoting → block instead
+  if (exec === "find") {
+    const glob = extractFindName(segment);
+    if (!glob || !SAFE_GLOB.test(glob)) return null;
+    return { cmd: `node ${quote(CLI_PATH)} files --q ${quote(glob)} --projectPath ${quote(root)}`, tool: "find_files", q: glob };
+  }
+  const isGit = exec === "git";
+  if (!isGit && !SEARCH_EXECS.has(exec)) return null;
+  if (exec === "findstr") {
+    // findstr flags start with `/`; pattern is the first token that isn't a `/flag`.
+    const toks = segment.trim().split(/\s+/).slice(1);
+    const pat = toks.find((t) => !t.startsWith("/"));
+    return pat ? rewriteForPattern(root, pat) : null;
+  }
+  const pat = extractGrepPattern(segment, isGit);
+  return pat ? rewriteForPattern(root, pat) : null;
 }
 
 // A search segment whose target is a LOG (steer to gamedev-log; never blocked).
@@ -152,12 +245,38 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
 
-  // Bash — code-grep is blocked (vts default); a log-targeted search is steered (warn) but allowed.
+  // Bash — code-grep is rewritten to the vts CLI (token-capped) when safe, else blocked (vts default); a
+  // log-targeted search is steered (warn) but allowed.
   const cmd = ti.command || "";
   if (!cmd) process.exit(0);
   const segments = cmd.split(/\|\||&&|[|;&\n]/g).filter((s) => s.trim());
 
-  if (segments.some(isCodeSearchSegment)) {
+  // #5 honor excludeCommands — drop excluded execs from enforcement.
+  const excluded = excludedCommands();
+  const codeSegs = segments.filter((s) => isCodeSearchSegment(s) && !excluded.has(excludeKeyOf(s)));
+
+  if (codeSegs.length) {
+    // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build
+    // a safe vts equivalent, is rerouted via updatedInput — the model's flow is unbroken AND the output is
+    // guaranteed token-capped. Anything ambiguous (pipelines, complex patterns) falls back to the block.
+    if (!rewriteOff() && segments.length === 1 && codeSegs.length === 1) {
+      const rw = buildRewrite(codeSegs[0]);
+      if (rw) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: `Rerouted code search → vts ${rw.tool} (language-server-grade, token-capped to file:line).`,
+            updatedInput: { ...ti, command: rw.cmd },
+            additionalContext:
+              `[vs-token-safer] Rewrote your search → \`vts ${rw.tool}\` (q="${rw.q}"), token-capped to file:line. ` +
+              `For SYMBOLS (class/function/type) prefer the vs-search MCP search_symbol — semantic, not text. ` +
+              `Disable rewrite: VTS_REWRITE=0 (then it blocks instead). Disable entirely: VTS_ENFORCE=0.`,
+          },
+        }) + "\n");
+        process.exit(0);
+      }
+    }
     process.stderr.write(BLOCK_MSG + setup + "\n");
     process.exit(2); // block
   }

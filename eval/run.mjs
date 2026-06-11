@@ -18,6 +18,10 @@ process.env.VTS_INCLUDE_GRAPH = IG;
 const CF = path.join(os.tmpdir(), `vts-eval-cfg-${process.pid}.json`); // isolate the config file (vts_setup writes)
 process.env.VTS_CONFIG_FILE = CF;
 fs.writeFileSync(CF, "{}"); // start "configured" so the first-use setup nudge doesn't prefix other tests
+const SV = path.join(os.tmpdir(), `vts-eval-sv-${process.pid}.json`); // isolate the savings ledger (recordSavings writes)
+process.env.VTS_SAVINGS_FILE = SV;
+const TEE = path.join(os.tmpdir(), `vts-eval-tee-${process.pid}`); // isolate the tee dir
+process.env.VTS_TEE_DIR = TEE;
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -224,19 +228,44 @@ try { fs.rmSync(logRoot, { recursive: true, force: true }); } catch { /* ignore 
 // Grep tool on code WARNS+allows. Runs the actual hook as a child with JSON stdin.
 const { spawnSync } = await import("node:child_process");
 const hookPath = new URL("../hooks/block-code-grep.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const runHook = (payload) => {
-  const r = spawnSync(process.execPath, [hookPath], { input: JSON.stringify(payload), encoding: "utf8" });
+const runHook = (payload, env) => {
+  const r = spawnSync(process.execPath, [hookPath], { input: JSON.stringify(payload), encoding: "utf8", env: { ...process.env, ...(env || {}) } });
   return { status: r.status, out: r.stdout || "", err: r.stderr || "" };
 };
+// A single safe code-grep now REWRITES to the vts CLI (updatedInput), not blocks. A complex pattern / a
+// pipeline / VTS_REWRITE=0 falls back to the block.
 const hCode = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } });
+const hCodeBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0" });
 const hLog = runHook({ tool_name: "Bash", tool_input: { command: "grep Error Saved/Logs/run.log" } });
 const hGrep = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } });
 const hGrepLog = runHook({ tool_name: "Grep", tool_input: { pattern: "Error", path: "Saved/Logs" } }); // bare Logs dir
+let hCodeJson = {}; try { hCodeJson = JSON.parse(hCode.out || "{}"); } catch { /* ignore */ }
+const rwOut = hCodeJson.hookSpecificOutput || {};
 const hookOk =
-  hCode.status === 2 && /Blocked/.test(hCode.err) &&
+  hCode.status === 0 && rwOut.permissionDecision === "allow" &&
+  /cli\.js" symbol --q "Foo"/.test(rwOut.updatedInput?.command || "") && // identifier → semantic vts symbol (synergy A)
+  hCodeBlock.status === 2 && /Blocked/.test(hCodeBlock.err) &&         // VTS_REWRITE=0 → block fallback
   hLog.status === 0 && /gamedev-log/.test(hLog.out) &&
   hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
   hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
+
+// 17b) rewrite specifics: `find -name GLOB` → vts files; `git grep PATTERN` → vts text (single safe seg);
+// a complex (non-literal) pattern falls back to block; a pipeline falls back to block; excludeCommands
+// lets an exec through untouched.
+const parseRw = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutput || {}; } catch { return {}; } };
+const hFind = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "find . -name *.cpp" } }));
+const hGitGrep = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git grep SpawnActor" } }));
+const hDotted = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo.Bar src/Thing.cpp" } })); // dotted → literal text
+const hComplex = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn 'a b' src/Thing.cpp" } }); // space → unsafe → block
+const hPipe = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp | head" } }); // pipeline → block
+const hExcluded = runHook({ tool_name: "Bash", tool_input: { command: "rg Foo src/Thing.cpp" } }, { VTS_EXCLUDE_COMMANDS: "rg" });
+const rewriteOk =
+  /cli\.js" files --q "\*\.cpp"/.test(hFind.updatedInput?.command || "") &&
+  /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep.updatedInput?.command || "") &&  // git grep identifier → symbol
+  /cli\.js" text --q "Foo\.Bar"/.test(hDotted.updatedInput?.command || "") &&        // dotted literal → text
+  hComplex.status === 2 && /Blocked/.test(hComplex.err) &&
+  hPipe.status === 2 &&
+  hExcluded.status === 0 && !/Blocked/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
 
 // 18) search_text covers JS/TS/Py (scanTextUnder ext set, not just C/C++/C#), and search_symbol on a
 // typescript/pyright backend falls back to a literal text search when the index returns nothing (a
@@ -297,7 +326,8 @@ try { fs.rmSync(setupDir, { recursive: true, force: true }); } catch { /* ignore
 // and the hook appends one to its block. Delete the isolated config to simulate an unconfigured install.
 try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
 const fnNudge = await runTool("find_files", { q: "no_such", projectPath: os.tmpdir() });
-const hNudge = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }); // CF gone → setup line
+// VTS_REWRITE=0 forces the block path (rewrite would exit 0 with no stderr) so the setup line is asserted.
+const hNudge = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0" }); // CF gone → setup line
 const setupNudgeOk =
   !fnNudge.isError && /isn't configured/.test(fnNudge.text) &&
   hNudge.status === 2 && /\/vs-token-safer:setup/.test(hNudge.err);
@@ -410,10 +440,74 @@ const truncOk =
   !ffExact.isError && !/capped/.test(ffExact.text) && /5 file/.test(ffExact.text); // exactly max → NOT a false "cap" (limit+1)
 try { fs.rmSync(capDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 28) savings upgrade — graph/daily/history breakdowns render + an estimated USD line. The ledger has runs
+// from the searches above (isolated to SV). Assert the new sections appear on request, not by default.
+const svPlain = await runTool("vts_savings", {});
+const svRich = await runTool("vts_savings", { graph: true, daily: true, history: true });
+const savingsUpgradeOk =
+  !svPlain.isError && /est\. value: ~\$/.test(svPlain.text) &&            // USD line always present
+  !/Saved tokens \/ day/.test(svPlain.text) &&                            // graph NOT shown by default
+  /Saved tokens \/ day \(last 30\)/.test(svRich.text) &&                  // --graph
+  /Daily \(last/.test(svRich.text) &&                                     // --daily
+  /Recent runs:/.test(svRich.text);                                       // --history
+
+// 29) tee-on-truncation — a truncated find_files/search_text writes the full set to a tee file and
+// references it; VTS_TEE=off suppresses it.
+const teeDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-teesrc`);
+fs.mkdirSync(teeDir, { recursive: true });
+for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(teeDir, `f${i}.cpp`), "NEEDLE\n");
+const teeRes = await runTool("find_files", { q: "*.cpp", projectPath: teeDir, maxResults: 2 }); // truncated → tee
+const teeMatch = (teeRes.text.match(/written to (\S+\.txt)/) || [])[1];
+const teeFileOk = !!teeMatch && fs.existsSync(teeMatch) && fs.readFileSync(teeMatch, "utf8").split(/\r?\n/).filter(Boolean).length === 6;
+process.env.VTS_TEE = "off";
+const teeOff = await runTool("find_files", { q: "*.cpp", projectPath: teeDir, maxResults: 2 });
+delete process.env.VTS_TEE;
+const teeOk = !teeRes.isError && /capped at 2/.test(teeRes.text) && teeFileOk && !/written to/.test(teeOff.text);
+try { fs.rmSync(teeDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 30) discover — scan a synthetic transcript for a code search that bypassed vts (Bash grep + Grep tool),
+// report the count + raw tokens spent. A non-code grep (a .log target) is NOT counted.
+const projRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-claudeproj`);
+const projDir = path.join(projRoot, "G--some--project");
+fs.mkdirSync(projDir, { recursive: true });
+const transcript = [
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "grep -rn SpawnActor src/Foo.cpp" } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "src/Foo.cpp:1:SpawnActor\n".repeat(200) }] } },
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu2", name: "Grep", input: { pattern: "Tick", glob: "*.cpp" } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "many matches\n".repeat(100) }] } },
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "grep Error Saved/Logs/run.log" } }] } }, // log → NOT counted
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu3", content: "log lines\n".repeat(50) }] } },
+].map((e) => JSON.stringify(e)).join("\n");
+fs.writeFileSync(path.join(projDir, "session.jsonl"), transcript);
+process.env.VTS_CLAUDE_PROJECTS = projRoot;
+const learnRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-learnroot`);
+const disc = await runTool("vts_discover", { all: true, learn: true, projectPath: learnRoot }); // synergy B+C
+delete process.env.VTS_CLAUDE_PROJECTS;
+const qhAfter = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
+const discoverOk =
+  !disc.isError && /2 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep, NOT the log grep
+  /grep×1/.test(disc.text) && /Grep×1/.test(disc.text) &&
+  /SpawnActor/.test(disc.text) &&
+  /catch-rate:/.test(disc.text) &&                  // synergy C: caught-vs-bypassing
+  /learned \d+ file\(s\) into the warm-set/.test(disc.text) && // synergy B: learn line
+  /foo\.cpp/i.test(qhAfter);                        // src/Foo.cpp from the grep result → query-history
+try { fs.rmSync(projRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 31) synergy A safety: search_symbol with NO backend resolved degrades to text (never a hard error), so
+// the grep-rewrite hook can always route an identifier to `vts symbol`.
+const nobeDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-nobe`);
+fs.mkdirSync(nobeDir, { recursive: true });
+fs.writeFileSync(path.join(nobeDir, "notes.txt"), "nothing indexable here\n"); // no backend marker, no code
+const noBe = await runTool("search_symbol", { q: "Anything", projectPath: nobeDir }); // backend unresolved
+const symbolNoBackendOk = !noBe.isError && /No backend resolved/.test(noBe.text); // graceful, not an error
+try { fs.rmSync(nobeDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
+try { fs.rmSync(SV, { force: true }); } catch { /* ignore */ }
+try { fs.rmSync(TEE, { recursive: true, force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -432,7 +526,8 @@ const rows = [
   ["rename preview + apply + multi-edit", renameOk, "true", renameOk],
   ["js/ts + python backends: detect + langId", multiLangOk, "true", multiLangOk],
   ["log steer + empty hint → gamedev-log", logSteerOk, "true", logSteerOk],
-  ["hook: block code / warn log+grep", hookOk, "true", hookOk],
+  ["hook: rewrite code-grep / warn log+grep", hookOk, "true", hookOk],
+  ["hook: rewrite find/git-grep, block complex/pipe, exclude", rewriteOk, "true", rewriteOk],
   ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
   ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
   ["vts_setup language census auto-config", setupOk, "true", setupOk],
@@ -443,6 +538,10 @@ const rows = [
   ["clangd no-compile-DB: advisory + text fallback", clangdNoDbOk, "true", clangdNoDbOk],
   ["vts_gen_compile_db dry-run (UBT command)", genDbOk, "true", genDbOk],
   ["no silent caps: find_files/search_text truncation note", truncOk, "true", truncOk],
+  ["savings: graph/daily/history + USD (RTK gain)", savingsUpgradeOk, "true", savingsUpgradeOk],
+  ["tee: truncated result written to recovery file", teeOk, "true", teeOk],
+  ["discover: bypassed searches + catch-rate + learn (synergy B/C)", discoverOk, "true", discoverOk],
+  ["synergy A: search_symbol no-backend → text (no hard error)", symbolNoBackendOk, "true", symbolNoBackendOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
