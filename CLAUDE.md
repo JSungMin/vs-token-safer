@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (20/20) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (24/24) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -21,7 +21,17 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   added under this name beyond C++/C# search.
 
 ## Layout
-- `server/lsp.js` — generic LSP client (JSON-RPC/stdio). The one new, careful piece.
+- `server/lsp.js` — generic LSP client (JSON-RPC/stdio). The one new, careful piece. `didOpen` is
+  open-or-refresh: first call → `didOpen(v1)`, a re-call on an already-open doc → `didChange` (bumped
+  version, current disk text) so a file changed after warm-up isn't answered from a stale buffer; a
+  since-deleted file → `didClose`. Position tools re-call `didOpen` before each query, so hover/goto/
+  outline/rename always re-read the file. The LSP engine keeps UNOPENED files fresh itself (clangd
+  file-watch + background re-index); our warmset caches self-invalidate (include-graph by mtime,
+  query-history by re-record; `_censusCache` is process-lifetime → restart/re-setup to refresh).
+  LSP-spec conformance: server→client requests get shape-correct replies (`_serverRequestReply`:
+  `workspace/configuration`→array, `workspace/applyEdit`→`{applied:false}`, `window/showDocument`→
+  `{success:false}`, void reqs→null, unknown→MethodNotFound -32601); a timed-out request sends
+  `$/cancelRequest`; client declares `synchronization` + `workspace.configuration` capabilities.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,
@@ -60,9 +70,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge, then resync `dev` to `main`. Bump on
   main + tag `v<x>` (`node scripts/bump.mjs <level>`, then commit + `git tag -a`); the `v*` tag publishes a
   **GitHub Release** (release.yml). **No npm publish from this repo** — the gamedev-log-analyzer npm
-  package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. Use
-  Edit/Write for files + short `git`/`gh` Bash (no heredocs/`node -e` — they break tool calls).
-  `timeout: 300000` for network Bash.
+  package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. To refresh it
+  run **`node scripts/sync-gamedev.mjs`** — it mirrors the source AND bumps the `.claude-plugin/marketplace.json`
+  gamedev entry to match (never hand-copy: `claude plugin validate . --strict` / CI `validate` fails if
+  `plugins[].version` ≠ the plugin's `plugin.json` version, and the eval guards this parity). Use Edit/Write
+  for files + short `git`/`gh` Bash (no heredocs/`node -e` — they break tool calls). `timeout: 300000` for network Bash.
 - **Reuse, don't reinvent.** Pull patterns from `../rider-mcp-enforcer` and `../gamedev-log-analyzer`
   (token-cap, savings ledger, grep-block hook, routing skill, CLI-first, release CI).
 - Commit author: `JSungMin <jsm1505104@gmail.com>`. End commits with the Claude Code co-author line.

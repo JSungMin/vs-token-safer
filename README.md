@@ -154,7 +154,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (20/20 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (24/24 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:

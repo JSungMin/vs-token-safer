@@ -61,6 +61,16 @@ const EMPTY_HINT =
   "aren't indexed — use gamedev-log.";
 const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
 
+// First-use setup nudge: if the plugin has never been configured (no config file), prepend a one-time
+// pointer to setup the FIRST time a search/nav tool runs in a process. Once per process (not per call) so
+// it informs without nagging; it never blocks — the tool still answers (using cwd as the root).
+let _setupNudged = false;
+const needsSetup = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
+const SETUP_NUDGE =
+  "⚙ vs-token-safer isn't configured yet — run /vs-token-safer:setup (or `vts setup --projectPath <root>`) " +
+  "to set the project root + backend; it also censuses the project's languages and tunes warm-up. Using the " +
+  "current directory for now.\n\n";
+
 function applySetup(args) {
   let current = {};
   try { current = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { /* new */ }
@@ -251,8 +261,10 @@ export async function runTool(name, a = {}) {
   const finishOut = (rawObj, body) => {
     const rawTok = tok(JSON.stringify(rawObj)), outTok = tok(body);
     try { recordSavings(rawTok, outTok); } catch { /* best-effort */ }
-    // Additive log steer (never blocks): if this call targets a log path, point at gamedev-log.
-    return out(body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok));
+    // One-time setup nudge if never configured; additive log steer if this call targets a log. Neither blocks.
+    let pre = "";
+    if (!_setupNudged && needsSetup()) { _setupNudged = true; pre = SETUP_NUDGE; }
+    return out(pre + body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok));
   };
   try {
     if (name === "vts_setup") {

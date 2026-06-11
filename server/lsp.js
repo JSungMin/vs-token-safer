@@ -30,6 +30,16 @@ const EXT_LANG = {
   ".py": "python", ".pyi": "python",
 };
 const BACKEND_LANG = { clangd: "cpp", roslyn: "csharp", typescript: "typescript", pyright: "python" };
+
+// Server→client requests whose result is void/optional, so `null` (acknowledged / no selection / no edit
+// to make) is the spec-correct reply. window/workDoneProgress/create MUST be here — clangd waits for the
+// ack before it streams the $/progress we use for index-ready. The */refresh family is a void ack too.
+const SERVER_REQ_NULL_OK = new Set([
+  "client/registerCapability", "client/unregisterCapability",
+  "window/workDoneProgress/create", "window/showMessageRequest",
+  "workspace/codeLens/refresh", "workspace/semanticTokens/refresh",
+  "workspace/inlayHint/refresh", "workspace/inlineValue/refresh", "workspace/diagnostic/refresh",
+]);
 export function langIdForPath(p, backend) {
   const m = String(p || "").toLowerCase().match(/\.[^.\\/]+$/);
   return (m && EXT_LANG[m[0]]) || BACKEND_LANG[backend] || "cpp";
@@ -50,6 +60,7 @@ export class LspClient {
     this.nextId = 1;
     this.pending = new Map(); // id -> {resolve, reject}
     this.notified = new Map(); // server-notification method -> latest params (for late waiters)
+    this.openDocs = new Map(); // uri -> last didOpen/didChange version (re-sync stale buffers, spec-correctly)
     this.notifyWaiters = new Map(); // method -> [resolve, …]
     this.buf = Buffer.alloc(0);
     this.stderr = "";
@@ -106,9 +117,11 @@ export class LspClient {
       if (msg.error) p.reject(new Error(`LSP error ${msg.error.code}: ${msg.error.message}`));
       else p.resolve(msg.result);
     }
-    // Server-initiated requests (have id + method) need a reply to avoid blocking the handshake.
+    // Server-initiated requests (have id + method) MUST get a reply or the server can stall the handshake.
+    // Reply with the spec-correct RESULT SHAPE per method (a blanket null violates e.g.
+    // workspace/configuration, which must be an array) — see _serverRequestReply.
     else if (msg.id !== undefined && msg.method) {
-      this._send({ jsonrpc: "2.0", id: msg.id, result: null }); // benign default reply
+      this._send(this._serverRequestReply(msg));
     }
     // Server notifications (method, no id): record the latest params and wake any waiters. Used to
     // await load-complete signals like Roslyn's `workspace/projectInitializationComplete`.
@@ -123,6 +136,27 @@ export class LspClient {
         else this.notifyWaiters.delete(msg.method);
       }
     }
+  }
+
+  // Build the spec-correct response to a server→client REQUEST we don't otherwise act on. The blanket
+  // `result: null` we used to send is wrong for methods whose result has a required shape (an empty/void
+  // reply is only correct for some). Unknown methods get MethodNotFound (-32601) per spec — servers handle
+  // that gracefully — rather than a fake success.
+  _serverRequestReply(msg) {
+    const id = msg.id, method = msg.method, p = msg.params || {};
+    // workspace/configuration → one config value PER requested item; null means "no override, use defaults".
+    if (method === "workspace/configuration") {
+      const items = Array.isArray(p.items) ? p.items : [];
+      return { jsonrpc: "2.0", id, result: items.map(() => null) };
+    }
+    // We never apply server-driven workspace edits (vts is read-mostly; rename is client-side).
+    if (method === "workspace/applyEdit") return { jsonrpc: "2.0", id, result: { applied: false } };
+    // ShowDocumentResult has a required `success`.
+    if (method === "window/showDocument") return { jsonrpc: "2.0", id, result: { success: false } };
+    // Methods whose result is void / optional → null is the correct "acknowledged / no selection" answer.
+    // window/workDoneProgress/create MUST stay here (clangd needs the ack before it streams $/progress).
+    if (SERVER_REQ_NULL_OK.has(method)) return { jsonrpc: "2.0", id, result: null };
+    return { jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } };
   }
 
   // Resolve when the server next sends `method` whose params satisfy `predicate` (or immediately if
@@ -141,21 +175,46 @@ export class LspClient {
     });
   }
 
-  // Tell the server a document is open (forces clangd to parse + dynamically index that TU, so
-  // workspace/symbol returns its symbols without waiting for the full background index).
+  // Sync a document's CURRENT disk content to the server. First time → didOpen (forces clangd/tsserver to
+  // parse + dynamically index that TU so workspace/symbol returns its symbols before the full background
+  // index). Already open → didChange with a bumped version, so a file that changed on disk after warm-up
+  // (an edit, a branch switch) is refreshed instead of the server answering from a stale in-memory buffer.
+  // Position tools call this before every query, so each hover/goto/outline/rename re-reads the file. This
+  // is also spec-correct — repeatedly sending didOpen (version 1) for an already-open doc is a soft
+  // protocol violation that clangd/Roslyn merely tolerate.
   didOpen(filePath, languageId = "cpp") {
-    let text = "";
-    try { text = fs.readFileSync(filePath, "utf8"); } catch { return; }
-    this.notify("textDocument/didOpen", {
-      textDocument: { uri: toUri(filePath), languageId, version: 1, text },
-    });
+    let text;
+    try { text = fs.readFileSync(filePath, "utf8"); } catch { this.didClose(filePath); return; }
+    const uri = toUri(filePath);
+    const prev = this.openDocs.get(uri);
+    if (prev === undefined) {
+      this.openDocs.set(uri, 1);
+      this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
+    } else {
+      const version = prev + 1;
+      this.openDocs.set(uri, version);
+      this.notify("textDocument/didChange", { textDocument: { uri, version }, contentChanges: [{ text }] });
+    }
+  }
+  // Drop a document the server may be holding (e.g. it was deleted/moved on disk) so it stops answering
+  // from a stale buffer. No-op if we never opened it.
+  didClose(filePath) {
+    const uri = toUri(filePath);
+    if (!this.openDocs.has(uri)) return;
+    this.openDocs.delete(uri);
+    this.notify("textDocument/didClose", { textDocument: { uri } });
   }
 
   request(method, params, timeoutMs = envInt("VTS_LSP_TIMEOUT_MS", 30000)) {
     const id = this.nextId++;
     this._send({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => { this.pending.delete(id); reject(new Error(`LSP request '${method}' timed out`)); }, timeoutMs);
+      const t = setTimeout(() => {
+        this.pending.delete(id);
+        // Tell the server to stop computing the abandoned request (frees a cold-UE clangd worker). Best-effort.
+        try { this.notify("$/cancelRequest", { id }); } catch { /* ignore */ }
+        reject(new Error(`LSP request '${method}' timed out`));
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => { clearTimeout(t); resolve(v); },
         reject: (e) => { clearTimeout(t); reject(e); },
@@ -173,13 +232,16 @@ export class LspClient {
       rootUri,
       workspaceFolders: [{ uri: rootUri, name: path.basename(rootPath) }],
       capabilities: {
-        workspace: { symbol: { dynamicRegistration: false }, workspaceFolders: true },
+        workspace: { symbol: { dynamicRegistration: false }, workspaceFolders: true, configuration: true },
         textDocument: {
+          // We send didOpen/didChange/didClose, so declare synchronization (full-text; no save/willSave).
+          synchronization: { dynamicRegistration: false, willSave: false, willSaveWaitUntil: false, didSave: false },
           references: { dynamicRegistration: false },
           definition: { dynamicRegistration: false },
           hover: { contentFormat: ["plaintext", "markdown"] },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           rename: { dynamicRegistration: false, prepareSupport: false },
+          publishDiagnostics: { relatedInformation: false }, // we wait on diagnostics in the clangd warm-up fallback
         },
       },
     });
