@@ -393,6 +393,19 @@ const dryOk = !dry.isError && /DRY RUN/.test(dry.text) && /GenerateClangDatabase
 try { fs.rmSync(ueDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const genDbOk = planOk && dryOk;
 
+// 27) no silent caps: find_files / search_text flag a truncated (capped) sweep; a complete sweep doesn't.
+const capDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-cap`);
+fs.mkdirSync(capDir, { recursive: true });
+for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(capDir, `f${i}.cpp`), "NEEDLE\nNEEDLE\nNEEDLE\n");
+const ffCap = await runTool("find_files", { q: "*.cpp", projectPath: capDir, maxResults: 2 });
+const stCap = await runTool("search_text", { q: "NEEDLE", projectPath: capDir, maxResults: 2 });
+const ffFull = await runTool("find_files", { q: "*.cpp", projectPath: capDir, maxResults: 50 });
+const truncOk =
+  !ffCap.isError && /capped at 2/.test(ffCap.text) &&
+  !stCap.isError && /capped at 2/.test(stCap.text) &&
+  !ffFull.isError && !/capped/.test(ffFull.text); // complete sweep → no truncation note
+try { fs.rmSync(capDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -425,6 +438,7 @@ const rows = [
   ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
   ["clangd no-compile-DB: advisory + text fallback", clangdNoDbOk, "true", clangdNoDbOk],
   ["vts_gen_compile_db dry-run (UBT command)", genDbOk, "true", genDbOk],
+  ["no silent caps: find_files/search_text truncation note", truncOk, "true", truncOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

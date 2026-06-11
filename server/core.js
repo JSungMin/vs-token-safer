@@ -289,6 +289,9 @@ function findFilesUnder(root, q, max) {
       else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
     }
   }
+  // Flag a truncated sweep so the caller never presents a capped/aborted result as complete (no silent caps).
+  if (out.length >= max) out.truncated = "cap";
+  else if (scanned >= 300000 && stack.length) out.truncated = "scan";
   return out;
 }
 // Bounded, token-capped raw-text search (no LSP) — the sanctioned alternative to grep for strings/comments
@@ -311,6 +314,10 @@ function scanTextUnder(root, q, max) {
       if (out.length >= max) break;
     }
   }
+  // Flag a truncated sweep (cap reached, or the 4s time-box aborted with dirs still queued) so the caller
+  // can say so instead of implying the result is exhaustive.
+  if (out.length >= max) out.truncated = "cap";
+  else if (Date.now() - t0 >= 4000 && stack.length) out.truncated = "time";
   return out;
 }
 // A LSP WorkspaceEdit comes back as `changes: {uri: TextEdit[]}` and/or `documentChanges: [{textDocument,edits}]`.
@@ -416,7 +423,8 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
       if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
-      return finishOut(files, `${files.length} file(s) matching "${a.q}":\n` + files.join("\n"));
+      const ft = files.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : files.truncated === "scan" ? ` — scan limit hit (narrow projectPath; more exist)` : "";
+      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + files.join("\n"));
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
@@ -424,7 +432,8 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       const hits = scanTextUnder(root, String(a.q), max);
       if (!hits.length) return finishOut([], `No text matches for "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol):\n` + hits.join("\n"));
+      const tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol)${tt}:\n` + hits.join("\n"));
     }
 
     const root = a.projectPath || PROJECT_PATH || process.cwd();
