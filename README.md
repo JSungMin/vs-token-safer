@@ -49,11 +49,13 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 ---
 
 A Claude Code plugin that routes symbol search, find-references, and go-to-definition through an
-official language server's index instead of Bash `grep`: **clangd** (LLVM) for C/C++, and a Roslyn-based
+official language server's index instead of Bash `grep`: **clangd** (LLVM) for C/C++, a Roslyn-based
 LSP (`Microsoft.CodeAnalysis.LanguageServer`, the engine Visual Studio and the C# Dev Kit use) for
-C#/.NET. Hover, file outline, and a project-wide rename go through the same index. It caps the tokens a
-search flood can spend by returning a compact `file:line` list, never source bodies. It's built for large
-Unreal C++ and .NET/C# codebases, where `grep` is slow and burns context.
+C#/.NET, **typescript-language-server** (tsserver) for JS/TS, and **pyright** for Python. Hover, file
+outline, and a project-wide rename go through the same index. It caps the tokens a search flood can spend
+by returning a compact `file:line` list, never source bodies. It's built for large Unreal C++ and .NET/C#
+codebases, where `grep` is slow and burns context — and the JS/Python backends let it search its own
+source, so we dogfood the plugin while building it.
 
 It's the IDE-agnostic sibling of
 [rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer). Same token-efficiency goal, but
@@ -67,7 +69,7 @@ big things without paying for all of it in tokens.
 
 | Plugin | Does | Needs |
 | --- | --- | --- |
-| **vs-token-safer** (this page) | Force code search through clangd/Roslyn's index over Bash grep (hard-block by default, escape hatch opt-out), token-capped to `file:line` | Node + a language server (clangd / Roslyn). No IDE. |
+| **vs-token-safer** (this page) | Force code search through clangd/Roslyn/tsserver/pyright's index over Bash grep (hard-block by default, escape hatch opt-out), token-capped to `file:line` | Node + a language server: clangd / Roslyn (you install), JS/TS + Python (auto-installed). No IDE. |
 | **[gamedev-log-analyzer](gamedev-log-analyzer/README.md)** | Parse/dedup/classify huge Unreal/Unity/Godot/MSVC-UBT-MSBuild logs (CLI-first), search + diff + locate + extract scalars | Node only (no IDE) |
 
 One-step install: `vs-token-safer` declares `gamedev-log-analyzer` as a dependency, so installing it
@@ -148,7 +150,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (14/14 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (15/15 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -229,6 +231,11 @@ vs-token-safer savings (local, 1 search(es))
   - **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) and vts
     auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its private .NET runtime from the bundle.
     Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`.
+  - **JS/TS → typescript-language-server, Python → pyright.** These ship as plugin dependencies and
+    install automatically on the first session — nothing to set up. vts launches the bundled copy with
+    `node`, so there's no global install or PATH dance. Point `VTS_TS_CMD`/`VTS_PY_CMD` at your own if you
+    prefer. (Heads-up: bundling them adds a one-time ~50 MB to the plugin's first-run `npm install`, and
+    the JS/TS server wants **Node 20+** — on Node 18 it's skipped and the other backends still work.)
 - No IDE has to be running.
 
 clangd needs a compile database (`compile_commands.json`):
@@ -327,6 +334,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | Override the clangd executable / args. |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll`. |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args. |
+| — | `VTS_TS_CMD` / `VTS_TS_ARGS` | bundled `typescript-language-server` | Override the JS/TS LSP executable / args. |
+| — | `VTS_PY_CMD` / `VTS_PY_ARGS` | bundled `pyright-langserver` | Override the Python LSP executable / args. |
+| — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | Max files the JS/TS / Python warm-up opens to prime the server. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large (e.g. UE) index. |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query. |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index. |
@@ -341,9 +351,10 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 ## How enforcement works
 
 - The **hook** runs before every Bash call. If the command is a code-symbol search (grep/rg/ack/ag/
-  findstr or `find -name` targeting `*.c/.cc/.cpp/.h/.hpp/.cs` or `src|source|engine|plugins/`) and is
-  *not* aimed at a log/md/json/build path, it blocks the command and tells Claude to use the indexed
-  tool instead. Otherwise it allows the command. `VTS_ENFORCE=0` disables it entirely.
+  findstr or `find -name` targeting a code extension — `*.c/.cc/.cpp/.h/.hpp/.cs/.ts/.tsx/.js/.jsx/.mjs/
+  .cjs/.py` — or `src|source|engine|plugins/`) and is *not* aimed at a log/md/json/build path, it blocks
+  the command and tells Claude to use the indexed tool instead. Otherwise it allows the command.
+  `VTS_ENFORCE=0` disables it entirely.
 - The **skill** biases Claude toward the indexed tools proactively.
 - The **core** guarantees the token cap no matter how Claude calls the tool.
 
@@ -357,6 +368,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl; UBT validates a Clang toolchain | Add **`-Compiler=VisualCpp`** to the UBT command; the MSVC database still resolves the include graph. |
 | clangd resolves only header-free symbols | Compile DB has no include dirs → system/3rd-party headers don't resolve | Use a UBT-generated DB (it includes the paths); a hand-rolled `compile_commands.json` must list the include dirs. |
 | No C# results / "No backend resolved" | Roslyn engine not found | Install the VS Code C# extension (`ms-dotnettools.csharp`), or `dotnet tool install --global csharp-ls`; or set `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD`. |
+| No JS/TS or Python results | The bundled LSP didn't install (offline first run, npm failure) | Re-run the session so deps reinstall, or set `VTS_TS_CMD` / `VTS_PY_CMD` at a `typescript-language-server` / `pyright-langserver` on PATH. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | Set `VTS_ENFORCE=0` to let grep through (e.g. when the language server is unavailable). |
 | Wrong backend picked | Multiple project files under the root | Pin it: `VTS_BACKEND=clangd` (or `roslyn`), or pass `backend` per call. |
 
