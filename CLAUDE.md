@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (33/33) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (34/34) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -45,7 +45,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set).
   `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`, default on-truncate) when a result is
-  capped so the full set is recoverable without re-running. BOOT AUTO-LEARN (`index.js`, `VTS_AUTO_LEARN`
+  capped so the full set is recoverable without re-running; a capped `search_symbol`/`find_references`
+  ("… N more") tees too (`teeOverflow` — the rows are already in memory, no re-query). The ledger
+  aggregates PER TOOL (`by tool:` line in `vts savings`) so you can see where the win comes from. BOOT AUTO-LEARN (`index.js`, `VTS_AUTO_LEARN`
   default on when projectPath set): 3s after boot, `autoLearn(root, 7)` (core.js, shares `scanBypasses`
   with discover) harvests bypassed-search result files into query-history — the self-improvement loop runs
   unattended every server start.
@@ -65,10 +67,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block. A Bash code search (grep/rg/ack/ag/findstr/
   `git grep`/`find -name`) that is a SINGLE safe segment is REWRITTEN to the equivalent `vts` CLI command via
   PreToolUse `updatedInput` (token-capped, flow unbroken); anything ambiguous (pipeline, unsafe pattern,
-  quote in the root) falls back to the exit-2 block. Segment splitting is QUOTE-AWARE (`splitSegments`): a
-  `|` inside quotes is pattern, not pipeline — so `grep "FooA|FooB"` / `grep "^#include"` (the top bypass
-  shapes per `vts discover`) rewrite to `vts text` (regex); SAFE_TEXT allows `| ^ #` (always double-quoted;
-  `$`/space/backslash still rejected). The Grep TOOL stays warn-only but `grepNudgeFor` embeds a
+  quote in the root) falls back to the exit-2 block. Segment splitting is QUOTE-AWARE (`splitSegments` in
+  `server/shell-split.js`, SHARED with `vts discover` so enforcement and measurement agree): a `|` inside
+  quotes is pattern, not pipeline — so `grep "FooA|FooB"` / `grep "^#include"` (the top bypass shapes per
+  `vts discover`) rewrite to `vts text` (regex); inside double quotes `\"` is an escaped literal; SAFE_TEXT
+  allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). The Grep TOOL stays warn-only but `grepNudgeFor` embeds a
   READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in the nudge. `VTS_REWRITE=0`
   → block instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out;
   escape hatch `VTS_ENFORCE=0`.

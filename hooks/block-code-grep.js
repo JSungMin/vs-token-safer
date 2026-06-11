@@ -28,6 +28,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// Quote-aware command splitting, shared with vts discover so enforcement and measurement agree. A pipe
+// inside quotes is part of a grep pattern — `grep "FooA|FooB" src/x.cpp` used to split into two
+// non-matching segments and sail through the hook entirely (the top bypass `vts discover` surfaced).
+import { splitSegments } from "../server/shell-split.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -63,34 +67,6 @@ const TEXT_TARGET_RE = /\.(log|txt|md|markdown|json|ya?ml|csv|tsv|xml|html?|ini|
 // `logs([/\\]|$)` so a bare `Saved/Logs` dir (the common Grep `path` form, no trailing slash) still hits,
 // while `(^|sep)` anchoring still rejects "catalog"/"dialogs"/"mylogs".
 const LOG_TARGET_RE = /(^|[\s"'/\\])(saved[/\\])?logs([/\\]|$)|\.(log|jsonl)(\.\d+)?\b/i;
-
-// Quote-aware command splitting: cut on |, ||, &&, ;, &, newline ONLY outside single/double quotes.
-// The naive split broke a quoted alternation pattern apart — `grep -rn "FooA|FooB" src/Thing.cpp`
-// became two non-matching segments and sailed through the hook entirely (the top bypass pattern
-// `vts discover` surfaced). A pipe INSIDE quotes is part of the pattern, not a pipeline.
-function splitSegments(cmd) {
-  const out = [];
-  let cur = "", q = null;
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
-    if (q) {
-      // bash: inside DOUBLE quotes `\"` is an escaped literal quote, not a terminator (single quotes
-      // have no escapes). Consume the pair so the quote context doesn't close early.
-      if (q === '"' && c === "\\" && i + 1 < cmd.length) { cur += c + cmd[i + 1]; i++; continue; }
-      cur += c; if (c === q) q = null; continue;
-    }
-    if (c === "'" || c === '"') { q = c; cur += c; continue; }
-    if (c === "|" || c === ";" || c === "&" || c === "\n") {
-      if (c === "|" && cmd[i + 1] === "|") i++;
-      else if (c === "&" && cmd[i + 1] === "&") i++;
-      out.push(cur); cur = "";
-      continue;
-    }
-    cur += c;
-  }
-  out.push(cur);
-  return out.filter((s) => s.trim());
-}
 
 function execOf(segment) {
   const tokens = segment.trim().split(/\s+/);

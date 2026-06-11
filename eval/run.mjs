@@ -484,6 +484,10 @@ const transcript = [
   { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "many matches\n".repeat(100) }] } },
   { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "grep Error Saved/Logs/run.log" } }] } }, // log → NOT counted
   { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu3", content: "log lines\n".repeat(50) }] } },
+  // quoted alternation — the naive splitter dissolved this into two non-matching halves and discover
+  // MISSED it; the shared quote-aware splitter must count it as one bypassed grep.
+  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: 'grep -rn "QAlpha|QBeta" src/Quoted.cpp' } }] } },
+  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu4", content: "src/Quoted.cpp:3:QAlpha\n".repeat(40) }] } },
 ].map((e) => JSON.stringify(e)).join("\n");
 fs.writeFileSync(path.join(projDir, "session.jsonl"), transcript);
 process.env.VTS_CLAUDE_PROJECTS = projRoot;
@@ -492,9 +496,9 @@ const disc = await runTool("vts_discover", { all: true, learn: true, projectPath
 delete process.env.VTS_CLAUDE_PROJECTS;
 const qhAfter = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
 const discoverOk =
-  !disc.isError && /2 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep, NOT the log grep
-  /grep×1/.test(disc.text) && /Grep×1/.test(disc.text) &&
-  /SpawnActor/.test(disc.text) &&
+  !disc.isError && /3 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep + quoted-pipe grep; NOT the log grep
+  /grep×2/.test(disc.text) && /Grep×1/.test(disc.text) &&
+  /SpawnActor/.test(disc.text) && /QAlpha\|QBeta/.test(disc.text) && // quote-aware: counted, not dissolved
   /catch-rate:/.test(disc.text) &&                  // synergy C: caught-vs-bypassing
   /learned \d+ file\(s\) into the warm-set/.test(disc.text) && // synergy B: learn line
   /foo\.cpp/i.test(qhAfter);                        // src/Foo.cpp from the grep result → query-history
@@ -533,6 +537,14 @@ const qhAl = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return
 const autoLearnOk = alCount > 0 && /gear\.cpp/i.test(qhAl); // harvested file landed in query-history
 try { fs.rmSync(alRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 const selfImproveOk = nudgeOk && autoLearnOk;
+
+// 33) round-2 self-improve: (a) an LSP result the formatter would cap ("… N more") tees the FULL set —
+// `big` (guard 3) returned 1000 symbols against maxResults 60, so its header must reference a tee file;
+// (b) the savings ledger now aggregates per tool, so the report shows where the win comes from.
+const lspTeeOk = /written to .*search_symbol/.test(big.text) && /… 940 more/.test(big.text); // tee + cap coexist
+const svTool = await runTool("vts_savings", {});
+const perToolOk = !svTool.isError && /by tool: .*search_symbol ~[\d,]+ \(\d+\)/.test(svTool.text);
+const round2Ok = lspTeeOk && perToolOk;
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -575,6 +587,7 @@ const rows = [
   ["discover: bypassed searches + catch-rate + learn (synergy B/C)", discoverOk, "true", discoverOk],
   ["synergy A: search_symbol no-backend → text (no hard error)", symbolNoBackendOk, "true", symbolNoBackendOk],
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
+  ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

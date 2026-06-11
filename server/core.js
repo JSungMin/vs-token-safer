@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
+import { splitSegments } from "./shell-split.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -89,13 +90,19 @@ const dayKey = (d = new Date()) => d.toISOString().slice(0, 10); // YYYY-MM-DD (
 // $/Mtok used for the est. USD line in `vts savings`. A rough single rate (saved tokens are mostly input
 // the model never has to ingest) — override with VTS_USD_PER_MTOK; purely informational.
 const USD_PER_MTOK = parseFloat(cfg("VTS_USD_PER_MTOK", "usdPerMtok", "3")) || 3;
-function recordSavings(rawTok, outTok) {
+function recordSavings(rawTok, outTok, tool) {
   const s = readSavings();
   s.runs = (s.runs || 0) + 1;
   s.rawTok = (s.rawTok || 0) + rawTok;
   s.outTok = (s.outTok || 0) + outTok;
   const saved = rawTok - outTok;
   if (saved > (s.bestSaved || 0)) { s.bestSaved = saved; s.bestRaw = rawTok; s.bestOut = outTok; }
+  // Per-tool aggregate — shows WHERE the win comes from (and which tool's cap to tune).
+  if (tool) {
+    s.tools = s.tools || {};
+    const t = (s.tools[tool] = s.tools[tool] || { runs: 0, rawTok: 0, outTok: 0 });
+    t.runs++; t.rawTok += rawTok; t.outTok += outTok;
+  }
   // Per-day buckets (for --graph / --daily) — pruned to the last 60 days to bound the file size.
   s.days = s.days || {};
   const k = dayKey();
@@ -139,6 +146,10 @@ function savingsReport(a = {}) {
   const best = s.bestRaw ? `\n  biggest single run: ${s.bestRaw.toLocaleString()} → ${s.bestOut.toLocaleString()} tok` : "";
   const totalSaved = s.rawTok - s.outTok;
   let body = `vs-token-safer savings (local, ${s.runs} search(es))\n  total saved: ~${totalSaved.toLocaleString()} tokens vs forwarding raw index responses\n  raw → output: ${s.rawTok.toLocaleString()} → ${s.outTok.toLocaleString()} tok (~${ratio}× smaller)${best}\n  est. value: ~$${usd(totalSaved).toFixed(2)} (@ $${USD_PER_MTOK}/Mtok — rough, set VTS_USD_PER_MTOK)`;
+  if (s.tools) {
+    const byTool = Object.entries(s.tools).map(([t, v]) => [t, v.rawTok - v.outTok, v.runs]).sort((x, y) => y[1] - x[1]).slice(0, 5);
+    if (byTool.length) body += `\n  by tool: ` + byTool.map(([t, sv, n]) => `${t} ~${sv.toLocaleString()} (${n})`).join(", ");
+  }
   const want = (k) => a[k] === true || a[k] === "true";
   if (want("graph")) body += `\n\nSaved tokens / day (last 30):\n${savingsGraph(s, 30)}`;
   if (want("daily")) {
@@ -181,6 +192,16 @@ function teeNote(tool, q, root, recollect) {
   } catch { /* best-effort */ }
   return "";
 }
+// LSP-result variant: the full result set is ALREADY in memory (no re-collection) — when the formatter
+// would cap it ("… N more"), write every row to a tee file so the tail is recoverable without re-querying.
+function teeOverflow(tool, q, rows, max) {
+  if (teeMode() === "off" || rows.length <= max) return "";
+  try {
+    const fp = writeTee(tool, q, rows.slice(0, TEE_MAX));
+    if (fp) return ` — full ${Math.min(rows.length, TEE_MAX)} result(s) written to ${fp}`;
+  } catch { /* best-effort */ }
+  return "";
+}
 
 // ---- #2 discover: scan recent Claude transcripts for code searches that BYPASSED vts (Bash grep/rg/find
 // or the Grep tool aimed at source) and report the raw tokens they spent — the "missed savings" RTK
@@ -198,7 +219,9 @@ function matchBypass(name, input) {
   if (!input) return null;
   if (name === "Bash") {
     const cmd = String(input.command || "");
-    for (const seg of cmd.split(/\|\||&&|[|;&\n]/g)) {
+    // Quote-aware (shared with the hook): a quoted alternation pattern is ONE segment, so a bypassed
+    // `grep "A|B" src/x.cpp` is COUNTED instead of dissolving into two non-matching halves.
+    for (const seg of splitSegments(cmd)) {
       const s = seg.trim().toLowerCase();
       if (!DISCOVER_SEARCH.test(s)) continue;
       if (DISCOVER_TEXT_TGT.test(s)) continue;
@@ -563,7 +586,7 @@ export async function runTool(name, a = {}) {
   const err = (text) => ({ text, isError: true });
   const finishOut = (rawObj, body) => {
     const rawTok = tok(JSON.stringify(rawObj)), outTok = tok(body);
-    try { recordSavings(rawTok, outTok); } catch { /* best-effort */ }
+    try { recordSavings(rawTok, outTok, name); } catch { /* best-effort */ }
     // One-time setup nudge if never configured; additive log steer if this call targets a log. Neither blocks.
     let pre = "";
     if (!_setupNudged && needsSetup()) { _setupNudged = true; pre = SETUP_NUDGE; }
@@ -696,14 +719,17 @@ export async function runTool(name, a = {}) {
         }
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
       }
-      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
+      const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), max);
+      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {
       if (!a.path || a.line == null || a.character == null) return err("find_references needs path, line, character (0-based position of the symbol).");
       const c = await getClient(root, backendName);
       const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
-      try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
+      const locList = (Array.isArray(locs) ? locs : [locs]).filter(Boolean);
+      try { recordQueryResults(root, locList.map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
+      const refTee = teeOverflow("find_references", `${path.basename(String(a.path))}:${Number(a.line) + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
