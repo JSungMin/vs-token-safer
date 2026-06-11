@@ -351,6 +351,40 @@ finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
 await lc.shutdown();
 const conformanceOk = replyShapesOk && capOk && cancelOk;
 
+// 25) clangd with no compile database: hasCompileDb/compileDbAdvisory detect+advise; search_symbol falls
+// back to a literal text search (a .uproject-only C++ project would otherwise return nothing).
+const { hasCompileDb, compileDbAdvisory } = await import("../server/core.js");
+const noDb = path.join(os.tmpdir(), `vts-eval-${process.pid}-nodb`);
+fs.mkdirSync(noDb, { recursive: true });
+fs.writeFileSync(path.join(noDb, "Thing.cpp"), "void MISS_cppFn() {}\n");
+const withDb = path.join(os.tmpdir(), `vts-eval-${process.pid}-withdb`);
+fs.mkdirSync(withDb, { recursive: true });
+fs.writeFileSync(path.join(withDb, "compile_commands.json"), "[]");
+const dbAdvisoryOk =
+  !hasCompileDb(noDb) && hasCompileDb(withDb) &&
+  /compile_commands/.test(compileDbAdvisory(noDb)) && compileDbAdvisory(withDb) === "";
+const csym = await runTool("search_symbol", { q: "MISS", backend: "clangd", projectPath: noDb }); // mock [] → text fallback
+const clangdFallbackOk =
+  !csym.isError && /Literal text matches/.test(csym.text) &&
+  /clangd has no usable index/.test(csym.text) && /Thing\.cpp/.test(csym.text);
+for (const d of [noDb, withDb]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const clangdNoDbOk = dbAdvisoryOk && clangdFallbackOk;
+
+// 26) vts_gen_compile_db DRY RUN: build the UBT GenerateClangDatabase command for a .uproject, no execution.
+const { genCompileDbPlan } = await import("../server/core.js");
+const ueDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-ue`);
+fs.mkdirSync(path.join(ueDir, "Engine", "Build", "BatchFiles"), { recursive: true });
+fs.writeFileSync(path.join(ueDir, "MyGame.uproject"), "{}");
+fs.writeFileSync(path.join(ueDir, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh"), "");
+const plan = genCompileDbPlan(ueDir, {});
+const planOk =
+  !plan.error && /MyGameEditor/.test(plan.cmdline) && /GenerateClangDatabase/.test(plan.cmdline) &&
+  /-Compiler=VisualCpp/.test(plan.cmdline) && /MyGame\.uproject/.test(plan.cmdline);
+const dry = await runTool("vts_gen_compile_db", { projectPath: ueDir }); // apply unset → dry run, never executes
+const dryOk = !dry.isError && /DRY RUN/.test(dry.text) && /GenerateClangDatabase/.test(dry.text) && !fs.existsSync(path.join(ueDir, "compile_commands.json"));
+try { fs.rmSync(ueDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const genDbOk = planOk && dryOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -381,6 +415,8 @@ const rows = [
   ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
   ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
   ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
+  ["clangd no-compile-DB: advisory + text fallback", clangdNoDbOk, "true", clangdNoDbOk],
+  ["vts_gen_compile_db dry-run (UBT command)", genDbOk, "true", genDbOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
