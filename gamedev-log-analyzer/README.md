@@ -163,6 +163,26 @@ gamedev-log enforce warn       # back to the default (nudge only)
 GDLOG_ENFORCE=block <cmd>      # per-shell override (env beats config)
 ```
 
+**Transparent rewrite.** When a raw log read is a single, clean command (`grep PATTERN x.log`,
+`cat x.log`, `tail -n 5000 x.log`), the hook doesn't just nudge — it **rewrites** it to the gamedev-log
+equivalent (`grep`→`search`, `cat`/`tail`→`summary`) and lets it run, so the model's flow is unbroken
+**and** the output is guaranteed parsed + token-capped. Anything ambiguous (pipelines, shell vars, quoted
+or multiple paths) falls back to the nudge — a rewrite is never a guess. Opt out with `GDLOG_REWRITE=0`
+(then it nudges, or denies under `enforce block`).
+
+### Find missed savings — `gamedev-log discover`
+
+```bash
+gamedev-log discover           # this project: raw log reads that bypassed gamedev-log vs routed through
+gamedev-log discover --since 7 # last 7 days
+gamedev-log discover --all     # all projects (cross-project aggregate)
+```
+
+Scans the local Claude Code transcript and reports, in aggregate, how often logs were read raw instead
+of through `gamedev-log`, plus a coverage ratio. **Local-only**: it reads transcripts, transmits nothing,
+and the output is aggregate counts + coarse, *estimated* token numbers — **never** a command, path, or any
+log content. (Inspired by RTK's `discover`, scoped to logs.)
+
 Mode is read **env `GDLOG_ENFORCE` > `~/.gamedev-log-analyzer/config.json` > default `warn`**. The hook
 fails open — any parse/IO error (missing file, permission denied, a directory, an unstattable path)
 allows the action, so it never wedges your workflow.

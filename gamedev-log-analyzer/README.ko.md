@@ -136,6 +136,27 @@ gamedev-log enforce warn       # 기본(nudge만)으로 복귀
 GDLOG_ENFORCE=block <cmd>      # 셸 단위 오버라이드(env가 config보다 우선)
 ```
 
+**투명 재작성(transparent rewrite).** 생 로그 읽기가 깔끔한 단일 명령(`grep PATTERN x.log`,
+`cat x.log`, `tail -n 5000 x.log`)이면 훅은 안내에 그치지 않고 아예 gamedev-log 대응 명령으로
+**바꿔서**(`grep`→`search`, `cat`/`tail`→`summary`) 실행시킵니다. 덕분에 모델의 작업 흐름은
+끊기지 않으면서 출력은 파싱과 토큰 상한이 보장되죠. 파이프라인이나 셸 변수, 따옴표 묶음, 경로가
+여러 개인 경우처럼 조금이라도 애매하면 재작성하지 않고 안내로 물러납니다 — 추측으로 명령을 바꾸는
+일은 없습니다. 이 동작이 싫으면 `GDLOG_REWRITE=0`으로 끄세요(그러면 안내만 하거나, `enforce block`
+상태면 차단합니다).
+
+### 놓친 절감 찾기 — `gamedev-log discover`
+
+```bash
+gamedev-log discover           # 이 프로젝트: gamedev-log를 거친 로그 읽기 vs 생으로 우회한 읽기
+gamedev-log discover --since 7 # 최근 7일
+gamedev-log discover --all     # 전체 프로젝트(교차 집계)
+```
+
+로컬 Claude Code 트랜스크립트를 훑어서, 로그를 `gamedev-log`로 거치지 않고 생으로 읽은 횟수와
+커버리지 비율을 집계로 보여줍니다. **로컬 전용**입니다 — 트랜스크립트만 읽을 뿐 어디로도 전송하지
+않고, 결과로 내놓는 건 집계 수치와 대략적인 *추정* 토큰값뿐입니다. 명령이나 경로, 로그 내용은
+**절대** 담기지 않습니다. (RTK의 `discover`에서 아이디어를 가져와 로그 쪽으로 범위를 좁힌 것입니다.)
+
 모드 읽기 순서: **env `GDLOG_ENFORCE` > `~/.gamedev-log-analyzer/config.json` > 기본 `warn`**. 훅은
 fail-open — 파싱/IO 오류(파일 없음·권한 거부·디렉터리·stat 불가) 시 허용(워크플로를 막지 않음).
 

@@ -1,6 +1,6 @@
 {
   "name": "gamedev-log-analyzer",
-  "version": "0.10.3",
+  "version": "0.10.5",
   "type": "module",
   "description": "Token-efficient game-engine & build log analysis (Unreal/Unity/Godot/MSVC-UBT-MSBuild) for the CLI and MCP — parse, dedup, classify by severity/category, diff runs, locate file:line, and extract scalar fields. No IDE required.",
   "keywords": [
@@ -30,7 +30,7 @@
     "gamedev-log": "cli.js",
     "gamedev-log-analyzer": "index.js"
   },
-  "files": ["index.js", "cli.js", "core.js", "logs.js", "enforce.js", "sdk.js", "ensure-deps.mjs", "README.md"],
+  "files": ["index.js", "cli.js", "core.js", "logs.js", "enforce.js", "discover.mjs", "sdk.js", "ensure-deps.mjs", "README.md"],
   "scripts": {
     "start": "node index.js",
     "test": "node ../eval/run.mjs"
