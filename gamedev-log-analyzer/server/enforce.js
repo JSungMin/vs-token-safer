@@ -132,6 +132,81 @@ export function shouldBlockLogBash(cmd) {
   });
 }
 
+// ---- #1 transparent rewrite (mirrors vs-token-safer): a single raw log-read segment → the equivalent
+// gamedev-log CLI command, run via updatedInput. The model's flow is unbroken AND the output is
+// guaranteed parsed/dedup/token-capped instead of a raw flood. Returns { cmd, tool, path, q? } or null
+// when ANYTHING is ambiguous — the caller then falls back to the warn/block path, so a rewrite is never
+// wrong. Conservative on purpose: one clean unquoted segment, a shell-safe literal log path, no shell
+// metachars/vars/redirects (those can't be safely rewritten → let them warn).
+const SAFE_LOG_PATH = /^[A-Za-z0-9_./:\\-]+$/; // unquoted literal path, no spaces/vars/metachars
+const SAFE_QUERY = /^[A-Za-z0-9_.:-]+$/; // shell-safe literal grep pattern (also a valid literal regex)
+const GREP_EXECS = new Set(["grep", "rg", "ack", "ag", "findstr"]);
+// short flags that consume a value → pattern position is unclear, so bail. Covers grep (-e -m -A/-B/-C
+// -D -d -f) AND ripgrep (-t -T -g -M type/glob/max-columns), so e.g. `rg -t log PAT x.log` won't mis-parse.
+const VALUE_FLAG_LETTERS = /[efmABCDdtTgM]/;
+
+function segHasShellHazard(seg) {
+  // a var, command-subst, quote, redirect, glob, brace, or line-continuation means we can't rewrite safely
+  return /[$`"'><(){}*?]/.test(seg) || /\\\s*$/.test(seg);
+}
+function isLogPathToken(t) {
+  return SAFE_LOG_PATH.test(t) && hasLogTarget(t.toLowerCase());
+}
+
+export function buildLogRewrite(segment, cliPath) {
+  const seg = String(segment).trim();
+  if (!cliPath || segHasShellHazard(seg)) return null;
+  const exec = execOf(seg);
+  if (!READ_EXECS.has(exec)) return null;
+  if (isBoundedRead(seg)) return null; // a bounded peek / count-only read isn't a flood → leave it raw
+  const toks = seg.split(/\s+/);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // FOO=bar prefixes
+  i++; // the executable
+  const rest = toks.slice(i);
+  const node = (args) => `node "${cliPath}" ${args}`;
+
+  if (GREP_EXECS.has(exec)) {
+    // walk flags (vts-style); first bare token = PATTERN, the log path is a later bare token.
+    let pat = null;
+    const paths = [];
+    for (const t of rest) {
+      if (t === "--" || t.startsWith("--")) return null; // option terminator / unknown long flag → bail
+      if (exec === "findstr" && t.startsWith("/")) continue; // findstr flags use /
+      if (t.startsWith("-")) {
+        if (VALUE_FLAG_LETTERS.test(t)) return null; // value-taking short flag → pattern position unclear
+        continue; // boolean short-flag cluster (-rn, -i …)
+      }
+      if (pat === null) pat = t;
+      else paths.push(t);
+    }
+    if (!pat || !SAFE_QUERY.test(pat)) return null;
+    const logs = paths.filter(isLogPathToken);
+    if (logs.length !== 1) return null; // 0 or >1 log path → ambiguous
+    // severityMin Verbose so the reroute keeps grep's "any line containing the term" semantics.
+    return { cmd: node(`search --path "${logs[0]}" --query "${pat}" --severityMin Verbose`), tool: "search", path: logs[0], q: pat };
+  }
+
+  // cat / tail / head — only UNBOUNDED reads reach here (bounded peeks are exempt). Reroute to summary.
+  const paths = [];
+  for (let k = 0; k < rest.length; k++) {
+    const t = rest[k];
+    if (t === "--") {
+      for (const p of rest.slice(k + 1)) if (!p.startsWith("-")) paths.push(p);
+      break;
+    }
+    if (/^-[nc]$/.test(t)) {
+      k++;
+      continue;
+    } // -n N / -c N consume the next token
+    if (t.startsWith("-")) continue; // -n50 / -f / --lines=50 / etc.
+    paths.push(t);
+  }
+  const logs = paths.filter(isLogPathToken);
+  if (logs.length !== 1) return null;
+  return { cmd: node(`summary --path "${logs[0]}"`), tool: "summary", path: logs[0] };
+}
+
 // ---- mode (env > config.json > default) ----
 const CONFIG_FILE =
   process.env.GDLOG_CONFIG_FILE || path.join(os.homedir(), ".gamedev-log-analyzer", "config.json");

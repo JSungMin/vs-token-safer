@@ -13,6 +13,7 @@
  *   gamedev-log diff --pathA before.log --pathB after.log --severityMin Error
  */
 import { runTool } from "./core.js";
+import { runDiscover } from "./discover.mjs";
 
 const HELP = `gamedev-log — token-efficient game-engine/build log analysis (Unreal/Unity/Godot/build).
 
@@ -35,6 +36,9 @@ Commands:
   learnings-reset   Clear the local learnings ledger.
   savings           How many tokens you've saved vs dumping raw logs into context.
   savings-reset     Clear the local savings ledger.
+  discover          Scan local Claude Code transcripts: how many raw log reads bypassed
+                    gamedev-log vs went through it (aggregate, local-only, no log content).
+                    [--since N | --all | --session <file.jsonl>]
   enforce           Show/set Bash log-grep enforcement.   [<block|warn|off> | status]
                     block (default) denies raw grep/tail/cat over .log/.jsonl/Logs + nudges here;
                     warn allows but nudges; off disables. Env override: GDLOG_ENFORCE.
@@ -93,6 +97,12 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") {
   console.log(HELP);
   process.exit(rawCmd ? 0 : 1);
 }
+// `discover` scans local Claude Code transcripts (not a runTool / log op) — handle it separately.
+if (rawCmd === "discover") {
+  console.log(runDiscover(rest));
+  process.exit(0);
+}
+
 const name = normCommand(rawCmd);
 const args = parseArgs(rest);
 // convenience: `enforce <mode>` takes a bare positional as the mode, not a path.
