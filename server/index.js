@@ -10,7 +10,7 @@
  * dispose clients on shutdown so no language-server child is left running.
  */
 import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from "./sdk.js";
-import { runTool, disposeClients, prewarm, PROJECT_PATH, BACKEND } from "./core.js";
+import { runTool, disposeClients, prewarm, PROJECT_PATH, BACKEND, PREWARM_BACKENDS } from "./core.js";
 import { pickBackend } from "./backends/index.js";
 import { prewarmBackends } from "./warmset.js";
 
@@ -217,7 +217,7 @@ if (PROJECT_PATH && envBool("VTS_PREWARM", true)) {
   // Single dominant backend by default; VTS_PREWARM_BACKENDS=all (or a comma list) warms every detected
   // language, each with its language-proportional adaptive cap (warmCap). Fire-and-forget — never blocks boot.
   const picked = BACKEND || pickBackend(PROJECT_PATH);
-  const backends = prewarmBackends(PROJECT_PATH, picked);
+  const backends = prewarmBackends(PROJECT_PATH, picked, process.env.VTS_PREWARM_BACKENDS || PREWARM_BACKENDS);
   for (const backend of backends) {
     log(`pre-warming ${backend} index for ${PROJECT_PATH} …`);
     prewarm(PROJECT_PATH, backend).then(

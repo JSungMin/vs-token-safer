@@ -18,12 +18,19 @@ Steps:
      clangd-version advisory, point `VTS_CLANGD_CMD` at a current clangd (https://github.com/clangd/clangd/releases).
    - C#/.NET → a `.sln`/`.csproj` → **roslyn** (default engine `csharp-ls`; install with
      `dotnet tool install --global csharp-ls`, or point `VTS_ROSLYN_CMD` at MS C# LSP).
+   - JS/TS → a `tsconfig`/`jsconfig`/`package.json` or `*.ts/js` → **typescript** (bundled
+     `typescript-language-server`, auto-installed). Python → `pyproject.toml`/`*.py` → **pyright**
+     (bundled, auto-installed). Nothing to install for these two.
 3. **Gather values** (ask one at a time, or an `AskUserQuestion` for the common ones):
-   - `projectPath` — default project root (where the compile DB / .sln lives).
-   - `backend` — `clangd` | `roslyn` (omit to auto-detect).
+   - `projectPath` — default project root (where the compile DB / .sln / package.json lives).
+   - `backend` — `clangd` | `roslyn` | `typescript` | `pyright` (omit to auto-detect).
    - `maxResults` — cap on returned `file:line` locations (default 60).
+   - `prewarmBackends` — `auto` (warm the dominant backend) | `all` (warm every language present, each in
+     proportion to its file count) | a comma list. Omit it: `vts_setup` runs a **language census** of the
+     root and picks `auto` for a single-language repo or `all` for a multi-language one automatically.
 4. **Apply:** call `vts_setup` with only the keys to change, e.g.
-   `vts_setup { "projectPath": "<root>", "backend": "clangd" }`.
+   `vts_setup { "projectPath": "<root>", "backend": "clangd" }`. `vts_setup` reports the detected language
+   mix (e.g. `clangd(820), typescript(40)`) and the `prewarmBackends` it chose.
 5. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
 
 Notes:

@@ -33,7 +33,7 @@ process.stdin.on("end", () => {
     process.exit(0); // unparseable — don't block
   }
 
-  let mode = "block";
+  let mode = "warn"; // matches enforceMode()'s actual default; only used if enforceMode() throws (then we fail open below)
   try {
     mode = enforceMode();
   } catch {
@@ -47,7 +47,7 @@ process.stdin.on("end", () => {
       if (shouldBlockLogBash(ti.command)) hit = { kind: "bash", target: ti.command || "" };
     } else if (toolName === "Read") {
       const fp = ti.file_path || "";
-      const sliced = ti.offset !== undefined && ti.offset !== null || (ti.limit !== undefined && ti.limit !== null);
+      const sliced = (ti.offset !== undefined && ti.offset !== null) || (ti.limit !== undefined && ti.limit !== null);
       let size = 0;
       try {
         size = fs.statSync(fp).size; // follows symlinks; throws on missing/EACCES/dir
@@ -64,9 +64,9 @@ process.stdin.on("end", () => {
   const nudge = nudgeText(hit.target, hit.kind);
   if (mode === "warn") {
     // allow the command, but inject the nudge into the model's context (stderr on exit 0 is not
-    // reliably surfaced; additionalContext is).
+    // reliably surfaced; additionalContext is). Trailing newline for line-buffered stdout readers.
     process.stdout.write(
-      JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: nudge } })
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: nudge } }) + "\n"
     );
     process.exit(0);
   }

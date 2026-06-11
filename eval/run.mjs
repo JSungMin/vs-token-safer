@@ -15,6 +15,8 @@ const QH = path.join(os.tmpdir(), `vts-eval-qh-${process.pid}.json`);
 process.env.VTS_QUERY_HISTORY = QH;
 const IG = path.join(os.tmpdir(), `vts-eval-ig-${process.pid}.json`); // isolate the include-graph cache
 process.env.VTS_INCLUDE_GRAPH = IG;
+const CF = path.join(os.tmpdir(), `vts-eval-cfg-${process.pid}.json`); // isolate the config file (vts_setup writes)
+process.env.VTS_CONFIG_FILE = CF;
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -271,9 +273,19 @@ const prewarmSelOk =
 try { fs.rmSync(censusDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const warmRatioOk = censusOk && capOverrideOk && capBaseOk && capScaleOk && prewarmSelOk;
 
+// 20) vts_setup language auto-config: a multi-language root → census reported + prewarmBackends auto-set "all".
+const setupDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-setup`);
+fs.mkdirSync(path.join(setupDir, "src"), { recursive: true });
+fs.writeFileSync(path.join(setupDir, "src", "a.cpp"), "");
+fs.writeFileSync(path.join(setupDir, "src", "b.ts"), "");
+const su = await runTool("vts_setup", { projectPath: setupDir });
+const setupOk = !su.isError && /Languages under/.test(su.text) && /prewarmBackends="all"/.test(su.text);
+try { fs.rmSync(setupDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
+try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -295,6 +307,7 @@ const rows = [
   ["hook: block code / warn log+grep", hookOk, "true", hookOk],
   ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
   ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
+  ["vts_setup language census auto-config", setupOk, "true", setupOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

@@ -154,7 +154,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (19/19 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (20/20 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -432,6 +432,11 @@ generated automatically. The badge at the top always points at the latest. Highl
 - **v0.9.0** — log-analysis steer: a code search aimed at a `Logs/` dir or a `.log`/`.jsonl` file is
   pointed at gamedev-log instead of returning an empty code-index result. The grep-block hook now also
   covers the built-in Grep tool (warn-only).
+- **v0.10.0** — language-aware setup and warm-up. `vts_setup` now censuses the project's languages and
+  auto-picks `prewarmBackends`; the warm-up open-cap scales to each language's file count and a
+  multi-language repo can warm every backend in proportion (`VTS_PREWARM_BACKENDS`). `search_text` now
+  scans JS/TS/Python (not just C/C++/C#), and `search_symbol` on tsserver/pyright falls back to a literal
+  text search for a symbol the index hasn't opened. Bundled gamedev-log-analyzer → 0.10.3.
 
 ## Contributing
 

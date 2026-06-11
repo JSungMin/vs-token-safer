@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { LspClient, fromUri, langIdForPath } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
-import { recordQueryResults } from "./warmset.js";
+import { recordQueryResults, languageCensus } from "./warmset.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -27,7 +27,8 @@ function cfg(envName, key, def) {
 export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults"];
+export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends"];
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // LSP SymbolKind → short label (kept terse for the token cap). Covers the full enum so JS/TS/Python
@@ -256,10 +257,27 @@ export async function runTool(name, a = {}) {
   try {
     if (name === "vts_setup") {
       const { current, changed } = applySetup(a);
-      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}`);
+      // Language-aware setup: census the configured root, report the mix, and pick a sensible default for
+      // prewarmBackends when the user hasn't set one — single language → "auto" (warm the dominant backend),
+      // multiple languages → "all" (warm each in proportion to its file count). Best-effort; never throws.
+      let langLine = "";
+      try {
+        const root = a.projectPath || current.projectPath || PROJECT_PATH || process.cwd();
+        const census = languageCensus(root);
+        const langs = ["clangd", "roslyn", "typescript", "pyright"].filter((b) => census[b] > 0);
+        langLine = `\nLanguages under ${root}: ` + (langs.length ? langs.map((b) => `${b}(${census[b]})`).join(", ") : "none detected yet");
+        if (current.prewarmBackends == null && langs.length) {
+          const val = langs.length > 1 ? "all" : "auto";
+          applySetup({ prewarmBackends: val });
+          current.prewarmBackends = val;
+          if (!changed.includes("prewarmBackends")) changed.push("prewarmBackends");
+          langLine += `\n→ prewarmBackends="${val}" (${langs.length > 1 ? "multi-language: warm every backend in proportion to its file count" : "single language: warm the dominant backend"}).`;
+        }
+      } catch { /* census is best-effort */ }
+      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}`);
     }
     if (name === "vts_config") {
-      return out(`Effective settings (env > config > default):\n` + JSON.stringify({ projectPath: PROJECT_PATH || "(unset)", backend: BACKEND || "(auto)", maxResults: MAX_RESULTS }, null, 2) + `\n\nConfig file: ${CONFIG_FILE}`);
+      return out(`Effective settings (env > config > default):\n` + JSON.stringify({ projectPath: PROJECT_PATH || "(unset)", backend: BACKEND || "(auto)", maxResults: MAX_RESULTS, prewarmBackends: PREWARM_BACKENDS || "(auto)" }, null, 2) + `\n\nConfig file: ${CONFIG_FILE}`);
     }
     if (name === "vts_savings") return out(savingsReport());
     if (name === "vts_savings_reset") { try { fs.writeFileSync(SAVINGS_FILE, "{}"); } catch { /* ignore */ } return out("Savings ledger cleared."); }

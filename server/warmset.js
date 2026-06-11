@@ -204,13 +204,13 @@ export function warmCap(root, backend, envName, base) {
 // Which backends to prewarm: VTS_PREWARM_BACKENDS unset/"auto" → [dominant only] (current behavior);
 // "all" → every detected language (count>0), dominant first; a comma list → those backend names. Each is
 // then warmed with ITS adaptive cap, so a multi-language repo warms in proportion to the language mix.
-export function prewarmBackends(root, picked) {
-  const which = String(process.env.VTS_PREWARM_BACKENDS || "").trim().toLowerCase();
-  if (!which || which === "auto") return picked ? [picked] : [];
+export function prewarmBackends(root, picked, which = process.env.VTS_PREWARM_BACKENDS) {
+  const w = String(which || "").trim().toLowerCase();
+  if (!w || w === "auto") return picked ? [picked] : [];
   const census = languageCensus(root);
   const detected = ["clangd", "roslyn", "typescript", "pyright"].filter((b) => census[b] > 0).sort((a, b) => census[b] - census[a]);
-  if (which === "all") return detected.length ? detected : picked ? [picked] : [];
-  const list = which.split(",").map((s) => s.trim()).filter((b) => CENSUS_EXT[b]);
+  if (w === "all") return detected.length ? detected : picked ? [picked] : [];
+  const list = w.split(",").map((s) => s.trim()).filter((b) => CENSUS_EXT[b]);
   return list.length ? list : picked ? [picked] : [];
 }
 
