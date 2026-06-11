@@ -565,7 +565,7 @@ export function diffLogs(textA, textB, opts = {}) {
     catLc: String(category).toLowerCase(),
     fileLc: String(file).toLowerCase(),
     q: String(query).toLowerCase(),
-    groupBy: groupBy === "callsite" ? "callsite" : "template",
+    groupBy: ["callsite", "code"].includes(groupBy) ? groupBy : "template",
     maxLocs,
   };
   const A = tally(textA, o);
@@ -591,6 +591,8 @@ export function diffLogs(textA, textB, opts = {}) {
 
   const clip = (m) => (m.length > maxLineChars ? m.slice(0, maxLineChars) + " …" : m);
   const locOf = (g) => (g.locs && g.locs.size ? "  @ " + [...g.locs].join(", ") : "");
+  // Under groupBy=code, prefix the diagnostic code (mirrors analyzeLog) so a code-rolled diff is readable.
+  const codeTag = (g) => (o.groupBy === "code" && g.code && !g.message.startsWith(g.code) ? `${g.code}: ` : "");
   const sevDelta = ["Fatal", "Error", "Warning", "Display"]
     .map((s) => {
       const a = A.sevCounts[s] || 0,
@@ -603,7 +605,7 @@ export function diffLogs(textA, textB, opts = {}) {
   const filt =
     `severity≥${severityMin}` +
     `${category ? `, category=${category}` : ""}${file ? `, file~${file}` : ""}` +
-    `${query ? `, query="${query}"` : ""}${o.groupBy === "callsite" ? ", groupBy=callsite" : ""}`;
+    `${query ? `, query="${query}"` : ""}${o.groupBy !== "template" ? `, groupBy=${o.groupBy}` : ""}`;
   const header =
     `Log diff (A→B) — A: ${A.total} matched, B: ${B.total} matched (filter: ${filt}).\n` +
     `Severity delta: ${sevDelta}.`;
@@ -622,9 +624,9 @@ export function diffLogs(textA, textB, opts = {}) {
     );
   };
   const body =
-    section("+ NEW", added, (g) => `+ ${g.severity.toUpperCase()} [${g.category}] ${clip(g.message)}  (×${g.count})${locOf(g)}`) +
-    section("- GONE", gone, (g) => `- ${g.severity.toUpperCase()} [${g.category}] ${clip(g.message)}  (was ×${g.count})${locOf(g)}`) +
-    section("~ CHANGED", changed, (g) => `~ ${g.delta > 0 ? "+" : ""}${g.delta}  ${g.severity.toUpperCase()} [${g.category}] ${clip(g.message)}  (${g.from}→${g.to})${locOf(g)}`);
+    section("+ NEW", added, (g) => `+ ${g.severity.toUpperCase()} [${g.category}] ${codeTag(g)}${clip(g.message)}  (×${g.count})${locOf(g)}`) +
+    section("- GONE", gone, (g) => `- ${g.severity.toUpperCase()} [${g.category}] ${codeTag(g)}${clip(g.message)}  (was ×${g.count})${locOf(g)}`) +
+    section("~ CHANGED", changed, (g) => `~ ${g.delta > 0 ? "+" : ""}${g.delta}  ${g.severity.toUpperCase()} [${g.category}] ${codeTag(g)}${clip(g.message)}  (${g.from}→${g.to})${locOf(g)}`);
 
   return `${header}\n${body}`;
 }

@@ -23,6 +23,9 @@ process.stdin.on("data", (d) => {
       const q = (msg.params && msg.params.query) || "";
       // "SLOW" delays past a short request timeout — exercises VTS_LSP_TIMEOUT_MS handling.
       if (q === "SLOW") { setTimeout(() => send({ jsonrpc: "2.0", id: msg.id, result: [] }), 300); continue; }
+      // "MISS" returns no symbols — exercises search_symbol's ts/pyright text-search fallback for a name
+      // the workspace/symbol index doesn't surface (e.g. a non-exported local / unopened file).
+      if (q === "MISS") { send({ jsonrpc: "2.0", id: msg.id, result: [] }); continue; }
       let result;
       if (q === "ALL") {
         // big result set with verbose container names — to exercise the token cap

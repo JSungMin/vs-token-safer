@@ -154,7 +154,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (17/17 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (20/20 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -346,6 +346,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index. |
 | — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style); set `0` to disable. |
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly CLI/non-MCP). |
+| — | `VTS_PREWARM_BACKENDS` | auto | Which backends to pre-warm. `auto` = the single detected/dominant one; `all` = every language present in the repo (each warmed in proportion to its file count); or a comma list like `clangd,typescript`. |
+| — | `VTS_WARM_CAP_RATIO` | `0.1` | Adaptive warm-up: open ~this fraction of a language's files (so a bigger language warms more), clamped to `[per-backend base, VTS_WARM_CAP_MAX]`. An explicit `VTS_*_OPEN_CAP` overrides it. |
+| — | `VTS_WARM_CAP_MAX` | `300` | Upper bound on the adaptive per-backend warm-up open-cap. |
 | — | `VTS_CLANGD_REMOTE` | — | Address of a shared/prebuilt clangd index server (`--remote-index-address`); near-zero per-dev warmup. |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | Where the query-history ledger lives (used to order the warm-up set likely-query-first). |
 | — | `VTS_CENTRALITY_MAX` | `20000` | Upper bound on candidates the centrality scan iterates; `0` disables centrality entirely. |
@@ -429,6 +432,11 @@ generated automatically. The badge at the top always points at the latest. Highl
 - **v0.9.0** — log-analysis steer: a code search aimed at a `Logs/` dir or a `.log`/`.jsonl` file is
   pointed at gamedev-log instead of returning an empty code-index result. The grep-block hook now also
   covers the built-in Grep tool (warn-only).
+- **v0.10.0** — language-aware setup and warm-up. `vts_setup` now censuses the project's languages and
+  auto-picks `prewarmBackends`; the warm-up open-cap scales to each language's file count and a
+  multi-language repo can warm every backend in proportion (`VTS_PREWARM_BACKENDS`). `search_text` now
+  scans JS/TS/Python (not just C/C++/C#), and `search_symbol` on tsserver/pyright falls back to a literal
+  text search for a symbol the index hasn't opened. Bundled gamedev-log-analyzer → 0.10.3.
 
 ## Contributing
 
