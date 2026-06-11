@@ -419,6 +419,9 @@ generated automatically. The badge at the top always points at the latest. Highl
 - **v0.7.0** — navigation parity with the Rider sibling: `hover`, `document_symbols`, `find_files`,
   `search_text`, and a context-isolated `code-locator` subagent — plus `rename`, a semantic
   project-wide rename that previews by default and only writes with `apply=true`.
+- **v0.8.0** — two more backends: **JS/TS** (typescript-language-server) and **Python** (pyright), both
+  shipped as plugin dependencies so they install automatically. vts now searches its own source, so we
+  dogfood it while building it.
 
 ## Contributing
 
