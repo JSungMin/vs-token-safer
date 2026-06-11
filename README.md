@@ -426,6 +426,9 @@ generated automatically. The badge at the top always points at the latest. Highl
 - **v0.8.0** — two more backends: **JS/TS** (typescript-language-server) and **Python** (pyright), both
   shipped as plugin dependencies so they install automatically. vts now searches its own source, so we
   dogfood it while building it.
+- **v0.9.0** — log-analysis steer: a code search aimed at a `Logs/` dir or a `.log`/`.jsonl` file is
+  pointed at gamedev-log instead of returning an empty code-index result. The grep-block hook now also
+  covers the built-in Grep tool (warn-only).
 
 ## Contributing
 
