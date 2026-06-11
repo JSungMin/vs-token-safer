@@ -421,6 +421,10 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
   warm할 수 있습니다(`VTS_PREWARM_BACKENDS`). `search_text`가 JS/TS/Python도 스캔하고(기존 C/C++/C#만),
   tsserver/pyright의 `search_symbol`은 인덱스가 안 연 심볼에 대해 리터럴 텍스트 검색으로 폴백합니다.
   동봉 gamedev-log-analyzer → 0.10.3.
+- **v0.11.0** — 최초 사용 setup 유도(미설정이면 첫 결과와 grep-block 훅이 `/vs-token-safer:setup`을
+  안내); LSP 버퍼 신선도(warm-up 후 디스크에서 바뀐 파일을 `didChange`/`didClose`로 갱신, stale 버퍼로
+  답하지 않음)와 LSP 스펙 적합성 강화(서버요청 응답, 타임아웃 시 `$/cancelRequest`, capability 선언).
+  `scripts/sync-gamedev.mjs`로 동봉 플러그인 버전 드리프트 방지.
 
 ## 기여
 
