@@ -9,7 +9,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LspClient, fromUri, langIdForPath } from "./lsp.js";
+import { execFileSync } from "node:child_process";
+import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 
@@ -140,11 +141,79 @@ export function prewarm(root, backendName) {
 // Surface a one-time advisory if the resolved clangd is too old (older clangd deadlocks on large UE
 // projects — see backends/index.js MIN_CLANGD). Shown once per process, prepended to the first result.
 let _advisoryShown = false;
-function backendAdvisory(backendName) {
-  if (backendName !== "clangd" || _advisoryShown) return "";
-  const a = clangdAdvisory(BACKENDS.clangd.cmd);
-  if (a) _advisoryShown = true;
-  return a ? a + "\n\n" : "";
+// clangd is useless without a compile database. Detect a missing compile_commands.json (shallow scan) and
+// advise how to generate it — otherwise semantic search_symbol/find_references/goto/hover silently return
+// nothing on a `.uproject`-only project (clangd is still the picked backend for C++). Exported for the eval.
+export function hasCompileDb(root) {
+  const stack = [[root, 0]];
+  while (stack.length) {
+    const [dir, d] = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isFile() && e.name === "compile_commands.json") return true;
+      if (e.isDirectory() && d < 2 && !e.name.startsWith(".") && e.name !== "node_modules") stack.push([path.join(dir, e.name), d + 1]);
+    }
+  }
+  return false;
+}
+export function compileDbAdvisory(root) {
+  if (hasCompileDb(root)) return "";
+  return "⚠ clangd needs compile_commands.json — none found under the root. Generate it: run " +
+    "`vts_gen_compile_db` (dry-run prints the UBT command; apply=true runs it), or by hand via UBT " +
+    "`-mode=GenerateClangDatabase` (`-Compiler=VisualCpp` for clang-cl) / CMake " +
+    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, semantic " +
+    "search_symbol/find_references/goto/hover are limited, but search_symbol falls back to a literal text " +
+    "search and find_files/search_text work fully.";
+}
+// --- opt-in UBT compile-database generation, so the user can CHOOSE: generate compile_commands.json for
+// full semantic clangd, or stay in no-DB text mode. UE-specific; engine root from VTS_UE_ROOT / arg / a
+// shallow walk-up for Engine/Build/BatchFiles. ---
+function findUProject(root) {
+  const stack = [[root, 0]];
+  while (stack.length) {
+    const [dir, d] = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isFile() && /\.uproject$/i.test(e.name)) return path.join(dir, e.name);
+      if (e.isDirectory() && d < 2 && !e.name.startsWith(".") && e.name !== "node_modules") stack.push([path.join(dir, e.name), d + 1]);
+    }
+  }
+  return null;
+}
+const runUbtPath = (engineRoot) => path.join(engineRoot, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh");
+function findEngineRoot(startDir) {
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(runUbtPath(dir))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
+}
+// Build the UBT GenerateClangDatabase invocation for a project (used by vts_gen_compile_db; exported for the
+// eval). Returns { uproject, engineRoot, runUbt, args, cmdline } or { error }.
+export function genCompileDbPlan(root, a = {}) {
+  const upr = findUProject(root);
+  if (!upr) return { error: `No .uproject found under ${root}. Pass projectPath = the Unreal project root.` };
+  const projName = path.basename(upr).replace(/\.uproject$/i, "");
+  const target = a.target || `${projName}Editor`;
+  const platform = a.platform || "Win64";
+  const config = a.config || "Development";
+  const compiler = a.compiler || "VisualCpp"; // GenerateClangDatabase needs this for clang-cl targets
+  const engineRoot = a.engineRoot || process.env.VTS_UE_ROOT || findEngineRoot(path.dirname(upr));
+  if (!engineRoot) return { error: `Couldn't resolve the UE engine root. Set VTS_UE_ROOT or pass engineRoot= (the folder containing Engine/Build/BatchFiles/RunUBT).`, uproject: upr };
+  const runUbt = runUbtPath(engineRoot);
+  const args = [target, platform, config, `-project=${upr}`, "-mode=GenerateClangDatabase", `-Compiler=${compiler}`];
+  return { uproject: upr, engineRoot, runUbt, args, cmdline: `"${runUbt}" ${args.join(" ")}` };
+}
+let _dbAdvisoryShown = false;
+function backendAdvisory(backendName, root) {
+  if (backendName !== "clangd") return "";
+  let s = "";
+  if (!_advisoryShown) { const a = clangdAdvisory(BACKENDS.clangd.cmd); if (a) { _advisoryShown = true; s += a + "\n\n"; } }
+  if (!_dbAdvisoryShown && root) { const d = compileDbAdvisory(root); if (d) { _dbAdvisoryShown = true; s += d + "\n\n"; } }
+  return s;
 }
 
 // ---- token-capping formatters: LSP results → compact file:line (no bodies) ----
@@ -285,6 +354,9 @@ export async function runTool(name, a = {}) {
           if (!changed.includes("prewarmBackends")) changed.push("prewarmBackends");
           langLine += `\n→ prewarmBackends="${val}" (${langs.length > 1 ? "multi-language: warm every backend in proportion to its file count" : "single language: warm the dominant backend"}).`;
         }
+        // Proactively flag a C++ project with no compile DB — clangd can't index without it, so warn now
+        // (at setup) rather than letting the user discover empty search_symbol results later.
+        if (census.clangd > 0 && !hasCompileDb(root)) langLine += `\n${compileDbAdvisory(root)}`;
       } catch { /* census is best-effort */ }
       return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}`);
     }
@@ -299,7 +371,31 @@ export async function runTool(name, a = {}) {
       if (!backendName) return err(`No backend to warm. Pass backend=clangd|roslyn or ensure ${root} has compile_commands.json / a .sln.`);
       const t0 = Date.now();
       await getClient(root, backendName); // spawn + afterInit (index-ready wait) → primes the on-disk + in-process index
-      return out(backendAdvisory(backendName) + `Warmed ${backendName} for ${root} in ${((Date.now() - t0) / 1000).toFixed(1)}s. Queries in this process are now warm; clangd's on-disk index (.cache/clangd) also persists for faster cold starts.`);
+      return out(backendAdvisory(backendName, root) + `Warmed ${backendName} for ${root} in ${((Date.now() - t0) / 1000).toFixed(1)}s. Queries in this process are now warm; clangd's on-disk index (.cache/clangd) also persists for faster cold starts.`);
+    }
+    if (name === "vts_gen_compile_db") {
+      // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
+      // no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (minutes).
+      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const plan = genCompileDbPlan(root, a);
+      if (plan.error) return err(plan.error);
+      const apply = a.apply === true || a.apply === "true";
+      if (!apply) {
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.`);
+      }
+      if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
+      try {
+        const t0 = Date.now();
+        execFileSync(plan.runUbt, plan.args, { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000) });
+        // UBT writes compile_commands.json to the engine root; our clangd backend looks under the project
+        // root → copy it there if it isn't already.
+        let where = hasCompileDb(root) ? path.join(root, "compile_commands.json") : null;
+        const atEngine = path.join(plan.engineRoot, "compile_commands.json");
+        if (!where && fs.existsSync(atEngine)) { try { fs.copyFileSync(atEngine, path.join(root, "compile_commands.json")); where = path.join(root, "compile_commands.json"); } catch { where = atEngine; } }
+        return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.`);
+      } catch (e) {
+        return err(`UBT GenerateClangDatabase failed: ${e.message}\nRun it manually:\n  ${plan.cmdline}`);
+      }
     }
     // find_files / search_text are pure filesystem (no language server) — they work even when no backend
     // is set, and are the sanctioned, token-capped replacements for `find -name` / `grep`.
@@ -331,15 +427,23 @@ export async function runTool(name, a = {}) {
       const c = await getClient(root, backendName);
       const syms = (await c.symbol(String(a.q))) || [];
       try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
-      const adv = backendAdvisory(backendName);
+      const adv = backendAdvisory(backendName, root);
       if (!syms.length) {
         // tsserver / pyright answer workspace/symbol from the files they have OPEN/indexed, so a symbol
         // whose file the warm-up didn't open (or a non-exported local) can come back empty even though it
         // exists. Fall back to a bounded literal text search so it's still locatable (clangd/roslyn index
         // the whole project, so they skip this). Clearly labeled: text matches, not semantic declarations.
-        if (backendName === "typescript" || backendName === "pyright") {
+        // tsserver/pyright answer from OPEN/indexed files (an unopened or non-exported symbol misses);
+        // clangd returns nothing without a usable compile_commands.json. In all three, fall back to a
+        // bounded literal text search so the name is still locatable. (roslyn indexes the whole solution.)
+        if (backendName === "typescript" || backendName === "pyright" || backendName === "clangd") {
           const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
-          if (hits.length) return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${backendName} answers from open/indexed files, so a symbol whose file isn't open yet (or a non-exported local) can be missed. Literal text matches instead (open the file or run document_symbols to confirm the decl):\n` + hits.join("\n"));
+          if (hits.length) {
+            const why = backendName === "clangd"
+              ? "clangd has no usable index here (missing/empty compile_commands.json)"
+              : `${backendName} answers from open/indexed files, so a symbol whose file isn't open yet (or a non-exported local) can be missed`;
+            return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${why}. Literal text matches instead (file:line of the name, not a semantic decl):\n` + hits.join("\n"));
+          }
         }
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
       }
@@ -350,21 +454,21 @@ export async function runTool(name, a = {}) {
       const c = await getClient(root, backendName);
       const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
       try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      return finishOut(locs, backendAdvisory(backendName) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
       const c = await getClient(root, backendName);
       const locs = (await c.definition(a.path, Number(a.line), Number(a.character))) || [];
       try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      return finishOut(locs, backendAdvisory(backendName) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
+      return finishOut(locs, backendAdvisory(backendName, root) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
     }
     if (name === "hover") {
       if (!a.path || a.line == null || a.character == null) return err("hover needs path, line, character (0-based position).");
       const c = await getClient(root, backendName);
       c.didOpen(a.path, lang); // ensure the TU is open so clangd/Roslyn can answer at the position
       const h = await c.hover(a.path, Number(a.line), Number(a.character));
-      return finishOut(h || {}, backendAdvisory(backendName) + `hover ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtHover(h));
+      return finishOut(h || {}, backendAdvisory(backendName, root) + `hover ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtHover(h));
     }
     if (name === "document_symbols") {
       if (!a.path) return err("document_symbols needs path (the file to outline).");
@@ -372,7 +476,7 @@ export async function runTool(name, a = {}) {
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
-      return finishOut(syms, backendAdvisory(backendName) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max, a.path.replace(/\\/g, "/")));
+      return finishOut(syms, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max, a.path.replace(/\\/g, "/")));
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");

@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "vs-token-safer@vs-token-safer": true,
+    "gamedev-log-analyzer@vs-token-safer": true
+  }
+}

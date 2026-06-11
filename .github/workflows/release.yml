@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Create GitHub Release with full notes from commit bodies since the previous tag
+      - name: Create GitHub Release with categorized, concise notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -20,14 +20,32 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists"; exit 0; fi
           PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
           RANGE="$TAG"; [ -n "$PREV" ] && RANGE="${PREV}..${TAG}"
-          # We squash-merge the dev→main PR, so the squash commit's BODY carries every dev commit's full
-          # message (the real per-change detail). `--generate-notes` only listed the one PR title → thin,
-          # inaccurate notes. Build the body from the commit bodies in this range instead, dropping the
-          # co-author trailer noise. Fall back to --generate-notes only if that comes out empty.
-          git log "$RANGE" --no-merges --pretty=format:'%b' | grep -viE '^Co-Authored-By:' > notes.md || true
-          if [ -n "$PREV" ]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> notes.md
-          fi
+          # We squash-merge the dev→main PR, so the per-change conventional-commit subjects live as `* …`
+          # bullets in the squash commit BODY (not as separate commit subjects). `--generate-notes` only
+          # showed the one PR title. Pull those subjects, group them by type, and emit ONE concise line each
+          # — a Features / Bug Fixes / Maintenance changelog, not the full commit bodies. Fall back to raw
+          # commit subjects if no squash bullets are present (e.g. a direct tag).
+          SUBJECTS=$(git log "$RANGE" --no-merges --pretty=format:'%b' | sed -n 's/^\* //p')
+          [ -z "$SUBJECTS" ] && SUBJECTS=$(git log "$RANGE" --no-merges --pretty=format:'%s')
+          feat=""; fix=""; docs=""; chore=""; other=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            desc=$(printf '%s' "$line" | sed -E 's/^(feat|fix|docs|chore|ci|test|build|refactor|perf|style)(\([^)]*\))?!?: //')
+            case "$line" in
+              feat*) feat="${feat}- ${desc}"$'\n' ;;
+              fix*) fix="${fix}- ${desc}"$'\n' ;;
+              docs*) docs="${docs}- ${desc}"$'\n' ;;
+              chore*|ci*|test*|build*|refactor*|perf*|style*) chore="${chore}- ${desc}"$'\n' ;;
+              *) other="${other}- ${line}"$'\n' ;;
+            esac
+          done <<< "$SUBJECTS"
+          : > notes.md
+          [ -n "$feat" ]  && printf '### 🚀 Features\n%s\n' "$feat"  >> notes.md
+          [ -n "$fix" ]   && printf '### 🐛 Bug Fixes\n%s\n' "$fix"  >> notes.md
+          [ -n "$docs" ]  && printf '### 📝 Documentation\n%s\n' "$docs" >> notes.md
+          [ -n "$chore" ] && printf '### 🔧 Maintenance\n%s\n' "$chore" >> notes.md
+          [ -n "$other" ] && printf '### Other\n%s\n' "$other" >> notes.md
+          [ -n "$PREV" ]  && printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> notes.md
           if [ -s notes.md ]; then
             gh release create "$TAG" --notes-file notes.md --title "$TAG"
           else
