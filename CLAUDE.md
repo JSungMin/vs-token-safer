@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (24/24) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (25/25) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -85,7 +85,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   clangd indexes async → `afterInit` (`backends/index.js`) opens the compile_commands TUs + nearby
   headers (cap 100) and waits for `textDocument/publishDiagnostics` before the first query. CAVEAT: a
   compile DB without include dirs → system/3rd-party headers fail to resolve → only header-free symbols
-  index; UBT-generated DBs include the paths. **✅ real UE 5.x project live-verified end-to-end**
+  index; UBT-generated DBs include the paths. NO compile_commands.json at all (a `.uproject`-only project
+  still picks clangd) → `compileDbAdvisory`/`hasCompileDb` (core.js) prepend a one-time UBT-generate advisory
+  to clangd results AND vts_setup warns proactively; `search_symbol` then falls back to a literal text search
+  (same path as ts/py 0-results) so the name is still locatable without a DB. **✅ real UE 5.x project live-verified end-to-end**
   (`search_symbol` returned the game `UCLASS` + its `*.generated.h` symbols as `file:line`):
   - `GenerateClangDatabase` needs **`-Compiler=VisualCpp`** when the targets build with clang-cl — else
     clang-toolchain validation fails (`Unable to find valid <ver> C++ toolchain for Clang x64`). Override

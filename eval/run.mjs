@@ -351,6 +351,25 @@ finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
 await lc.shutdown();
 const conformanceOk = replyShapesOk && capOk && cancelOk;
 
+// 25) clangd with no compile database: hasCompileDb/compileDbAdvisory detect+advise; search_symbol falls
+// back to a literal text search (a .uproject-only C++ project would otherwise return nothing).
+const { hasCompileDb, compileDbAdvisory } = await import("../server/core.js");
+const noDb = path.join(os.tmpdir(), `vts-eval-${process.pid}-nodb`);
+fs.mkdirSync(noDb, { recursive: true });
+fs.writeFileSync(path.join(noDb, "Thing.cpp"), "void MISS_cppFn() {}\n");
+const withDb = path.join(os.tmpdir(), `vts-eval-${process.pid}-withdb`);
+fs.mkdirSync(withDb, { recursive: true });
+fs.writeFileSync(path.join(withDb, "compile_commands.json"), "[]");
+const dbAdvisoryOk =
+  !hasCompileDb(noDb) && hasCompileDb(withDb) &&
+  /compile_commands/.test(compileDbAdvisory(noDb)) && compileDbAdvisory(withDb) === "";
+const csym = await runTool("search_symbol", { q: "MISS", backend: "clangd", projectPath: noDb }); // mock [] → text fallback
+const clangdFallbackOk =
+  !csym.isError && /Literal text matches/.test(csym.text) &&
+  /clangd has no usable index/.test(csym.text) && /Thing\.cpp/.test(csym.text);
+for (const d of [noDb, withDb]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const clangdNoDbOk = dbAdvisoryOk && clangdFallbackOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -381,6 +400,7 @@ const rows = [
   ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
   ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
   ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
+  ["clangd no-compile-DB: advisory + text fallback", clangdNoDbOk, "true", clangdNoDbOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
