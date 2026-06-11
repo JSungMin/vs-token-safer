@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (26/26) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (32/32) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -41,7 +41,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `find_references`, `goto_definition`, `hover`, `document_symbols`, `rename` (LSP; rename = preview by
   default, `apply=true` writes — the only mutating tool); `find_files`, `search_text`
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
-  `vts_config`, `vts_savings`, `vts_savings_reset`.
+  `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
+  buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
+  BYPASSED vts → missed-token report). `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`,
+  default on-truncate) when a result is capped so the full set is recoverable without re-running.
 - `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
@@ -55,7 +58,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   clamped `[base,VTS_WARM_CAP_MAX]`; explicit `VTS_*_OPEN_CAP` wins), and `prewarmBackends(root,picked)`
   (`VTS_PREWARM_BACKENDS` auto→[dominant] / `all`→every detected lang dominant-first / comma-list). `index.js`
   boot warms each selected backend with its adaptive cap → a multi-lang repo warms in language proportion.
-- `hooks/block-code-grep.js` + `hooks.json` — grep-block (escape hatch `VTS_ENFORCE=0`).
+- `hooks/block-code-grep.js` + `hooks.json` — grep-block. A Bash code search (grep/rg/ack/ag/findstr/
+  `git grep`/`find -name`) that is a SINGLE safe segment is REWRITTEN to the equivalent `vts` CLI command via
+  PreToolUse `updatedInput` (token-capped, flow unbroken); anything ambiguous (pipeline, non-literal pattern,
+  quote in the root) falls back to the exit-2 block. `VTS_REWRITE=0` → block instead of rewrite;
+  `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out; escape hatch `VTS_ENFORCE=0`.
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
 - Config dir `~/.vs-token-safer`, env prefix `VTS_`. MCP server name `vs-search`.
@@ -119,6 +126,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - **pyright** (Python): `pyright-langserver --stdio` (`npm i -g pyright`). Detect:
   pyproject/setup.py/setup.cfg/requirements/Pipfile or `*.py`. `afterInit` opens top-N
   (`VTS_PY_OPEN_CAP`). Override `VTS_PY_CMD/ARGS`. Same generic glue as typescript.
+- **document_symbols outline filter (dogfood-found).** `fmtDocSymbols` hides outline noise by default —
+  anonymous callbacks/function-expressions (`arr.map() callback`, `<function>`) and NESTED var/const/key
+  locals (kinds 13/14/20 at depth>0) — keeping the declaration structure (classes/functions/methods/
+  fields/types). A `(N local/anonymous hidden …)` note shows the count; `VTS_OUTLINE_RAW=1` shows all,
+  `VTS_OUTLINE_DEPTH` caps nesting (default 4). Live: a 105-symbol warmset.js outline → 32. Token + clarity win.
 - **ts/py search_symbol fallback (dogfood-found).** tsserver/pyright answer `workspace/symbol` from
   OPEN/indexed files, so a symbol whose file the warm-up didn't open (or a non-exported local) returns 0.
   `search_symbol` then falls back to a bounded literal text search (`scanTextUnder`, labeled "Literal text
