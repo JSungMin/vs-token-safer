@@ -29,7 +29,7 @@ export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends"];
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok"];
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // LSP SymbolKind → short label (kept terse for the token cap). Covers the full enum so JS/TS/Python
@@ -85,6 +85,10 @@ function applySetup(args) {
 // ---- savings ledger (local; reused pattern from gamedev-log-analyzer) ----
 const SAVINGS_FILE = cfg("VTS_SAVINGS_FILE", "savingsFile", path.join(CONFIG_DIR, "savings.json"));
 const readSavings = () => { try { return JSON.parse(fs.readFileSync(SAVINGS_FILE, "utf8")) || {}; } catch { return {}; } };
+const dayKey = (d = new Date()) => d.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+// $/Mtok used for the est. USD line in `vts savings`. A rough single rate (saved tokens are mostly input
+// the model never has to ingest) — override with VTS_USD_PER_MTOK; purely informational.
+const USD_PER_MTOK = parseFloat(cfg("VTS_USD_PER_MTOK", "usdPerMtok", "3")) || 3;
 function recordSavings(rawTok, outTok) {
   const s = readSavings();
   s.runs = (s.runs || 0) + 1;
@@ -92,6 +96,15 @@ function recordSavings(rawTok, outTok) {
   s.outTok = (s.outTok || 0) + outTok;
   const saved = rawTok - outTok;
   if (saved > (s.bestSaved || 0)) { s.bestSaved = saved; s.bestRaw = rawTok; s.bestOut = outTok; }
+  // Per-day buckets (for --graph / --daily) — pruned to the last 60 days to bound the file size.
+  s.days = s.days || {};
+  const k = dayKey();
+  const d = (s.days[k] = s.days[k] || { runs: 0, rawTok: 0, outTok: 0 });
+  d.runs++; d.rawTok += rawTok; d.outTok += outTok;
+  const keys = Object.keys(s.days).sort();
+  if (keys.length > 60) for (const old of keys.slice(0, keys.length - 60)) delete s.days[old];
+  // Recent-run ring (for --history) — last 20.
+  s.history = (s.history || []).concat([{ t: new Date().toISOString(), raw: rawTok, out: outTok }]).slice(-20);
   try { fs.mkdirSync(path.dirname(SAVINGS_FILE), { recursive: true }); fs.writeFileSync(SAVINGS_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ }
 }
 function savingsLine(rawTok, outTok) {
@@ -100,12 +113,183 @@ function savingsLine(rawTok, outTok) {
   const pct = (100 * (1 - outTok / Math.max(rawTok, 1))).toFixed(1);
   return `\n\n✓ Saved ~${(rawTok - outTok).toLocaleString()} tokens here (${pct}% / ${ratio}× smaller than the raw index response).`;
 }
-function savingsReport() {
+const usd = (tokens) => (tokens / 1e6) * USD_PER_MTOK;
+// ASCII sparkline-style bar graph of saved tokens for the last `days` days (RTK `gain --graph` analog).
+function savingsGraph(s, days = 30) {
+  const today = new Date();
+  const rows = [];
+  let peak = 1;
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86400000);
+    const k = dayKey(d);
+    const b = (s.days || {})[k];
+    const saved = b ? b.rawTok - b.outTok : 0;
+    if (saved > peak) peak = saved;
+    rows.push([k, saved]);
+  }
+  return rows.map(([k, saved]) => {
+    const bar = "█".repeat(Math.round((saved / peak) * 24));
+    return `  ${k}  ${bar} ${saved ? "~" + saved.toLocaleString() : ""}`;
+  }).join("\n");
+}
+function savingsReport(a = {}) {
   const s = readSavings();
   if (!s.runs) return "No savings recorded yet — run a search first.";
   const ratio = s.outTok > 0 ? Math.round(s.rawTok / s.outTok) : "∞";
   const best = s.bestRaw ? `\n  biggest single run: ${s.bestRaw.toLocaleString()} → ${s.bestOut.toLocaleString()} tok` : "";
-  return `vs-token-safer savings (local, ${s.runs} search(es))\n  total saved: ~${(s.rawTok - s.outTok).toLocaleString()} tokens vs forwarding raw index responses\n  raw → output: ${s.rawTok.toLocaleString()} → ${s.outTok.toLocaleString()} tok (~${ratio}× smaller)${best}\n\nLedger: ${SAVINGS_FILE}`;
+  const totalSaved = s.rawTok - s.outTok;
+  let body = `vs-token-safer savings (local, ${s.runs} search(es))\n  total saved: ~${totalSaved.toLocaleString()} tokens vs forwarding raw index responses\n  raw → output: ${s.rawTok.toLocaleString()} → ${s.outTok.toLocaleString()} tok (~${ratio}× smaller)${best}\n  est. value: ~$${usd(totalSaved).toFixed(2)} (@ $${USD_PER_MTOK}/Mtok — rough, set VTS_USD_PER_MTOK)`;
+  const want = (k) => a[k] === true || a[k] === "true";
+  if (want("graph")) body += `\n\nSaved tokens / day (last 30):\n${savingsGraph(s, 30)}`;
+  if (want("daily")) {
+    const keys = Object.keys(s.days || {}).sort().slice(-14);
+    body += `\n\nDaily (last ${keys.length}):\n` + keys.map((k) => { const b = s.days[k]; return `  ${k}  saved ~${(b.rawTok - b.outTok).toLocaleString()}  (${b.runs} run(s))`; }).join("\n");
+  }
+  if (want("history")) {
+    body += `\n\nRecent runs:\n` + (s.history || []).slice().reverse().map((h) => `  ${h.t.replace("T", " ").slice(0, 19)}  ${h.raw.toLocaleString()} → ${h.out.toLocaleString()} tok`).join("\n");
+  }
+  return body + `\n\nLedger: ${SAVINGS_FILE}`;
+}
+
+// ---- #4 tee: when find_files/search_text truncates, write the full (bounded) result set to a tee file so
+// the model can recover everything without re-running. RTK "tee mode" analog (default: on-truncate). ----
+const TEE_DIR = cfg("VTS_TEE_DIR", "teeDir", path.join(CONFIG_DIR, "tee"));
+const teeMode = () => String(cfg("VTS_TEE", "tee", "truncate")).toLowerCase(); // "truncate" (default) | "off"
+const TEE_MAX = parseInt(cfg("VTS_TEE_MAX", "teeMax", "5000"), 10) || 5000;
+function writeTee(tool, q, lines) {
+  try {
+    fs.mkdirSync(TEE_DIR, { recursive: true });
+    // Prune to the most-recent 50 tee files so the dir doesn't grow unbounded.
+    try {
+      const files = fs.readdirSync(TEE_DIR).filter((f) => f.endsWith(".txt")).map((f) => path.join(TEE_DIR, f));
+      if (files.length > 50) for (const f of files.sort((x, y) => fs.statSync(x).mtimeMs - fs.statSync(y).mtimeMs).slice(0, files.length - 50)) fs.rmSync(f, { force: true });
+    } catch { /* prune best-effort */ }
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeQ = String(q).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 40) || "q";
+    const fp = path.join(TEE_DIR, `${ts}_${tool}_${safeQ}.txt`);
+    fs.writeFileSync(fp, lines.join("\n") + "\n");
+    return fp;
+  } catch { return null; }
+}
+// When a capped result is truncated and tee is on, re-collect up to TEE_MAX and write it; return a note.
+function teeNote(tool, q, root, recollect) {
+  if (teeMode() === "off") return "";
+  try {
+    const full = recollect(TEE_MAX);
+    const fp = writeTee(tool, q, full);
+    if (fp) return ` — full ${full.length}${full.truncated ? "+" : ""} result(s) written to ${fp}`;
+  } catch { /* best-effort */ }
+  return "";
+}
+
+// ---- #2 discover: scan recent Claude transcripts for code searches that BYPASSED vts (Bash grep/rg/find
+// or the Grep tool aimed at source) and report the raw tokens they spent — the "missed savings" RTK
+// `discover` surfaces. Local read-only; nothing leaves the machine. ----
+const DISCOVER_CODE_EXT = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/;
+const DISCOVER_CODE_DIR = /(^|[\s"'/\\])(src|source|sources|engine|plugins)[\\/]/;
+const DISCOVER_TEXT_TGT = /\.(log|txt|md|markdown|json|ya?ml|csv|tsv|xml|html?|ini|cfg|conf|toml|lock)\b|(^|[\s"'/\\])(logs?|build|intermediate|saved|node_modules|\.git)[\\/]/i;
+const DISCOVER_SEARCH = /^(grep|rg|ack|ag|findstr)\b|^git\s+grep\b|^find\b.*\s-name(\s|$)/;
+// Strip control chars from a transcript-sourced string before it's echoed to the terminal (a crafted
+// transcript could otherwise inject ANSI sequences), and bound the length.
+// eslint-disable-next-line no-control-regex -- intentionally matching control chars to strip them
+const cleanQ = (s) => String(s).replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 60);
+// Returns {tool,q} if a tool call bypassed vts (a code search routed around it), else null.
+function matchBypass(name, input) {
+  if (!input) return null;
+  if (name === "Bash") {
+    const cmd = String(input.command || "");
+    for (const seg of cmd.split(/\|\||&&|[|;&\n]/g)) {
+      const s = seg.trim().toLowerCase();
+      if (!DISCOVER_SEARCH.test(s)) continue;
+      if (DISCOVER_TEXT_TGT.test(s)) continue;
+      const isGit = /^git\s+grep\b/.test(s);
+      if (isGit || DISCOVER_CODE_EXT.test(s) || DISCOVER_CODE_DIR.test(s)) {
+        return { tool: isGit ? "git grep" : (s.match(/^(\w+)/) || ["", "grep"])[1], q: cleanQ(seg) };
+      }
+    }
+    return null;
+  }
+  if (name === "Grep") {
+    const glob = String(input.glob || "").toLowerCase();
+    const p = String(input.path || "").replace(/\\/g, "/").toLowerCase();
+    const type = String(input.type || "").toLowerCase();
+    if (DISCOVER_TEXT_TGT.test(glob) || DISCOVER_TEXT_TGT.test(p)) return null;
+    const codeType = /^(c|cpp|csharp|cs|cxx|cc|cuda|js|ts|typescript|javascript|jsx|tsx|py|python)$/.test(type);
+    if ((glob && DISCOVER_CODE_EXT.test(glob)) || (p && (DISCOVER_CODE_EXT.test(p) || DISCOVER_CODE_DIR.test(p))) || codeType) {
+      return { tool: "Grep", q: cleanQ(String(input.pattern || "")) };
+    }
+  }
+  return null;
+}
+function discoverReport(a = {}) {
+  const base = process.env.VTS_CLAUDE_PROJECTS || path.join(os.homedir(), ".claude", "projects");
+  let dirs;
+  try { dirs = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(base, d.name)); }
+  catch { return `No Claude transcripts found at ${base} (set VTS_CLAUDE_PROJECTS to override).`; }
+  const all = a.all === true || a.all === "true";
+  const since = Number(a.since) || 7;
+  const cutoff = Date.now() - since * 86400000;
+  let files = [];
+  for (const d of dirs) {
+    let ents; try { ents = fs.readdirSync(d); } catch { continue; }
+    for (const f of ents) {
+      if (!f.endsWith(".jsonl")) continue;
+      const p = path.join(d, f);
+      let st; try { st = fs.statSync(p); } catch { continue; }
+      if (all || st.mtimeMs >= cutoff) files.push({ p, m: st.mtimeMs });
+    }
+  }
+  files.sort((x, y) => y.m - x.m);
+  if (files.length > 200) files = files.slice(0, 200); // bound the scan
+  const learn = a.learn === true || a.learn === "true";
+  const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
+  const learned = new Set(); // file paths recovered from bypassed-search results → fed to the warm-set
+  const PATH_RE = /([A-Za-z]:)?[\w./\\-]+\.(?:c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/g;
+  const cand = new Map(); // tool_use_id → {tool,q}
+  const missed = []; let rawTokTotal = 0; let lines = 0; const MAX_LINES = 300000;
+  outer: for (const { p } of files) {
+    cand.clear(); // a tool_use and its result always share one transcript → bound the map per file
+    let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
+    for (const line of txt.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      if (++lines > MAX_LINES) break outer;
+      let e; try { e = JSON.parse(line); } catch { continue; }
+      const content = e && e.message && e.message.content;
+      if (!Array.isArray(content)) continue;
+      for (const b of content) {
+        if (b && b.type === "tool_use") { const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m); }
+        else if (b && b.type === "tool_result" && cand.has(b.tool_use_id)) {
+          const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          const rt = tok(o); rawTokTotal += rt; missed.push({ ...meta, rawTok: rt });
+          if (learn) { let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o)) && learned.size < 500) learned.add(pm[0]); }
+        }
+      }
+    }
+  }
+  const scope = all ? "all time" : `last ${since} day(s)`;
+  // Synergy B: feed the files those bypassed searches actually hit into the warm-set's query-history, so
+  // prewarm front-loads them next time — vts learns from the greps it didn't run.
+  let learnLine = "";
+  if (learn && learned.size) {
+    try { recordQueryResults(learnRoot, [...learned]); learnLine = `\n  ✓ learned ${learned.size} file(s) into the warm-set for ${learnRoot} (prewarm will front-load them).`; }
+    catch { /* best-effort */ }
+  }
+  // Synergy C: combine with the savings ledger → a catch-rate (caught vs still-bypassing).
+  const caught = (() => { const s = readSavings(); return Math.max(0, (s.rawTok || 0) - (s.outTok || 0)); })();
+  const rate = caught + rawTokTotal > 0 ? (100 * caught / (caught + rawTokTotal)).toFixed(1) : "—";
+  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts`;
+  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + learnLine;
+  const byTool = {};
+  for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
+  const toolLine = Object.entries(byTool).sort((x, y) => y[1] - x[1]).map(([t, n]) => `${t}×${n}`).join(", ");
+  const top = missed.slice().sort((x, y) => y.rawTok - x.rawTok).slice(0, 5)
+    .map((m) => `  ~${m.rawTok.toLocaleString()} tok  [${m.tool}]  ${m.q}`).join("\n");
+  return `vs-token-safer discover — missed token savings (local scan, ${scope}, ${files.length} transcript(s))\n` +
+    `  ${missed.length} code search(es) bypassed vts (${toolLine})\n` +
+    `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}\n` +
+    `  biggest:\n${top}\n` +
+    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${learnLine}`;
 }
 
 // ---- LSP client cache (one per root+backend; reused across calls in a process) ----
@@ -246,20 +430,41 @@ function fmtHover(h) {
   return lines.join("\n") || "(no hover info)";
 }
 // document symbols (hierarchical DocumentSymbol[] or flat SymbolInformation[]) → kind name @ file:line.
+// An outline wants the DECLARATION structure (classes/functions/methods/fields/types), not every
+// function-body local and anonymous callback. tsserver in particular floods documentSymbol with
+// `arr.map() callback` artifacts and nested var/const locals (dogfood: a 200-symbol core.js outline was
+// mostly noise). Hide those by default — VTS_OUTLINE_RAW=1 shows everything; VTS_OUTLINE_DEPTH caps nesting.
+// tsserver's synthetic nested display-names (e.g. "arr.map() callback", "<function>"). Tightened to the
+// parenthesized-callback form + a fully angle-bracketed name so it can't match a real symbol named e.g.
+// `callback` or `registerCallback`. Only applied at depth>0 (see walk) — a top-level entry is always a
+// real declaration, whatever its name/kind.
+const OUTLINE_NOISE = /\(\)\s*callback$|^<[^>]*>$/i;
 function fmtDocSymbols(syms, max, file) {
+  const raw = process.env.VTS_OUTLINE_RAW === "1" || process.env.VTS_OUTLINE_RAW === "true";
+  const maxDepth = envInt("VTS_OUTLINE_DEPTH", 4);
   const rows = [];
-  const walk = (arr, parent) => {
+  let dropped = 0;
+  const walk = (arr, parent, depth) => {
     for (const s of arr || []) {
+      // Noise only when NESTED: a synthetic callback / angle-name, or a var/const/key local (not a decl).
+      // Still DESCEND into a hidden node's children (passing the hidden node's PARENT) so a real
+      // declaration inside a filtered wrapper isn't orphaned — only the wrapper row is dropped.
+      if (!raw && depth > 0 && (OUTLINE_NOISE.test(s.name || "") || s.kind === 13 || s.kind === 14 || s.kind === 20)) {
+        dropped++;
+        if (s.children && depth < maxDepth) walk(s.children, parent, depth + 1);
+        continue;
+      }
       const r = s.range || (s.location && s.location.range);
       const ln = r ? r.start.line + 1 : 1;
       const loc = s.location ? fromUri(s.location.uri).replace(/\\/g, "/") : file;
       rows.push(`${SYMBOL_KIND[s.kind] || `k${s.kind}`} ${parent ? parent + "::" : ""}${s.name}  @ ${loc}:${ln}`);
-      if (s.children) walk(s.children, (parent ? parent + "::" : "") + s.name);
+      if (s.children && depth < maxDepth) walk(s.children, (parent ? parent + "::" : "") + s.name, depth + 1);
     }
   };
-  walk(syms, "");
+  walk(syms, "", 0);
   const shown = rows.slice(0, max);
-  return `${rows.length} symbol(s):\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
+  const note = dropped && !raw ? ` (${dropped} local/anonymous hidden; VTS_OUTLINE_RAW=1 to show)` : "";
+  return `${rows.length} symbol(s)${note}:\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
 }
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).
@@ -269,15 +474,19 @@ function findFilesUnder(root, q, max) {
   const ql = q.toLowerCase();
   const out = [];
   const stack = [root]; let scanned = 0;
-  while (stack.length && out.length < max && scanned < 300000) {
+  // Collect up to max+1 so "exactly max files exist" (a complete sweep) isn't misreported as truncated.
+  while (stack.length && out.length <= max && scanned < 300000) {
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); }
-      else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
+      else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length > max) break; } }
     }
   }
+  // Flag a truncated sweep so the caller never presents a capped/aborted result as complete (no silent caps).
+  if (out.length > max) { out.length = max; out.truncated = "cap"; }
+  else if (scanned >= 300000 && stack.length) out.truncated = "scan";
   return out;
 }
 // Bounded, token-capped raw-text search (no LSP) — the sanctioned alternative to grep for strings/comments
@@ -285,21 +494,28 @@ function findFilesUnder(root, q, max) {
 function scanTextUnder(root, q, max) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
   const exts = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
-  const out = []; const stack = [root]; const t0 = Date.now();
-  while (stack.length && out.length < max && Date.now() - t0 < 4000) {
+  // Collect up to max+1 (so "exactly max" isn't misreported as truncated); track whether the 4s time-box
+  // actually aborted work (checked per directory and per file — the costly steps).
+  const out = []; const stack = [root]; const t0 = Date.now(); let timedOut = false;
+  while (stack.length && out.length <= max) {
+    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); continue; }
       if (!exts.test(e.name)) continue;
+      if (Date.now() - t0 >= 4000) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
-      for (let i = 0; i < lines.length && out.length < max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-      if (out.length >= max) break;
+      for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+      if (out.length > max) break;
     }
+    if (timedOut) break;
   }
+  if (out.length > max) { out.length = max; out.truncated = "cap"; }
+  else if (timedOut) out.truncated = "time";
   return out;
 }
 // A LSP WorkspaceEdit comes back as `changes: {uri: TextEdit[]}` and/or `documentChanges: [{textDocument,edits}]`.
@@ -363,8 +579,9 @@ export async function runTool(name, a = {}) {
     if (name === "vts_config") {
       return out(`Effective settings (env > config > default):\n` + JSON.stringify({ projectPath: PROJECT_PATH || "(unset)", backend: BACKEND || "(auto)", maxResults: MAX_RESULTS, prewarmBackends: PREWARM_BACKENDS || "(auto)" }, null, 2) + `\n\nConfig file: ${CONFIG_FILE}`);
     }
-    if (name === "vts_savings") return out(savingsReport());
+    if (name === "vts_savings") return out(savingsReport(a));
     if (name === "vts_savings_reset") { try { fs.writeFileSync(SAVINGS_FILE, "{}"); } catch { /* ignore */ } return out("Savings ledger cleared."); }
+    if (name === "vts_discover") return out(discoverReport(a));
     if (name === "vts_warmup") {
       const root = a.projectPath || PROJECT_PATH || process.cwd();
       const backendName = a.backend || BACKEND || pickBackend(root);
@@ -405,7 +622,9 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
       if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
-      return finishOut(files, `${files.length} file(s) matching "${a.q}":\n` + files.join("\n"));
+      let ft = files.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : files.truncated === "scan" ? ` — scan limit hit (narrow projectPath; more exist)` : "";
+      if (files.truncated) ft += teeNote("find_files", a.q, root, (n) => findFilesUnder(root, String(a.q), n));
+      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + files.join("\n"));
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
@@ -413,11 +632,23 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       const hits = scanTextUnder(root, String(a.q), max);
       if (!hits.length) return finishOut([], `No text matches for "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol):\n` + hits.join("\n"));
+      let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
+      if (hits.truncated) tt += teeNote("search_text", a.q, root, (n) => scanTextUnder(root, String(a.q), n));
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol)${tt}:\n` + hits.join("\n"));
     }
 
     const root = a.projectPath || PROJECT_PATH || process.cwd();
     const backendName = a.backend || BACKEND || pickBackend(root);
+    // search_symbol degrades gracefully when NO backend resolves (text fallback) instead of hard-erroring —
+    // so the grep-rewrite hook can always route an identifier to `vts symbol` (semantic when a backend
+    // exists, literal text otherwise) without risking a dead-end error.
+    if (!backendName && name === "search_symbol") {
+      if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
+      const max = Number(a.maxResults) || MAX_RESULTS;
+      const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
+      if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
+      return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
+    }
     if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn|typescript|pyright, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++), a .sln/.csproj (C#), a tsconfig/package.json (JS/TS), or a pyproject.toml/*.py (Python).`);
     const max = Number(a.maxResults) || MAX_RESULTS;
     const lang = langIdForPath(a.path, backendName); // languageId for didOpen (hover/document_symbols/rename); unused by search_symbol

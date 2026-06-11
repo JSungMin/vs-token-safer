@@ -150,7 +150,7 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
   줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
   캡해서 반환합니다.
 - 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 26/26).
+  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 32/32).
 
 ### 정확도 차이와 그 이유
 "누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
@@ -429,6 +429,16 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
   안내하고, `search_symbol`은 리터럴 텍스트 검색으로 폴백하며, `vts_setup`이 미리 경고합니다. 새
   `vts_gen_compile_db`가 UBT `GenerateClangDatabase` 명령을 구성(옵션으로 실행)합니다 — 풀 semantic
   clangd와 경량 no-DB 모드 사이의 선택권.
+- **v0.13.0** — grep-block 훅이 이제 Bash 코드 검색(`grep`/`rg`/`findstr`/`git grep`/`find -name`)을 차단만
+  하지 않고 동등한 토큰-캡 `vts` 명령으로 **재작성**합니다. 모델 흐름이 끊기지 않고 출력은 항상 캡됩니다
+  (`VTS_REWRITE=0`이면 기존 차단 유지, `excludeCommands`/`VTS_EXCLUDE_COMMANDS`로 특정 명령 제외).
+  새 `vts discover`는 최근 Claude 대화 기록에서 vts를 우회한 검색과 소모한 토큰을 보고하고, `vts savings`는
+  30일 그래프·일별/이력 분석·추정 가치를 추가하며, 잘린 `find_files`/`search_text`는 전체 결과를 복구
+  (tee) 파일로 씁니다. 이들은 자기개선으로 결합됩니다: 재작성은 식별자 패턴을 텍스트 grep이 아닌 **semantic**
+  `search_symbol`로 보내고(백엔드가 없으면 텍스트로 자동 폴백), `vts discover --learn`은 우회한 검색이 맞춘
+  파일들을 warm-up 세트에 넣어 다음 prewarm이 먼저 열게 하며, `discover`는 **catch-rate**(vts가 잡은 토큰 vs
+  여전히 우회 중)를 보고합니다. 또한 `document_symbols`가 아웃라인 노이즈(익명 콜백/중첩 로컬)를 숨기고,
+  잘린 스윕은 조용히 캡되지 않고 표시됩니다.
 
 ## 기여
 

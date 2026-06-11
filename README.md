@@ -154,7 +154,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (26/26 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (32/32 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -446,6 +446,18 @@ generated automatically. The badge at the top always points at the latest. Highl
   clangd warns how to generate the DB, `search_symbol` falls back to a literal text search, and `vts_setup`
   flags it. New `vts_gen_compile_db` builds (and optionally runs) the UBT `GenerateClangDatabase` command —
   the user's choice between full semantic clangd and lightweight no-DB mode.
+- **v0.13.0** — the grep-block hook now **rewrites** a Bash code search (`grep`/`rg`/`findstr`/`git grep`/
+  `find -name`) into the equivalent token-capped `vts` command instead of only blocking it, so the model's
+  flow is unbroken and the output is always capped (`VTS_REWRITE=0` keeps the old block; `excludeCommands` /
+  `VTS_EXCLUDE_COMMANDS` opt a command out). New `vts discover` scans recent Claude transcripts for searches
+  that bypassed vts and reports the tokens they spent; `vts savings` gains a 30-day graph, daily/history
+  breakdowns and an estimated value; a truncated `find_files`/`search_text` writes the full result to a
+  recovery (tee) file. These compose for self-improvement: the rewrite routes a bare identifier to the
+  **semantic** `search_symbol` (not just a text grep, degrading to text when no backend resolves); `vts
+  discover --learn` feeds the files those bypassed searches hit into the warm-up set so prewarm front-loads
+  them next time; and `discover` reports a **catch-rate** (tokens caught by vts vs still bypassing). Also:
+  `document_symbols` hides outline noise (anonymous callbacks / nested locals) and truncated sweeps are
+  flagged, never silently capped.
 
 ## Contributing
 
