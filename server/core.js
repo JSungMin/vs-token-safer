@@ -44,7 +44,7 @@ const SYMBOL_KIND = {
 // pointed at a log returns empty or errors, and the model often burns calls before switching tools.
 // A log-ish target: a Logs/ (or Saved/Logs/) dir, or a .log/.jsonl/.log.N file. Precise enough to skip
 // "log" inside "catalog" and ordinary source paths.
-const LOG_PATHISH = /(^|[/\\])(saved[/\\])?logs[/\\]|\.(log|jsonl)(\.\d+)?$/i;
+const LOG_PATHISH = /(^|[/\\])(saved[/\\])?logs([/\\]|$)|\.(log|jsonl)(\.\d+)?$/i;
 function looksLogTarget(a) {
   return [a.path, a.projectPath, a.paths].flat().filter((v) => typeof v === "string").some((v) => LOG_PATHISH.test(v));
 }

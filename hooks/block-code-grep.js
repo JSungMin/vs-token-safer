@@ -29,7 +29,9 @@ const CODE_DIR_RE = /(^|[\s"'/\\])(src|source|sources|engine|plugins)[\\/]/;
 const TEXT_TARGET_RE = /\.(log|txt|md|markdown|json|ya?ml|csv|tsv|xml|html?|ini|cfg|conf|toml|lock)\b/;
 // A log-ish target: a Logs/ (or Saved/Logs/) dir, or a .log/.jsonl/.log.N file. Precise enough to skip
 // "log" inside "catalog" and ordinary source paths.
-const LOG_TARGET_RE = /(^|[\s"'/\\])(saved[/\\])?logs[/\\]|\.(log|jsonl)(\.\d+)?\b/i;
+// `logs([/\\]|$)` so a bare `Saved/Logs` dir (the common Grep `path` form, no trailing slash) still hits,
+// while `(^|sep)` anchoring still rejects "catalog"/"dialogs"/"mylogs".
+const LOG_TARGET_RE = /(^|[\s"'/\\])(saved[/\\])?logs([/\\]|$)|\.(log|jsonl)(\.\d+)?\b/i;
 
 function execOf(segment) {
   const tokens = segment.trim().split(/\s+/);

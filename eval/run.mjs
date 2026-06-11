@@ -218,10 +218,12 @@ const runHook = (payload) => {
 const hCode = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } });
 const hLog = runHook({ tool_name: "Bash", tool_input: { command: "grep Error Saved/Logs/run.log" } });
 const hGrep = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } });
+const hGrepLog = runHook({ tool_name: "Grep", tool_input: { pattern: "Error", path: "Saved/Logs" } }); // bare Logs dir
 const hookOk =
   hCode.status === 2 && /Blocked/.test(hCode.err) &&
   hLog.status === 0 && /gamedev-log/.test(hLog.out) &&
-  hGrep.status === 0 && /Grep tool/.test(hGrep.out);
+  hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
+  hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
