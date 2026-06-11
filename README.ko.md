@@ -150,7 +150,7 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
   줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
   캡해서 반환합니다.
 - 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 18/18).
+  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 19/19).
 
 ### 정확도 차이와 그 이유
 "누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
@@ -334,6 +334,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | warm-up이 clangd 인덱스를 데우려 여는 파일 최대 수. |
 | — | `VTS_PREWARM` | on (`projectPath` 설정 시) | MCP 서버가 기동 시 인덱스 pre-warm(IDE식); `0`이면 비활성. |
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart 훅도 detached `vts warmup`으로 pre-warm(opt-in; 주로 CLI/비-MCP). |
+| — | `VTS_PREWARM_BACKENDS` | auto | pre-warm할 백엔드. `auto`=감지된 단일/우세 백엔드 하나; `all`=repo에 존재하는 모든 언어(각 언어 파일수에 비례해 warm); 또는 `clangd,typescript` 같은 콤마 목록. |
+| — | `VTS_WARM_CAP_RATIO` | `0.1` | 적응형 warm-up: 한 언어 파일의 ~이 비율만큼 open(큰 언어가 더 많이 warm), `[백엔드별 base, VTS_WARM_CAP_MAX]`로 clamp. `VTS_*_OPEN_CAP` 명시 시 그게 우선. |
+| — | `VTS_WARM_CAP_MAX` | `300` | 적응형 백엔드별 warm-up open-cap 상한. |
 | — | `VTS_CLANGD_REMOTE` | — | 공유/사전구축 clangd 인덱스 서버 주소(`--remote-index-address`); 개발자별 warmup ~0. |
 | — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | 쿼리 이력 원장 위치(warm-up 세트를 곧-검색-우선으로 정렬하는 데 사용). |
 | — | `VTS_CENTRALITY_MAX` | `20000` | 중심성 스캔이 순회할 후보 상한; `0`이면 중심성 비활성. |

@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (18/18) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (19/19) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -39,7 +39,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `p4 opened`] > git-log recency > include-centrality [adaptive: prefix-read + `VTS_CENTRALITY_BUDGET_MS`
   + persistent include-graph cache that grows across warmups; `VTS_CENTRALITY_MAX` bounds the loop] > mtime) +
   `recordQueryResults`. Steers clangd's open-set so the warm window hits likely queries; git + Perforce.
-  Used by `backends/index.js` afterInit + `core.js` (records result files per search).
+  Used by `backends/index.js` afterInit + `core.js` (records result files per search). Also LANGUAGE-MIX
+  warm sizing: `languageCensus(root)` (cached file-count per backend lang, skips node_modules/build/...),
+  `warmCap(root,backend,env,base)` (per-backend open-cap scales to that lang's file count × `VTS_WARM_CAP_RATIO`,
+  clamped `[base,VTS_WARM_CAP_MAX]`; explicit `VTS_*_OPEN_CAP` wins), and `prewarmBackends(root,picked)`
+  (`VTS_PREWARM_BACKENDS` auto→[dominant] / `all`→every detected lang dominant-first / comma-list). `index.js`
+  boot warms each selected backend with its adaptive cap → a multi-lang repo warms in language proportion.
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block (escape hatch `VTS_ENFORCE=0`).
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.

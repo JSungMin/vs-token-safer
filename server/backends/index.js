@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { toUri, envInt, langIdForPath } from "../lsp.js";
-import { orderForWarm } from "../warmset.js";
+import { orderForWarm, warmCap } from "../warmset.js";
 import { resolveBinJs } from "../resolve-bin.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
@@ -163,7 +163,7 @@ export const BACKENDS = {
       const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2);
       // Order the open-set by likely-query-first (query-history > git-recency > mtime), then cap — this
       // steers clangd's IndexBoostedFile priority so the warm window covers what the dev actually queries.
-      const open = orderForWarm(root, [...new Set([...files, ...extra])], envInt("VTS_CLANGD_OPEN_CAP", 100));
+      const open = orderForWarm(root, [...new Set([...files, ...extra])], warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100));
       for (const f of open) client.didOpen(f, "cpp");
       if (open.length) {
         // On a huge tree (e.g. a cold UE-scale index) the dynamic index isn't ready when the first
@@ -218,7 +218,7 @@ export const BACKENDS = {
     detect: (root) => exists(root, "tsconfig.json", "jsconfig.json", "package.json") || !!findShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, 1),
     afterInit: async (client, root) => {
       const files = findAllShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i, 3);
-      const open = orderForWarm(root, files, envInt("VTS_TS_OPEN_CAP", 60));
+      const open = orderForWarm(root, files, warmCap(root, "typescript", "VTS_TS_OPEN_CAP", 60));
       for (const f of open) client.didOpen(f, langIdForPath(f, "typescript"));
     },
   }),
@@ -229,7 +229,7 @@ export const BACKENDS = {
     detect: (root) => exists(root, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile") || !!findShallow(root, /\.py$/, 1),
     afterInit: async (client, root) => {
       const files = findAllShallow(root, /\.pyi?$/i, 3);
-      const open = orderForWarm(root, files, envInt("VTS_PY_OPEN_CAP", 60));
+      const open = orderForWarm(root, files, warmCap(root, "pyright", "VTS_PY_OPEN_CAP", 60));
       for (const f of open) client.didOpen(f, "python");
     },
   }),

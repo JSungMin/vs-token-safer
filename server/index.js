@@ -12,6 +12,7 @@
 import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from "./sdk.js";
 import { runTool, disposeClients, prewarm, PROJECT_PATH, BACKEND } from "./core.js";
 import { pickBackend } from "./backends/index.js";
+import { prewarmBackends } from "./warmset.js";
 
 const log = (...a) => console.error("[vs-token-safer]", ...a);
 const envBool = (name, def) => { const v = process.env[name]; if (v === undefined || v === "") return def; return !/^(0|false|off|no)$/i.test(v); };
@@ -213,8 +214,11 @@ log("ready on stdio.");
 // the user's first search reuses an already-warming/warm client instead of paying cold warmup inline.
 // Default on when projectPath is set; disable with VTS_PREWARM=0 (fire-and-forget — never blocks boot).
 if (PROJECT_PATH && envBool("VTS_PREWARM", true)) {
-  const backend = BACKEND || pickBackend(PROJECT_PATH);
-  if (backend) {
+  // Single dominant backend by default; VTS_PREWARM_BACKENDS=all (or a comma list) warms every detected
+  // language, each with its language-proportional adaptive cap (warmCap). Fire-and-forget — never blocks boot.
+  const picked = BACKEND || pickBackend(PROJECT_PATH);
+  const backends = prewarmBackends(PROJECT_PATH, picked);
+  for (const backend of backends) {
     log(`pre-warming ${backend} index for ${PROJECT_PATH} …`);
     prewarm(PROJECT_PATH, backend).then(
       (c) => { if (c) log(`index warm (${backend}).`); },
