@@ -180,13 +180,18 @@ const TOOLS = [
   },
   {
     name: "vts_savings",
-    description: "Report how many tokens you've saved vs forwarding raw index responses (local, cumulative).",
-    inputSchema: { type: "object", properties: {} },
+    description: "Report how many tokens you've saved vs forwarding raw index responses (local, cumulative). Optional graph/daily/history breakdowns + an estimated USD value.",
+    inputSchema: { type: "object", properties: { graph: { type: "boolean", description: "Show a 30-day ASCII graph of saved tokens." }, daily: { type: "boolean", description: "Show a day-by-day breakdown (last 14)." }, history: { type: "boolean", description: "Show the most recent runs." } } },
   },
   {
     name: "vts_savings_reset",
     description: "Clear the local savings ledger.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "vts_discover",
+    description: "Scan recent Claude Code transcripts (local, read-only) for code searches that BYPASSED vts — Bash grep/rg/find or the Grep tool aimed at source — and report the raw tokens they spent (the missed savings). Use to see where token-heavy text search is still slipping past vts.",
+    inputSchema: { type: "object", properties: { since: { type: "number", description: "Look back this many days (default 7)." }, all: { type: "boolean", description: "Scan all projects, all time (ignore the since window)." }, learn: { type: "boolean", description: "Feed the files those bypassed searches hit into the warm-set query-history (front-loads them in prewarm)." }, projectPath: { type: "string", description: "Root to attribute learned files to (default: configured projectPath or cwd)." } } },
   },
   {
     name: "vts_warmup",

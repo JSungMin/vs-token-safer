@@ -33,7 +33,11 @@ Commands:
   setup          Persist config. [--projectPath --backend --maxResults]
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
+                 [--graph (30-day ASCII) --daily --history]
   savings-reset  Clear the savings ledger.
+  discover       Scan recent Claude transcripts for code searches that BYPASSED vts (missed savings).
+                 [--since N (days, default 7) --all (all projects, all time)
+                  --learn (feed the files those searches hit into the warm-set) --projectPath <dir>]
   gen-compile-db Generate compile_commands.json for an Unreal project via UBT (full clangd index).
                  Dry-run by default; --apply runs it. [--projectPath --apply --engineRoot --target ...]
 
@@ -43,7 +47,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn"]);
 
 function parseArgs(argv) {
   const a = {};
@@ -59,7 +63,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", files: "find_files", text: "search_text", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", files: "find_files", text: "search_text", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
