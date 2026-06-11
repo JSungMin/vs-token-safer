@@ -250,7 +250,11 @@ function fmtHover(h) {
 // function-body local and anonymous callback. tsserver in particular floods documentSymbol with
 // `arr.map() callback` artifacts and nested var/const locals (dogfood: a 200-symbol core.js outline was
 // mostly noise). Hide those by default — VTS_OUTLINE_RAW=1 shows everything; VTS_OUTLINE_DEPTH caps nesting.
-const OUTLINE_NOISE = /\(\)\s*callback$|=>\s*$|^<.*>$|\bcallback$/i;
+// tsserver's synthetic nested display-names (e.g. "arr.map() callback", "<function>"). Tightened to the
+// parenthesized-callback form + a fully angle-bracketed name so it can't match a real symbol named e.g.
+// `callback` or `registerCallback`. Only applied at depth>0 (see walk) — a top-level entry is always a
+// real declaration, whatever its name/kind.
+const OUTLINE_NOISE = /\(\)\s*callback$|^<[^>]*>$/i;
 function fmtDocSymbols(syms, max, file) {
   const raw = process.env.VTS_OUTLINE_RAW === "1" || process.env.VTS_OUTLINE_RAW === "true";
   const maxDepth = envInt("VTS_OUTLINE_DEPTH", 4);
@@ -258,8 +262,14 @@ function fmtDocSymbols(syms, max, file) {
   let dropped = 0;
   const walk = (arr, parent, depth) => {
     for (const s of arr || []) {
-      // anonymous callback / function-expression, OR a NESTED var/const/key (a function-local, not a decl).
-      if (!raw && (OUTLINE_NOISE.test(s.name || "") || (depth > 0 && (s.kind === 13 || s.kind === 14 || s.kind === 20)))) { dropped++; continue; }
+      // Noise only when NESTED: a synthetic callback / angle-name, or a var/const/key local (not a decl).
+      // Still DESCEND into a hidden node's children (passing the hidden node's PARENT) so a real
+      // declaration inside a filtered wrapper isn't orphaned — only the wrapper row is dropped.
+      if (!raw && depth > 0 && (OUTLINE_NOISE.test(s.name || "") || s.kind === 13 || s.kind === 14 || s.kind === 20)) {
+        dropped++;
+        if (s.children && depth < maxDepth) walk(s.children, parent, depth + 1);
+        continue;
+      }
       const r = s.range || (s.location && s.location.range);
       const ln = r ? r.start.line + 1 : 1;
       const loc = s.location ? fromUri(s.location.uri).replace(/\\/g, "/") : file;
@@ -280,17 +290,18 @@ function findFilesUnder(root, q, max) {
   const ql = q.toLowerCase();
   const out = [];
   const stack = [root]; let scanned = 0;
-  while (stack.length && out.length < max && scanned < 300000) {
+  // Collect up to max+1 so "exactly max files exist" (a complete sweep) isn't misreported as truncated.
+  while (stack.length && out.length <= max && scanned < 300000) {
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); }
-      else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
+      else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length > max) break; } }
     }
   }
   // Flag a truncated sweep so the caller never presents a capped/aborted result as complete (no silent caps).
-  if (out.length >= max) out.truncated = "cap";
+  if (out.length > max) { out.length = max; out.truncated = "cap"; }
   else if (scanned >= 300000 && stack.length) out.truncated = "scan";
   return out;
 }
@@ -299,25 +310,28 @@ function findFilesUnder(root, q, max) {
 function scanTextUnder(root, q, max) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
   const exts = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
-  const out = []; const stack = [root]; const t0 = Date.now();
-  while (stack.length && out.length < max && Date.now() - t0 < 4000) {
+  // Collect up to max+1 (so "exactly max" isn't misreported as truncated); track whether the 4s time-box
+  // actually aborted work (checked per directory and per file — the costly steps).
+  const out = []; const stack = [root]; const t0 = Date.now(); let timedOut = false;
+  while (stack.length && out.length <= max) {
+    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); continue; }
       if (!exts.test(e.name)) continue;
+      if (Date.now() - t0 >= 4000) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
-      for (let i = 0; i < lines.length && out.length < max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-      if (out.length >= max) break;
+      for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+      if (out.length > max) break;
     }
+    if (timedOut) break;
   }
-  // Flag a truncated sweep (cap reached, or the 4s time-box aborted with dirs still queued) so the caller
-  // can say so instead of implying the result is exhaustive.
-  if (out.length >= max) out.truncated = "cap";
-  else if (Date.now() - t0 >= 4000 && stack.length) out.truncated = "time";
+  if (out.length > max) { out.length = max; out.truncated = "cap"; }
+  else if (timedOut) out.truncated = "time";
   return out;
 }
 // A LSP WorkspaceEdit comes back as `changes: {uri: TextEdit[]}` and/or `documentChanges: [{textDocument,edits}]`.

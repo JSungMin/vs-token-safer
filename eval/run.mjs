@@ -134,6 +134,8 @@ delete process.env.VTS_OUTLINE_RAW;
 const docSymOk =
   !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text) &&
   /keepMethod/.test(ds.text) &&                  // real method kept
+  /realInner/.test(ds.text) &&                   // real decl inside a hidden wrapper NOT orphaned
+  /func callback {2}@/.test(ds.text) &&          // top-level symbol named 'callback' kept (depth-0, not noise)
   !/map\(\) callback/.test(ds.text) && !/localTmp/.test(ds.text) && // anonymous + nested local hidden
   /local\/anonymous hidden/.test(ds.text) &&     // the hidden-count note
   /map\(\) callback/.test(dsRaw.text) && /localTmp/.test(dsRaw.text); // VTS_OUTLINE_RAW=1 shows everything
@@ -400,10 +402,12 @@ for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(capDir, `f${i}.cpp`), "NE
 const ffCap = await runTool("find_files", { q: "*.cpp", projectPath: capDir, maxResults: 2 });
 const stCap = await runTool("search_text", { q: "NEEDLE", projectPath: capDir, maxResults: 2 });
 const ffFull = await runTool("find_files", { q: "*.cpp", projectPath: capDir, maxResults: 50 });
+const ffExact = await runTool("find_files", { q: "*.cpp", projectPath: capDir, maxResults: 5 }); // exactly 5 files → complete
 const truncOk =
   !ffCap.isError && /capped at 2/.test(ffCap.text) &&
   !stCap.isError && /capped at 2/.test(stCap.text) &&
-  !ffFull.isError && !/capped/.test(ffFull.text); // complete sweep → no truncation note
+  !ffFull.isError && !/capped/.test(ffFull.text) && // complete sweep → no truncation note
+  !ffExact.isError && !/capped/.test(ffExact.text) && /5 file/.test(ffExact.text); // exactly max → NOT a false "cap" (limit+1)
 try { fs.rmSync(capDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
