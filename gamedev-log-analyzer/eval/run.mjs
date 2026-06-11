@@ -147,6 +147,18 @@ const codeRollupOne = /C4996: .*\(×8\)/.test(byCode); // all 8 distinct C4996 d
 const codeFewerGroups = bodyGroups(byCode) < bodyGroups(byTemplate); // code collapses what template can't
 const codeRollupOk = codeCaptured && codeRollupOne && codeFewerGroups;
 
+// log_diff must honor groupBy=code too (regression: diffLogs silently forced "code" → "template", so a
+// code-rolled diff exploded into one row per distinct message and the header lied about the grouping).
+// A has no C4996; B is the noisy build with 8 DISTINCT C4996 deprecations. Under groupBy=code they must
+// collapse into ONE new group (×8) and the header must announce groupBy=code; template keeps all 8 — so
+// the code diff has strictly fewer NEW groups. Under the old bug every clause fails (template grouping).
+const diffBase = "Source/Mod/Net.cpp(10,2): error C2065: undeclared identifier";
+const diffByCode = diffLogs(diffBase, buildLog, { severityMin: "Warning", groupBy: "code" });
+const diffByTemplate = diffLogs(diffBase, buildLog, { severityMin: "Warning", groupBy: "template" });
+const newRows = (s) => (s.match(/^\+ [A-Z]+ \[/gm) || []).length; // NEW item rows (excludes the "+ NEW (n):" header)
+const diffByCodeOk =
+  /groupBy=code/.test(diffByCode) && /C4996: .*\(×8\)/.test(diffByCode) && newRows(diffByCode) < newRows(diffByTemplate);
+
 // JSONL field extraction — the JSON `Actor=(x,y,z)` inside `message` + top-level `ts` must resolve so
 // `log_fields` works on JSONL trace logs (live-verified on a real UE movement log).
 const jsonlLog = [
@@ -227,6 +239,7 @@ const rows = [
   ["log_locate omits bodies", locateNoBodies, "true", locateNoBodies],
   ["multi-engine classify (synthetic)", engineOk, "true", engineOk],
   ["build code rollup (groupBy=code)", codeRollupOk, "true", codeRollupOk],
+  ["log_diff code rollup (groupBy=code)", diffByCodeOk, "true", diffByCodeOk],
   ["enforce: bash+read+mode+nudge", enforceOk, "true", enforceOk],
   ["JSONL field extraction", jsonlOk, "true", jsonlOk],
   ["coverage hint (unknown fmt only)", covHintOk, "true", covHintOk],

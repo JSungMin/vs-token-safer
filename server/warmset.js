@@ -163,6 +163,57 @@ function centralityRank(candidates) {
   return fanin;
 }
 
+// --- language census: how much of the repo is each backend's language, so warm-up scales to the project
+// mix. A C++-heavy tree warms more C++ TUs; a small JS side-dir warms few. Counts drive both the adaptive
+// per-backend open-cap (warmCap) and the optional multi-backend prewarm (prewarmBackends). ---
+const CENSUS_EXT = {
+  clangd: /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp)$/i,
+  roslyn: /\.cs$/i,
+  typescript: /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i,
+  pyright: /\.(py|pyi)$/i,
+};
+const SKIP_DIR = /^(build|intermediate|saved|bin|obj|dist|out|node_modules|\.git|target|coverage)$/i;
+const _censusCache = new Map(); // normRoot -> counts (process-lifetime; warm-up reads it a few times)
+export function languageCensus(root) {
+  const key = norm(root);
+  if (_censusCache.has(key)) return _censusCache.get(key);
+  const counts = { clangd: 0, roslyn: 0, typescript: 0, pyright: 0, total: 0 };
+  const stack = [root]; let scanned = 0;
+  const MAX = envInt("VTS_CENSUS_MAX", 200000), t0 = Date.now();
+  while (stack.length && scanned < MAX && Date.now() - t0 < 3000) {
+    const dir = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!e.name.startsWith(".") && !SKIP_DIR.test(e.name)) stack.push(path.join(dir, e.name)); continue; }
+      scanned++;
+      for (const b in CENSUS_EXT) if (CENSUS_EXT[b].test(e.name)) { counts[b]++; counts.total++; break; }
+    }
+  }
+  _censusCache.set(key, counts);
+  return counts;
+}
+// Adaptive warm open-cap for a backend: an explicit VTS_*_OPEN_CAP wins; else scale to the language's file
+// count (warm ~VTS_WARM_CAP_RATIO of them) clamped to [base, VTS_WARM_CAP_MAX]. Big language → warm more.
+export function warmCap(root, backend, envName, base) {
+  const ov = parseInt(process.env[envName], 10);
+  if (Number.isFinite(ov) && ov >= 0) return ov; // explicit override (incl. 0 = disable) wins
+  const n = languageCensus(root)[backend] || 0;
+  const ratio = Number(process.env.VTS_WARM_CAP_RATIO) > 0 ? Number(process.env.VTS_WARM_CAP_RATIO) : 0.1;
+  return Math.min(envInt("VTS_WARM_CAP_MAX", 300), Math.max(base, Math.round(n * ratio)));
+}
+// Which backends to prewarm: VTS_PREWARM_BACKENDS unset/"auto" → [dominant only] (current behavior);
+// "all" → every detected language (count>0), dominant first; a comma list → those backend names. Each is
+// then warmed with ITS adaptive cap, so a multi-language repo warms in proportion to the language mix.
+export function prewarmBackends(root, picked, which = process.env.VTS_PREWARM_BACKENDS) {
+  const w = String(which || "").trim().toLowerCase();
+  if (!w || w === "auto") return picked ? [picked] : [];
+  const census = languageCensus(root);
+  const detected = ["clangd", "roslyn", "typescript", "pyright"].filter((b) => census[b] > 0).sort((a, b) => census[b] - census[a]);
+  if (w === "all") return detected.length ? detected : picked ? [picked] : [];
+  const list = w.split(",").map((s) => s.trim()).filter((b) => CENSUS_EXT[b]);
+  return list.length ? list : picked ? [picked] : [];
+}
+
 // Reorder `candidates` for warming and cap. Tiered weights (strongest evidence first):
 //   ② query history > ④ working-now (git status / p4 opened) > ① git-log recency > ③ centrality > mtime.
 export function orderForWarm(root, candidates, cap = 100) {

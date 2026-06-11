@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (17/17) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (20/20) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -39,7 +39,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `p4 opened`] > git-log recency > include-centrality [adaptive: prefix-read + `VTS_CENTRALITY_BUDGET_MS`
   + persistent include-graph cache that grows across warmups; `VTS_CENTRALITY_MAX` bounds the loop] > mtime) +
   `recordQueryResults`. Steers clangd's open-set so the warm window hits likely queries; git + Perforce.
-  Used by `backends/index.js` afterInit + `core.js` (records result files per search).
+  Used by `backends/index.js` afterInit + `core.js` (records result files per search). Also LANGUAGE-MIX
+  warm sizing: `languageCensus(root)` (cached file-count per backend lang, skips node_modules/build/...),
+  `warmCap(root,backend,env,base)` (per-backend open-cap scales to that lang's file count × `VTS_WARM_CAP_RATIO`,
+  clamped `[base,VTS_WARM_CAP_MAX]`; explicit `VTS_*_OPEN_CAP` wins), and `prewarmBackends(root,picked)`
+  (`VTS_PREWARM_BACKENDS` auto→[dominant] / `all`→every detected lang dominant-first / comma-list). `index.js`
+  boot warms each selected backend with its adaptive cap → a multi-lang repo warms in language proportion.
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block (escape hatch `VTS_ENFORCE=0`).
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
@@ -95,6 +100,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - **pyright** (Python): `pyright-langserver --stdio` (`npm i -g pyright`). Detect:
   pyproject/setup.py/setup.cfg/requirements/Pipfile or `*.py`. `afterInit` opens top-N
   (`VTS_PY_OPEN_CAP`). Override `VTS_PY_CMD/ARGS`. Same generic glue as typescript.
+- **ts/py search_symbol fallback (dogfood-found).** tsserver/pyright answer `workspace/symbol` from
+  OPEN/indexed files, so a symbol whose file the warm-up didn't open (or a non-exported local) returns 0.
+  `search_symbol` then falls back to a bounded literal text search (`scanTextUnder`, labeled "Literal text
+  matches"; clangd/roslyn index the whole project so they skip it). Also `scanTextUnder` (`search_text`) now
+  scans `js/ts/tsx/.../py/pyi` — it was C/C++/C# only, a real bug once the JS/TS/Py backends landed.
 - **Windows spawn:** npm-installed JS LSPs are `.cmd` shims → `winShell:true` on those backends spawns
   through a shell (clangd.exe / dotnet host stay shell:false to survive paths with spaces). `langIdForPath`
   (lsp.js) maps file ext → LSP languageId so one backend serves several extensions.

@@ -15,6 +15,8 @@ const QH = path.join(os.tmpdir(), `vts-eval-qh-${process.pid}.json`);
 process.env.VTS_QUERY_HISTORY = QH;
 const IG = path.join(os.tmpdir(), `vts-eval-ig-${process.pid}.json`); // isolate the include-graph cache
 process.env.VTS_INCLUDE_GRAPH = IG;
+const CF = path.join(os.tmpdir(), `vts-eval-cfg-${process.pid}.json`); // isolate the config file (vts_setup writes)
+process.env.VTS_CONFIG_FILE = CF;
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -225,9 +227,65 @@ const hookOk =
   hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
   hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
 
+// 18) search_text covers JS/TS/Py (scanTextUnder ext set, not just C/C++/C#), and search_symbol on a
+// typescript/pyright backend falls back to a literal text search when the index returns nothing (a
+// non-exported / unopened-file symbol the workspace/symbol index can't surface).
+const tsTextDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-tstext`);
+fs.mkdirSync(tsTextDir, { recursive: true });
+fs.writeFileSync(path.join(tsTextDir, "mod.ts"), "export function MISS_localHelper() { return 1; }\n");
+const stTs = await runTool("search_text", { q: "MISS_localHelper", projectPath: tsTextDir });
+const searchTextJsOk = !stTs.isError && /mod\.ts:1/.test(stTs.text); // .ts is now scanned
+// fallback: run the CLI in a CHILD so the mock can back the `typescript` backend without disturbing this
+// process's cached BACKENDS. q="MISS" → mock returns [] → fallback text search finds the .ts.
+const cliPath = new URL("../server/cli.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+const fb = spawnSync(
+  process.execPath,
+  [cliPath, "symbol", "--q", "MISS", "--projectPath", tsTextDir, "--backend", "typescript"],
+  { encoding: "utf8", env: { ...process.env,
+    VTS_TS_CMD: process.platform === "win32" ? `"${process.execPath}"` : process.execPath, // quote: execPath may have spaces (shell mode on win)
+    VTS_TS_ARGS: process.env.VTS_CLANGD_ARGS, VTS_QUERY_HISTORY: QH, VTS_INCLUDE_GRAPH: IG } },
+);
+const fallbackOk = (fb.stdout || "").includes("Literal text matches") && /mod\.ts/.test(fb.stdout || "");
+try { fs.rmSync(tsTextDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const jsTextOk = searchTextJsOk && fallbackOk;
+
+// 19) language census + adaptive warm cap + multi-backend prewarm selection (pure functions, no LSP).
+const { languageCensus, warmCap, prewarmBackends } = await import("../server/warmset.js");
+const censusDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-census`);
+fs.mkdirSync(path.join(censusDir, "src"), { recursive: true });
+fs.mkdirSync(path.join(censusDir, "node_modules", "x"), { recursive: true });
+for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(censusDir, "src", `f${i}.cpp`), "");
+for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(censusDir, "src", `m${i}.ts`), "");
+fs.writeFileSync(path.join(censusDir, "node_modules", "x", "junk.cpp"), ""); // skipped dir → not counted
+const census = languageCensus(censusDir);
+const censusOk = census.clangd === 30 && census.typescript === 5 && census.roslyn === 0 && census.total === 35;
+// adaptive cap: explicit override wins; small count → base; scaling clamps to [base, MAX].
+const capOverrideOk = (() => { process.env.VTS_TS_OPEN_CAP = "7"; const c = warmCap(censusDir, "typescript", "VTS_TS_OPEN_CAP", 60); delete process.env.VTS_TS_OPEN_CAP; return c === 7; })();
+const capBaseOk = warmCap(censusDir, "typescript", "VTS_TS_OPEN_CAP", 60) === 60; // 5*0.1 < base → base
+const capScaleOk = (() => { process.env.VTS_WARM_CAP_RATIO = "2"; const c = warmCap(censusDir, "clangd", "VTS_CLANGD_OPEN_CAP", 10); delete process.env.VTS_WARM_CAP_RATIO; return c === 60; })(); // 30*2=60
+const pbDefault = prewarmBackends(censusDir, "clangd"); // unset → [picked]
+const pbAll = (() => { process.env.VTS_PREWARM_BACKENDS = "all"; const r = prewarmBackends(censusDir, "clangd"); delete process.env.VTS_PREWARM_BACKENDS; return r; })();
+const pbList = (() => { process.env.VTS_PREWARM_BACKENDS = "typescript,pyright"; const r = prewarmBackends(censusDir, "clangd"); delete process.env.VTS_PREWARM_BACKENDS; return r; })();
+const prewarmSelOk =
+  pbDefault.length === 1 && pbDefault[0] === "clangd" &&
+  pbAll.length === 2 && pbAll[0] === "clangd" && pbAll[1] === "typescript" && // dominant (more files) first
+  pbList.length === 2 && pbList[0] === "typescript";
+try { fs.rmSync(censusDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const warmRatioOk = censusOk && capOverrideOk && capBaseOk && capScaleOk && prewarmSelOk;
+
+// 20) vts_setup language auto-config: a multi-language root → census reported + prewarmBackends auto-set "all".
+const setupDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-setup`);
+fs.mkdirSync(path.join(setupDir, "src"), { recursive: true });
+fs.writeFileSync(path.join(setupDir, "src", "a.cpp"), "");
+fs.writeFileSync(path.join(setupDir, "src", "b.ts"), "");
+const su = await runTool("vts_setup", { projectPath: setupDir });
+const setupOk = !su.isError && /Languages under/.test(su.text) && /prewarmBackends="all"/.test(su.text);
+try { fs.rmSync(setupDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
+try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -247,6 +305,9 @@ const rows = [
   ["js/ts + python backends: detect + langId", multiLangOk, "true", multiLangOk],
   ["log steer + empty hint → gamedev-log", logSteerOk, "true", logSteerOk],
   ["hook: block code / warn log+grep", hookOk, "true", hookOk],
+  ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
+  ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
+  ["vts_setup language census auto-config", setupOk, "true", setupOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
