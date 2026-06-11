@@ -370,6 +370,21 @@ const clangdFallbackOk =
 for (const d of [noDb, withDb]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
 const clangdNoDbOk = dbAdvisoryOk && clangdFallbackOk;
 
+// 26) vts_gen_compile_db DRY RUN: build the UBT GenerateClangDatabase command for a .uproject, no execution.
+const { genCompileDbPlan } = await import("../server/core.js");
+const ueDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-ue`);
+fs.mkdirSync(path.join(ueDir, "Engine", "Build", "BatchFiles"), { recursive: true });
+fs.writeFileSync(path.join(ueDir, "MyGame.uproject"), "{}");
+fs.writeFileSync(path.join(ueDir, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh"), "");
+const plan = genCompileDbPlan(ueDir, {});
+const planOk =
+  !plan.error && /MyGameEditor/.test(plan.cmdline) && /GenerateClangDatabase/.test(plan.cmdline) &&
+  /-Compiler=VisualCpp/.test(plan.cmdline) && /MyGame\.uproject/.test(plan.cmdline);
+const dry = await runTool("vts_gen_compile_db", { projectPath: ueDir }); // apply unset → dry run, never executes
+const dryOk = !dry.isError && /DRY RUN/.test(dry.text) && /GenerateClangDatabase/.test(dry.text) && !fs.existsSync(path.join(ueDir, "compile_commands.json"));
+try { fs.rmSync(ueDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const genDbOk = planOk && dryOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -401,6 +416,7 @@ const rows = [
   ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
   ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
   ["clangd no-compile-DB: advisory + text fallback", clangdNoDbOk, "true", clangdNoDbOk],
+  ["vts_gen_compile_db dry-run (UBT command)", genDbOk, "true", genDbOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

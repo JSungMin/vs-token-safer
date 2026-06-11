@@ -9,7 +9,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LspClient, fromUri, langIdForPath } from "./lsp.js";
+import { execFileSync } from "node:child_process";
+import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 
@@ -157,10 +158,54 @@ export function hasCompileDb(root) {
 }
 export function compileDbAdvisory(root) {
   if (hasCompileDb(root)) return "";
-  return "⚠ clangd needs compile_commands.json — none found under the root. Generate it via UBT " +
-    "`-mode=GenerateClangDatabase` (add `-Compiler=VisualCpp` for clang-cl targets) or CMake " +
-    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. Without it, semantic search_symbol/find_references/goto/hover " +
-    "return nothing — search_symbol falls back to a literal text search; find_files/search_text still work.";
+  return "⚠ clangd needs compile_commands.json — none found under the root. Generate it: run " +
+    "`vts_gen_compile_db` (dry-run prints the UBT command; apply=true runs it), or by hand via UBT " +
+    "`-mode=GenerateClangDatabase` (`-Compiler=VisualCpp` for clang-cl) / CMake " +
+    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, semantic " +
+    "search_symbol/find_references/goto/hover are limited, but search_symbol falls back to a literal text " +
+    "search and find_files/search_text work fully.";
+}
+// --- opt-in UBT compile-database generation, so the user can CHOOSE: generate compile_commands.json for
+// full semantic clangd, or stay in no-DB text mode. UE-specific; engine root from VTS_UE_ROOT / arg / a
+// shallow walk-up for Engine/Build/BatchFiles. ---
+function findUProject(root) {
+  const stack = [[root, 0]];
+  while (stack.length) {
+    const [dir, d] = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isFile() && /\.uproject$/i.test(e.name)) return path.join(dir, e.name);
+      if (e.isDirectory() && d < 2 && !e.name.startsWith(".") && e.name !== "node_modules") stack.push([path.join(dir, e.name), d + 1]);
+    }
+  }
+  return null;
+}
+const runUbtPath = (engineRoot) => path.join(engineRoot, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh");
+function findEngineRoot(startDir) {
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(runUbtPath(dir))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
+}
+// Build the UBT GenerateClangDatabase invocation for a project (used by vts_gen_compile_db; exported for the
+// eval). Returns { uproject, engineRoot, runUbt, args, cmdline } or { error }.
+export function genCompileDbPlan(root, a = {}) {
+  const upr = findUProject(root);
+  if (!upr) return { error: `No .uproject found under ${root}. Pass projectPath = the Unreal project root.` };
+  const projName = path.basename(upr).replace(/\.uproject$/i, "");
+  const target = a.target || `${projName}Editor`;
+  const platform = a.platform || "Win64";
+  const config = a.config || "Development";
+  const compiler = a.compiler || "VisualCpp"; // GenerateClangDatabase needs this for clang-cl targets
+  const engineRoot = a.engineRoot || process.env.VTS_UE_ROOT || findEngineRoot(path.dirname(upr));
+  if (!engineRoot) return { error: `Couldn't resolve the UE engine root. Set VTS_UE_ROOT or pass engineRoot= (the folder containing Engine/Build/BatchFiles/RunUBT).`, uproject: upr };
+  const runUbt = runUbtPath(engineRoot);
+  const args = [target, platform, config, `-project=${upr}`, "-mode=GenerateClangDatabase", `-Compiler=${compiler}`];
+  return { uproject: upr, engineRoot, runUbt, args, cmdline: `"${runUbt}" ${args.join(" ")}` };
 }
 let _dbAdvisoryShown = false;
 function backendAdvisory(backendName, root) {
@@ -327,6 +372,30 @@ export async function runTool(name, a = {}) {
       const t0 = Date.now();
       await getClient(root, backendName); // spawn + afterInit (index-ready wait) → primes the on-disk + in-process index
       return out(backendAdvisory(backendName, root) + `Warmed ${backendName} for ${root} in ${((Date.now() - t0) / 1000).toFixed(1)}s. Queries in this process are now warm; clangd's on-disk index (.cache/clangd) also persists for faster cold starts.`);
+    }
+    if (name === "vts_gen_compile_db") {
+      // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
+      // no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (minutes).
+      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const plan = genCompileDbPlan(root, a);
+      if (plan.error) return err(plan.error);
+      const apply = a.apply === true || a.apply === "true";
+      if (!apply) {
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.`);
+      }
+      if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
+      try {
+        const t0 = Date.now();
+        execFileSync(plan.runUbt, plan.args, { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000) });
+        // UBT writes compile_commands.json to the engine root; our clangd backend looks under the project
+        // root → copy it there if it isn't already.
+        let where = hasCompileDb(root) ? path.join(root, "compile_commands.json") : null;
+        const atEngine = path.join(plan.engineRoot, "compile_commands.json");
+        if (!where && fs.existsSync(atEngine)) { try { fs.copyFileSync(atEngine, path.join(root, "compile_commands.json")); where = path.join(root, "compile_commands.json"); } catch { where = atEngine; } }
+        return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.`);
+      } catch (e) {
+        return err(`UBT GenerateClangDatabase failed: ${e.message}\nRun it manually:\n  ${plan.cmdline}`);
+      }
     }
     // find_files / search_text are pure filesystem (no language server) — they work even when no backend
     // is set, and are the sanctioned, token-capped replacements for `find -name` / `grep`.

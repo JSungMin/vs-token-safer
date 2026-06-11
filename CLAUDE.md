@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (25/25) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (26/26) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -88,7 +88,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   index; UBT-generated DBs include the paths. NO compile_commands.json at all (a `.uproject`-only project
   still picks clangd) → `compileDbAdvisory`/`hasCompileDb` (core.js) prepend a one-time UBT-generate advisory
   to clangd results AND vts_setup warns proactively; `search_symbol` then falls back to a literal text search
-  (same path as ts/py 0-results) so the name is still locatable without a DB. **✅ real UE 5.x project live-verified end-to-end**
+  (same path as ts/py 0-results) so the name is still locatable without a DB. The user's CHOICE: tool
+  **`vts_gen_compile_db`** (CLI `vts gen-compile-db`) builds the UBT `GenerateClangDatabase` command (auto:
+  .uproject→target `<Name>Editor`, engine root via `VTS_UE_ROOT`/arg/walk-up, `-Compiler=VisualCpp`) — DRY
+  RUN by default (prints the exact command), `apply=true` runs it (`VTS_UBT_TIMEOUT_MS`) then copies the DB
+  to the project root so clangd's `--compile-commands-dir` finds it. `genCompileDbPlan` exported for the eval. **✅ real UE 5.x project live-verified end-to-end**
   (`search_symbol` returned the game `UCLASS` + its `*.generated.h` symbols as `file:line`):
   - `GenerateClangDatabase` needs **`-Compiler=VisualCpp`** when the targets build with clang-cl — else
     clang-toolchain validation fails (`Unable to find valid <ver> C++ toolchain for Clang x64`). Override

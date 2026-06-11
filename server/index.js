@@ -193,6 +193,11 @@ const TOOLS = [
     description: "Pre-build the language-server index (IDE-style) so later searches are fast. Spawns + warms the backend without running a query.",
     inputSchema: { type: "object", properties: { projectPath: { type: "string" }, backend: { type: "string", enum: ["clangd", "roslyn", "typescript", "pyright"] } } },
   },
+  {
+    name: "vts_gen_compile_db",
+    description: "Generate compile_commands.json for an Unreal project (so clangd gets a full semantic index) by running UBT GenerateClangDatabase. The user's choice vs staying in no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (takes minutes, needs the UE build env).",
+    inputSchema: { type: "object", properties: { projectPath: { type: "string", description: "Unreal project root (contains the .uproject)." }, apply: { type: "boolean", description: "false (default) = print the command only; true = run UBT now." }, engineRoot: { type: "string", description: "UE engine root (contains Engine/Build/BatchFiles/RunUBT). Default: VTS_UE_ROOT or a walk-up from the project." }, target: { type: "string", description: "UBT target (default <ProjectName>Editor)." }, platform: { type: "string", description: "default Win64." }, config: { type: "string", description: "default Development." }, compiler: { type: "string", description: "default VisualCpp (needed for clang-cl targets)." } } },
+  },
 ];
 
 const server = new Server({ name: "vs-search", version: "0.1.0" }, { capabilities: { tools: {} } });
