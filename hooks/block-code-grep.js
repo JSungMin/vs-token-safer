@@ -31,7 +31,7 @@ function isCodeSearchSegment(segment) {
   const isSearch = SEARCH_EXECS.has(exec) || (exec === "find" && /\s-name(\s|$)/.test(s));
   if (!isSearch) return false;
 
-  const codeExt = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs)\b/.test(s);
+  const codeExt = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/.test(s);
   const codeDir = /(^|[\s"'/\\])(src|source|sources|engine|plugins)[\\/]/.test(s);
   const textTarget =
     /\.(log|txt|md|markdown|json|ya?ml|csv|tsv|xml|html?|ini|cfg|conf|toml|lock)\b/.test(s) ||
@@ -64,7 +64,8 @@ process.stdin.on("end", () => {
   process.stderr.write(
     "[vs-token-safer] Blocked a code-symbol search via Bash.\n" +
       "Use the vs-search MCP tools (server: 'vs-search') instead — they query the language\n" +
-      "server's index (clangd for C++, Roslyn for C#) and are token-capped to file:line:\n" +
+      "server's index (clangd for C++, Roslyn for C#, tsserver for JS/TS, pyright for Python)\n" +
+      "and are token-capped to file:line:\n" +
       "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
       "  - references / usages of a symbol  → find_references (args: path, line, character — 0-based)\n" +
       "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
@@ -72,7 +73,8 @@ process.stdin.on("end", () => {
       "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
       "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
       "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
-      "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn);\n" +
+      "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn,\n" +
+      "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright);\n" +
       "override with backend=… or VTS_BACKEND, set the root via projectPath or VTS_PROJECT_PATH.\n" +
       "For logs/config text, target a non-code file, or set VTS_ENFORCE=0."
   );

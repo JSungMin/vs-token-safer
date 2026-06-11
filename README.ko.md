@@ -48,11 +48,13 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 ---
 
 Claude가 Bash `grep` 대신 공식 언어 서버 인덱스로 심볼 검색, 참조(references) 찾기, 정의로 이동을 하게
-만드는 Claude Code 플러그인입니다(C/C++은 **clangd**(LLVM), C#/.NET은 Roslyn 기반 LSP인
-`Microsoft.CodeAnalysis.LanguageServer`, 즉 Visual Studio / C# Dev Kit가 쓰는 엔진). hover, 파일
-아웃라인, 프로젝트 전역 rename도 같은 인덱스로 처리합니다. 검색이 폭발할 때는 간결한 `file:line`
-목록(소스 본문 없음)만 반환해 토큰을 상한선으로 막습니다. `grep`이 느리고 컨텍스트를 잡아먹는 대형
-Unreal C++ 및 .NET/C# 코드베이스를 위해 만들었습니다.
+만드는 Claude Code 플러그인입니다(C/C++은 **clangd**(LLVM), C#/.NET은 Roslyn 기반 LSP
+`Microsoft.CodeAnalysis.LanguageServer`(Visual Studio / C# Dev Kit 엔진), JS/TS는
+**typescript-language-server**(tsserver), Python은 **pyright**). hover, 파일 아웃라인, 프로젝트 전역
+rename도 같은 인덱스로 처리합니다. 검색이 폭발할 때는 간결한 `file:line` 목록(소스 본문 없음)만 반환해
+토큰을 상한선으로 막습니다. `grep`이 느리고 컨텍스트를 잡아먹는 대형 Unreal C++ 및 .NET/C# 코드베이스를
+위해 만들었습니다. JS/Python 백엔드 덕분에 플러그인이 자기 소스도 검색할 수 있어, 개발하면서 직접
+dogfood합니다.
 
 [rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer)의 IDE 비종속 형제 프로젝트입니다.
 토큰 효율 목표는 같지만 실행 중인 IDE의 MCP 서버를 프록시하지 않고 공식 언어 서버를 헤드리스로
@@ -65,7 +67,7 @@ Unreal C++ 및 .NET/C# 코드베이스를 위해 만들었습니다.
 
 | 플러그인 | 기능 | 필요 |
 | --- | --- | --- |
-| **vs-token-safer** (이 페이지) | 코드 검색을 grep 대신 clangd/Roslyn 인덱스로 강제(기본 하드 차단, 탈출구 opt-out), `file:line`으로 토큰 캡 | Node + 언어 서버(clangd / Roslyn). IDE 불필요. |
+| **vs-token-safer** (이 페이지) | 코드 검색을 grep 대신 clangd/Roslyn/tsserver/pyright 인덱스로 강제(기본 하드 차단, 탈출구 opt-out), `file:line`으로 토큰 캡 | Node + 언어 서버: clangd / Roslyn(직접 설치), JS/TS + Python(자동 설치). IDE 불필요. |
 | **[gamedev-log-analyzer](gamedev-log-analyzer/README.ko.md)** | 거대 Unreal/Unity/Godot/MSVC-UBT-MSBuild 로그 파싱·dedup·분류·검색·diff·locate·스칼라 추출 (CLI 우선) | Node만 (IDE 불필요) |
 
 **한 번에 설치.** `vs-token-safer`가 `gamedev-log-analyzer`를 의존성으로 선언하므로 한 번 설치하면 둘
@@ -144,7 +146,7 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
   줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
   캡해서 반환합니다.
 - 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 14/14).
+  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 15/15).
 
 ### 정확도 차이와 그 이유
 "누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
@@ -219,6 +221,11 @@ vs-token-safer savings (local, 1 search(es))
   - **C#/.NET → Roslyn LSP.** VS Code C# 확장(`ms-dotnettools.csharp`)을 설치하면 vts가 번들에서
     `Microsoft.CodeAnalysis.LanguageServer`와 그 전용 .NET 런타임을 자동 감지합니다. 폴백은
     `dotnet tool install --global csharp-ls`. `.sln`/`.csproj`가 필요합니다.
+  - **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 동봉되어 첫 세션에
+    자동 설치됩니다 — 따로 할 일 없습니다. vts가 번들 복사본을 `node`로 실행하니 전역 설치나 PATH 설정이
+    필요 없습니다. 원하면 `VTS_TS_CMD`/`VTS_PY_CMD`로 직접 지정하세요. (참고: 동봉으로 첫 실행 `npm
+    install`에 1회 ~50MB가 추가되고, JS/TS 서버는 **Node 20+**를 권장합니다 — Node 18에서는 건너뛰며
+    나머지 백엔드는 정상 동작합니다.)
 - IDE는 실행 중이지 않아도 됩니다.
 
 clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:
@@ -315,6 +322,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일/인자 재정의. |
 | — | `VTS_ROSLYN_DLL` | auto | 특정 `Microsoft.CodeAnalysis.LanguageServer.dll` 경로. |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto(MS 엔진) → `csharp-ls` | C# LSP 실행 파일/인자 재정의. |
+| — | `VTS_TS_CMD` / `VTS_TS_ARGS` | 동봉 `typescript-language-server` | JS/TS LSP 실행 파일/인자 재정의. |
+| — | `VTS_PY_CMD` / `VTS_PY_ARGS` | 동봉 `pyright-langserver` | Python LSP 실행 파일/인자 재정의. |
+| — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | JS/TS · Python warm-up이 서버를 데우려 여는 파일 최대 수. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | 요청당 LSP 타임아웃. 차갑고 큰(예: UE) 인덱스면 올림. |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | clangd warm-up이 첫 쿼리 전 백그라운드 인덱싱 완료를 기다리는 시간. |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | warm-up이 clangd 인덱스를 데우려 여는 파일 최대 수. |
@@ -328,10 +338,10 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 
 ## 강제(enforcement) 동작 방식
 
-- **훅**은 모든 Bash 호출 전에 실행됩니다. 명령이 코드-심볼 검색(grep/rg/ack/ag/findstr 또는
-  `*.c/.cc/.cpp/.h/.hpp/.cs`·`src|source|engine|plugins/` 대상 `find -name`)이고 로그/md/json/빌드
-  경로가 *아니면* 명령을 차단하고 Claude에게 인덱스 도구를 쓰라고 알립니다. 그 외엔 통과시킵니다.
-  `VTS_ENFORCE=0`이면 완전히 꺼집니다.
+- **훅**은 모든 Bash 호출 전에 실행됩니다. 명령이 코드-심볼 검색(grep/rg/ack/ag/findstr 또는 코드
+  확장자 `*.c/.cc/.cpp/.h/.hpp/.cs/.ts/.tsx/.js/.jsx/.mjs/.cjs/.py`·`src|source|engine|plugins/` 대상
+  `find -name`)이고 로그/md/json/빌드 경로가 *아니면* 명령을 차단하고 Claude에게 인덱스 도구를 쓰라고
+  알립니다. 그 외엔 통과시킵니다. `VTS_ENFORCE=0`이면 완전히 꺼집니다.
 - **스킬**은 Claude가 인덱스 도구를 선제적으로 쓰도록 유도합니다.
 - **코어**는 Claude가 도구를 어떻게 호출하든 토큰 상한을 보장합니다.
 
@@ -345,6 +355,7 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | `GenerateClangDatabase` 실패: "Unable to find valid C++ toolchain for Clang x64" | 타겟이 clang-cl 빌드; UBT가 Clang 툴체인 검증 | UBT 명령에 **`-Compiler=VisualCpp`** 추가. MSVC DB도 include 그래프를 해석함. |
 | clangd가 헤더 없는 심볼만 해석 | 컴파일 DB에 include 경로 없음 → 시스템/서드파티 헤더 미해석 | UBT 생성 DB 사용(경로 포함); 수작업 `compile_commands.json`은 include 경로를 명시해야 함. |
 | C# 결과 없음 / "No backend resolved" | Roslyn 엔진 미발견 | VS Code C# 확장(`ms-dotnettools.csharp`) 설치, 또는 `dotnet tool install --global csharp-ls`; 또는 `VTS_ROSLYN_DLL`/`VTS_ROSLYN_CMD` 설정. |
+| JS/TS·Python 결과 없음 | 동봉 LSP 미설치(오프라인 첫 실행, npm 실패) | 세션을 다시 시작해 의존성 재설치, 또는 PATH의 `typescript-language-server`/`pyright-langserver`를 `VTS_TS_CMD`/`VTS_PY_CMD`로 지정. |
 | 원하던 grep인데 코드 검색이 차단됨 | 훅이 인덱스로 유도 중 | `VTS_ENFORCE=0`으로 grep 허용(예: 언어 서버 불가 시). |
 | 잘못된 백엔드 선택됨 | 루트 아래 프로젝트 파일이 여럿 | 고정: `VTS_BACKEND=clangd`(또는 `roslyn`), 또는 호출마다 `backend` 전달. |
 

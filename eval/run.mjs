@@ -154,6 +154,47 @@ const renameMultiOk = !rm.isError && /APPLIED/.test(rm.text) && fs.readFileSync(
 try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
 const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk;
 
+// 15) JS/TS + Python backends — auto-detect ordering and languageId mapping. Pure functions, so no
+// live tsserver/pyright is needed; this guards that adding the new backends didn't shadow clangd/roslyn
+// and that didOpen gets the right languageId per file extension.
+const { pickBackend } = await import("../server/backends/index.js");
+const { langIdForPath } = await import("../server/lsp.js");
+const mkBeDir = (sub, files) => {
+  const d = path.join(os.tmpdir(), `vts-be-${process.pid}-${sub}`);
+  fs.mkdirSync(d, { recursive: true });
+  for (const [n, body] of Object.entries(files)) fs.writeFileSync(path.join(d, n), body);
+  return d;
+};
+const tsDir = mkBeDir("ts", { "tsconfig.json": "{}", "app.ts": "export const x = 1;\n" });
+const pyDir = mkBeDir("py", { "pyproject.toml": "", "main.py": "x = 1\n" });
+const pkgDir = mkBeDir("pkg", { "package.json": "{}" });
+const mixDir = mkBeDir("mix", { "compile_commands.json": "[]", "package.json": "{}" }); // C++ DB + package.json → clangd wins
+const detectOk =
+  pickBackend(tsDir) === "typescript" &&
+  pickBackend(pyDir) === "pyright" &&
+  pickBackend(pkgDir) === "typescript" &&
+  pickBackend(mixDir) === "clangd";
+const langOk =
+  langIdForPath("a.ts", "typescript") === "typescript" &&
+  langIdForPath("a.tsx", "typescript") === "typescriptreact" &&
+  langIdForPath("a.mjs", "typescript") === "javascript" &&
+  langIdForPath("a.py", "pyright") === "python" &&
+  langIdForPath("a.cs", "roslyn") === "csharp" &&
+  langIdForPath("a.cpp", "clangd") === "cpp" &&
+  langIdForPath("noext", "pyright") === "python"; // unknown ext → backend default
+// nodeLspBackend wiring: ts/pyright end with --stdio, winShell is a boolean, and when the bundled bin
+// resolved we launch via `node <bin>` (cmd = this node, ≥2 args). Install-state-agnostic (the bin may or
+// may not be present in CI), so it asserts the shape, not a specific path.
+const tsArgs = BACKENDS.typescript.args(process.cwd());
+const pyArgs = BACKENDS.pyright.args(process.cwd());
+const wiringOk =
+  tsArgs[tsArgs.length - 1] === "--stdio" && pyArgs[pyArgs.length - 1] === "--stdio" &&
+  typeof BACKENDS.typescript.winShell === "boolean" && typeof BACKENDS.pyright.winShell === "boolean" &&
+  (BACKENDS.typescript.cmd === process.execPath ? tsArgs.length >= 2 && BACKENDS.typescript.winShell === false : true) &&
+  (BACKENDS.pyright.cmd === process.execPath ? pyArgs.length >= 2 && BACKENDS.pyright.winShell === false : true);
+const multiLangOk = detectOk && langOk && wiringOk;
+for (const d of [tsDir, pyDir, pkgDir, mixDir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -173,6 +214,7 @@ const rows = [
   ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
   ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
   ["rename preview + apply + multi-edit", renameOk, "true", renameOk],
+  ["js/ts + python backends: detect + langId", multiLangOk, "true", multiLangOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

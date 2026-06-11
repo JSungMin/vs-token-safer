@@ -60,6 +60,7 @@ function installIntoData() {
     execSync(`${npm} install --no-audit --no-fund --loglevel=error`, {
       cwd: DATA,
       stdio: ["ignore", "ignore", "inherit"],
+      timeout: 300000, // deps grew to ~50 MB (ts + pyright); bound the synchronous install so a stalled registry can't wedge the server spawn
     });
   } catch (e) {
     console.error(`[${TAG}] dependency install failed:`, e?.message || e);

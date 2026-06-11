@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (14/14) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (15/15) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -22,8 +22,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 
 ## Layout
 - `server/lsp.js` — generic LSP client (JSON-RPC/stdio). The one new, careful piece.
-- `server/backends/index.js` — clangd/roslyn spawn configs + `pickBackend(root)`. Override via
-  `VTS_CLANGD_CMD/ARGS`, `VTS_ROSLYN_CMD/ARGS`.
+- `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
+  (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
+  pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,
+  `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
+  shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.
 - `server/core.js` — `runTool()` dispatch, token-cap formatters, savings ledger. Tools: `search_symbol`,
   `find_references`, `goto_definition`, `hover`, `document_symbols`, `rename` (LSP; rename = preview by
   default, `apply=true` writes — the only mutating tool); `find_files`, `search_text`
@@ -84,6 +87,19 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   runtime; opens the workspace via `solution/open`/`project/open` then waits for
   `workspace/projectInitializationComplete` (see `backends/index.js` `afterInit`, `lsp.js`
   `waitForNotification`). `csharp-ls` is the fallback. Overrides: `VTS_ROSLYN_DLL`, `VTS_ROSLYN_CMD/ARGS`.
+- **typescript** (JS/TS): `typescript-language-server --stdio` (wraps tsserver). Install
+  `npm i -g typescript-language-server typescript`. Detect: tsconfig/jsconfig/package.json or `*.ts/js`.
+  `afterInit` opens top-N (`VTS_TS_OPEN_CAP`, 60) likely-query files; `workspace/symbol` answers
+  project-wide. Override `VTS_TS_CMD/ARGS`. **✅ live-verified by dogfooding vts on its own `server/*.js`**
+  (search_symbol/find_references/document_symbols returned correct `file:line` incl. cross-file refs).
+- **pyright** (Python): `pyright-langserver --stdio` (`npm i -g pyright`). Detect:
+  pyproject/setup.py/setup.cfg/requirements/Pipfile or `*.py`. `afterInit` opens top-N
+  (`VTS_PY_OPEN_CAP`). Override `VTS_PY_CMD/ARGS`. Same generic glue as typescript.
+- **Windows spawn:** npm-installed JS LSPs are `.cmd` shims → `winShell:true` on those backends spawns
+  through a shell (clangd.exe / dotnet host stay shell:false to survive paths with spaces). `langIdForPath`
+  (lsp.js) maps file ext → LSP languageId so one backend serves several extensions.
+- **grep-block hook** now covers `js/jsx/mjs/cjs/ts/tsx/mts/cts/py/pyi` too (default on, per user) so vts
+  self-enforces while we develop it; `VTS_ENFORCE=0` still the escape hatch.
 
 ## Next (see wiki "Status and TODO")
 P1 DONE: core rename, `index.js`/`sdk.js`/`ensure-deps.mjs`, grep-block `hooks/`, `skills/`+`commands/`,
