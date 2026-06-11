@@ -389,6 +389,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 - **v0.5.0** — README와 커뮤니티 문서를 성숙한 repo 수준으로(배지, env 표, 트러블슈팅, 버전 이력).
 - **v0.6.0** — 적응형 include 중심성: 프리픽스 읽기, warm-up당 시간 예산, 회차마다 커버리지가 늘어나는
   영속 include-그래프 캐시로 큰 모듈을 건너뛰지 않음.
+- **v0.7.0** — Rider 형제와 내비게이션 패리티: `hover`, `document_symbols`, `find_files`,
+  `search_text`, 컨텍스트 격리형 `code-locator` 서브에이전트 — 그리고 `rename`(기본은 미리보기,
+  `apply=true`일 때만 기록하는 의미 기반 프로젝트 전역 이름 변경).
 
 ## 기여
 

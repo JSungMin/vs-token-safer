@@ -404,6 +404,9 @@ generated automatically. The badge at the top always points at the latest. Highl
   troubleshooting, version history).
 - **v0.6.0** — adaptive include-centrality: prefix reads, a per-warm-up time budget, and a persistent
   include-graph cache that grows coverage across warm-ups instead of skipping big modules.
+- **v0.7.0** — navigation parity with the Rider sibling: `hover`, `document_symbols`, `find_files`,
+  `search_text`, and a context-isolated `code-locator` subagent — plus `rename`, a semantic
+  project-wide rename that previews by default and only writes with `apply=true`.
 
 ## Contributing
 
