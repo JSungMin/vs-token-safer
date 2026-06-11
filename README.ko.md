@@ -411,6 +411,8 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 - **v0.8.0** — 백엔드 두 개 추가: **JS/TS**(typescript-language-server)와 **Python**(pyright). 둘 다
   플러그인 의존성으로 동봉되어 자동 설치됩니다. 이제 vts가 자기 소스도 검색할 수 있어, 개발하면서 직접
   dogfood합니다.
+- **v0.9.0** — 로그 분석 토스: 코드 검색이 `Logs/` 디렉터리나 `.log`/`.jsonl` 파일을 겨냥하면 코드
+  인덱스의 빈 결과 대신 gamedev-log로 안내합니다. grep-block 훅이 내장 Grep 툴도 커버합니다(warn 전용).
 
 ## 기여
 
