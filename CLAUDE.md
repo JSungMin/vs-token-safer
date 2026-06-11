@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (23/23) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (24/24) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -28,6 +28,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   outline/rename always re-read the file. The LSP engine keeps UNOPENED files fresh itself (clangd
   file-watch + background re-index); our warmset caches self-invalidate (include-graph by mtime,
   query-history by re-record; `_censusCache` is process-lifetime → restart/re-setup to refresh).
+  LSP-spec conformance: server→client requests get shape-correct replies (`_serverRequestReply`:
+  `workspace/configuration`→array, `workspace/applyEdit`→`{applied:false}`, `window/showDocument`→
+  `{success:false}`, void reqs→null, unknown→MethodNotFound -32601); a timed-out request sends
+  `$/cancelRequest`; client declares `synchronization` + `workspace.configuration` capabilities.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,

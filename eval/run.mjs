@@ -323,6 +323,34 @@ const freshOk =
   sent.includes("textDocument/didChange") &&
   sent.includes("textDocument/didClose");
 
+// 24) LSP spec conformance: server→client request replies have correct shapes (config→array, applyEdit→
+// {applied}, showDocument→{success}, void→null, unknown→MethodNotFound); $/cancelRequest fires on timeout;
+// the client declares the synchronization + workspace.configuration capabilities it actually uses.
+const lc = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+const rep = (method, params) => lc._serverRequestReply({ id: 7, method, params });
+const cfg = rep("workspace/configuration", { items: [{}, {}, {}] });
+const replyShapesOk =
+  Array.isArray(cfg.result) && cfg.result.length === 3 && cfg.result.every((x) => x === null) &&
+  rep("workspace/applyEdit", {}).result?.applied === false &&
+  rep("window/showDocument", {}).result?.success === false &&
+  rep("client/registerCapability", {}).result === null &&
+  rep("window/workDoneProgress/create", {}).result === null &&
+  rep("x/unknownMethod", {}).error?.code === -32601;
+let initParams = null;
+const origSend = lc._send.bind(lc);
+lc._send = (obj) => { if (obj && obj.method === "initialize") initParams = obj.params; return origSend(obj); };
+await lc.initialize(process.cwd());
+const capOk = !!(initParams && initParams.capabilities.textDocument.synchronization && initParams.capabilities.workspace.configuration === true);
+const csent = [];
+const rn = lc.notify.bind(lc);
+lc.notify = (m, pr) => { csent.push(m); return rn(m, pr); };
+let cancelOk = false;
+try { process.env.VTS_LSP_TIMEOUT_MS = "50"; await lc.symbol("SLOW"); } // mock delays 300ms → times out at 50ms
+catch { cancelOk = csent.includes("$/cancelRequest"); }
+finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
+await lc.shutdown();
+const conformanceOk = replyShapesOk && capOk && cancelOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -352,6 +380,7 @@ const rows = [
   ["first-use setup nudge (tool + hook)", setupNudgeOk, "true", setupNudgeOk],
   ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
   ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
+  ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
