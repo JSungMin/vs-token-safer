@@ -437,6 +437,11 @@ generated automatically. The badge at the top always points at the latest. Highl
   multi-language repo can warm every backend in proportion (`VTS_PREWARM_BACKENDS`). `search_text` now
   scans JS/TS/Python (not just C/C++/C#), and `search_symbol` on tsserver/pyright falls back to a literal
   text search for a symbol the index hasn't opened. Bundled gamedev-log-analyzer → 0.10.3.
+- **v0.11.0** — first-use setup nudge (if never configured, the first result and the grep-block hook point
+  at `/vs-token-safer:setup`); LSP buffer freshness (a file changed on disk after warm-up is refreshed via
+  `didChange`/`didClose`, not answered from a stale buffer) and fuller LSP-spec conformance (server-request
+  replies, `$/cancelRequest` on timeout, declared capabilities). `scripts/sync-gamedev.mjs` keeps the
+  bundled-plugin version from drifting.
 
 ## Contributing
 
