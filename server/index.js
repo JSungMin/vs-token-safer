@@ -73,6 +73,70 @@ const TOOLS = [
     },
   },
   {
+    name: "hover",
+    description:
+      "Type/signature info for the symbol at a 0-based position (language-server hover). A few plaintext " +
+      "lines, no walls of docs. Use to check a type/overload without opening the file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Source file." },
+        line: { type: "number", description: "0-based line." },
+        character: { type: "number", description: "0-based character/column." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+      },
+      required: ["path", "line", "character"],
+    },
+  },
+  {
+    name: "document_symbols",
+    description:
+      "Outline a single file: its classes/functions/types as a token-capped `kind name @ file:line` list. " +
+      "Cheaper than reading the whole file to see its structure.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File to outline." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "find_files",
+    description:
+      "Find files by name (substring or glob like *Manager.cpp) under the project root — token-capped " +
+      "`file` list. The sanctioned replacement for Bash `find -name`. No language server needed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "Filename substring or glob (* ? supported)." },
+        projectPath: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["q"],
+    },
+  },
+  {
+    name: "search_text",
+    description:
+      "Raw text/regex search in source (string literals, comments, config keys — things the symbol index " +
+      "can't answer). Bounded and token-capped to `file:line: trimmed-line`. The sanctioned replacement " +
+      "for Bash grep when you genuinely need text, not symbols. Prefer search_symbol for code symbols.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "String or regular expression to find." },
+        projectPath: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["q"],
+    },
+  },
+  {
     name: "vts_setup",
     description:
       "Configure vs-token-safer (projectPath, backend, maxResults). Writes ~/.vs-token-safer/config.json; " +

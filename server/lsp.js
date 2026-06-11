@@ -173,6 +173,17 @@ export class LspClient {
       position: { line, character },
     });
   }
+  hover(uriOrPath, line, character) {
+    return this.request("textDocument/hover", {
+      textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+      position: { line, character },
+    });
+  }
+  documentSymbol(uriOrPath) {
+    return this.request("textDocument/documentSymbol", {
+      textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+    });
+  }
   async shutdown() {
     try { await this.request("shutdown", null, 3000); this.notify("exit", null); } catch { /* ignore */ }
     try { this.proc && this.proc.kill(); } catch { /* ignore */ }

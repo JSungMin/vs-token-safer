@@ -25,7 +25,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - `server/backends/index.js` — clangd/roslyn spawn configs + `pickBackend(root)`. Override via
   `VTS_CLANGD_CMD/ARGS`, `VTS_ROSLYN_CMD/ARGS`.
 - `server/core.js` — `runTool()` dispatch, token-cap formatters, savings ledger. Tools: `search_symbol`,
-  `find_references`, `goto_definition`, `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`.
+  `find_references`, `goto_definition`, `hover`, `document_symbols` (LSP); `find_files`, `search_text`
+  (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
+  `vts_config`, `vts_savings`, `vts_savings_reset`.
+- `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
 - `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > working-now [`git status` /

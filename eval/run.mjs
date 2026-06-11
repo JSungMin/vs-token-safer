@@ -120,6 +120,22 @@ const cacheReuseOk = cord2.findIndex((p) => p.endsWith("hub.h")) < cord2.findInd
 const centralityOk = centralityRankOk && graphPersisted && cacheReuseOk;
 try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 12) new read-only tools — hover + document_symbols (mock LSP), find_files + search_text (filesystem).
+const someFile = path.join(process.cwd(), "eval", "run.mjs");
+const hv = await runTool("hover", { path: someFile, line: 0, character: 0, backend: "clangd" });
+const hoverOk = !hv.isError && /Foo/.test(hv.text);
+const ds = await runTool("document_symbols", { path: someFile, backend: "clangd" });
+const docSymOk = !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text);
+const tdir = path.join(os.tmpdir(), `vts-files-${process.pid}`);
+fs.mkdirSync(tdir, { recursive: true });
+fs.writeFileSync(path.join(tdir, "Widget.cpp"), "int NEEDLE_TOKEN = 1;\n");
+const ff = await runTool("find_files", { q: "*.cpp", projectPath: tdir });
+const findFilesOk = !ff.isError && /Widget\.cpp/.test(ff.text);
+const st = await runTool("search_text", { q: "NEEDLE_TOKEN", projectPath: tdir });
+const searchTextOk = !st.isError && /NEEDLE_TOKEN/.test(st.text) && /Widget\.cpp:1/.test(st.text);
+try { fs.rmSync(tdir, { recursive: true, force: true }); } catch { /* ignore */ }
+const newToolsOk = hoverOk && docSymOk && findFilesOk && searchTextOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -137,6 +153,7 @@ const rows = [
   ["prewarm guard + vts_warmup", warmOk, "true", warmOk],
   ["warm ordering (history) + remote arg", orderingOk, "true", orderingOk],
   ["centrality + adaptive graph cache", centralityOk, "true", centralityOk],
+  ["new tools: hover/symbols/files/text", newToolsOk, "true", newToolsOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

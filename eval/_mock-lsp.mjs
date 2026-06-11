@@ -37,6 +37,10 @@ process.stdin.on("data", (d) => {
         ];
       }
       send({ jsonrpc: "2.0", id: msg.id, result });
+    } else if (msg.method === "textDocument/hover") {
+      send({ jsonrpc: "2.0", id: msg.id, result: { contents: { kind: "plaintext", value: "int Foo(int x)" } } });
+    } else if (msg.method === "textDocument/documentSymbol") {
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Foo", kind: 12, range: { start: { line: 4, character: 0 }, end: { line: 4, character: 10 } }, selectionRange: { start: { line: 4, character: 4 }, end: { line: 4, character: 7 } } }] });
     } else if (msg.method === "shutdown") send({ jsonrpc: "2.0", id: msg.id, result: null });
     else if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: null });
   }

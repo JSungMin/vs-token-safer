@@ -23,6 +23,10 @@ Commands:
                  [--path <file> --line N --character N --includeDeclaration]
   definition     Go to the definition of the symbol at a position.
                  [--path <file> --line N --character N]
+  hover          Type/signature info at a position. [--path <file> --line N --character N]
+  symbols        Outline a file (its classes/functions as file:line). [--path <file>]
+  files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
+  text           Raw text/regex search in code (token-capped). [--q <pattern> --projectPath <dir>]
   warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
   config         Show effective settings.
@@ -51,7 +55,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", warmup: "vts_warmup" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", files: "find_files", text: "search_text", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", warmup: "vts_warmup" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }

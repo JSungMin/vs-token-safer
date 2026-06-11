@@ -12,10 +12,19 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 - Symbol / class / function / type / variable → `search_symbol`  (args: `q`, `projectPath`, `backend`, `maxResults`). Never `grep`/`rg` for this.
 - References / usages of a symbol → `find_references`  (args: `path`, `line`, `character` — 0-based — `includeDeclaration`). Semantic, not a text match.
 - Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based).
-- Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`.
+- Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
+- Outline a file (its classes/functions) → `document_symbols`  (args: `path`).
+- Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
+- File by name (substring or glob) → `find_files`  (args: `q`, `projectPath`). Replaces `find -name`.
+- Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`. Pre-warm → `vts_warmup`.
+
+Delegate a whole "where is X / what calls Y / find file W" lookup to the **`code-locator`** subagent —
+it runs the searches in its own context and returns just the `file:line` table, so the matches never
+land in yours.
 
 CLI equivalent (no MCP needed): `vts symbol --q <name> --projectPath <root>`,
-`vts references --path <file> --line N --character N`, `vts definition --path <file> --line N --character N`.
+`vts references --path <file> --line N --character N`, `vts definition --path <file> --line N --character N`,
+`vts hover …`, `vts symbols --path <file>`, `vts text --q <pattern>`, `vts files --q <glob>`.
 
 ## Backends & projectPath
 - Backend auto-detects from the project root: `compile_commands.json` (or a `.uproject`) → **clangd**;
