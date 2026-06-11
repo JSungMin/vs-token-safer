@@ -225,6 +225,28 @@ const hookOk =
   hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
   hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
 
+// 18) search_text covers JS/TS/Py (scanTextUnder ext set, not just C/C++/C#), and search_symbol on a
+// typescript/pyright backend falls back to a literal text search when the index returns nothing (a
+// non-exported / unopened-file symbol the workspace/symbol index can't surface).
+const tsTextDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-tstext`);
+fs.mkdirSync(tsTextDir, { recursive: true });
+fs.writeFileSync(path.join(tsTextDir, "mod.ts"), "export function MISS_localHelper() { return 1; }\n");
+const stTs = await runTool("search_text", { q: "MISS_localHelper", projectPath: tsTextDir });
+const searchTextJsOk = !stTs.isError && /mod\.ts:1/.test(stTs.text); // .ts is now scanned
+// fallback: run the CLI in a CHILD so the mock can back the `typescript` backend without disturbing this
+// process's cached BACKENDS. q="MISS" → mock returns [] → fallback text search finds the .ts.
+const cliPath = new URL("../server/cli.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+const fb = spawnSync(
+  process.execPath,
+  [cliPath, "symbol", "--q", "MISS", "--projectPath", tsTextDir, "--backend", "typescript"],
+  { encoding: "utf8", env: { ...process.env,
+    VTS_TS_CMD: process.platform === "win32" ? `"${process.execPath}"` : process.execPath, // quote: execPath may have spaces (shell mode on win)
+    VTS_TS_ARGS: process.env.VTS_CLANGD_ARGS, VTS_QUERY_HISTORY: QH, VTS_INCLUDE_GRAPH: IG } },
+);
+const fallbackOk = (fb.stdout || "").includes("Literal text matches") && /mod\.ts/.test(fb.stdout || "");
+try { fs.rmSync(tsTextDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const jsTextOk = searchTextJsOk && fallbackOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -247,6 +269,7 @@ const rows = [
   ["js/ts + python backends: detect + langId", multiLangOk, "true", multiLangOk],
   ["log steer + empty hint → gamedev-log", logSteerOk, "true", logSteerOk],
   ["hook: block code / warn log+grep", hookOk, "true", hookOk],
+  ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

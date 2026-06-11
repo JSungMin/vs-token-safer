@@ -204,7 +204,7 @@ function findFilesUnder(root, q, max) {
 // /config keys the symbol index can't answer. Returns file:line: trimmed-line, capped in count and time.
 function scanTextUnder(root, q, max) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
-  const exts = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|cs)$/i;
+  const exts = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
   const out = []; const stack = [root]; const t0 = Date.now();
   while (stack.length && out.length < max && Date.now() - t0 < 4000) {
     const dir = stack.pop();
@@ -302,7 +302,17 @@ export async function runTool(name, a = {}) {
       const syms = (await c.symbol(String(a.q))) || [];
       try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
       const adv = backendAdvisory(backendName);
-      if (!syms.length) return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
+      if (!syms.length) {
+        // tsserver / pyright answer workspace/symbol from the files they have OPEN/indexed, so a symbol
+        // whose file the warm-up didn't open (or a non-exported local) can come back empty even though it
+        // exists. Fall back to a bounded literal text search so it's still locatable (clangd/roslyn index
+        // the whole project, so they skip this). Clearly labeled: text matches, not semantic declarations.
+        if (backendName === "typescript" || backendName === "pyright") {
+          const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
+          if (hits.length) return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${backendName} answers from open/indexed files, so a symbol whose file isn't open yet (or a non-exported local) can be missed. Literal text matches instead (open the file or run document_symbols to confirm the decl):\n` + hits.join("\n"));
+        }
+        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
+      }
       return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root}):\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {
