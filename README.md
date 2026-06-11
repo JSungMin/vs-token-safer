@@ -48,12 +48,12 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 
 ---
 
-A Claude Code plugin that routes code navigation — symbol search, references, definition, hover, file
-outline, and a semantic project-wide rename — through an official language server's index instead of
-Bash `grep`: **clangd** (LLVM) for C/C++, and a Roslyn-based LSP (`Microsoft.CodeAnalysis.LanguageServer`,
-the engine Visual Studio and the C# Dev Kit use) for C#/.NET. It caps the tokens a search flood can spend
-by returning a compact `file:line` list, never source bodies. It's built for large Unreal C++ and
-.NET/C# codebases, where `grep` is slow and burns context.
+A Claude Code plugin that routes symbol search, find-references, and go-to-definition through an
+official language server's index instead of Bash `grep`: **clangd** (LLVM) for C/C++, and a Roslyn-based
+LSP (`Microsoft.CodeAnalysis.LanguageServer`, the engine Visual Studio and the C# Dev Kit use) for
+C#/.NET. Hover, file outline, and a project-wide rename go through the same index. It caps the tokens a
+search flood can spend by returning a compact `file:line` list, never source bodies. It's built for large
+Unreal C++ and .NET/C# codebases, where `grep` is slow and burns context.
 
 It's the IDE-agnostic sibling of
 [rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer). Same token-efficiency goal, but

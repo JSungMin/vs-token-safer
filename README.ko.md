@@ -47,12 +47,12 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 
 ---
 
-Claude가 Bash `grep` 대신 공식 언어 서버 인덱스로 코드 내비게이션 — 심볼 검색, 참조(references) 찾기,
-정의 이동, hover, 파일 아웃라인, 그리고 의미 기반 프로젝트 전역 rename — 을 하게 만드는 Claude Code
-플러그인입니다(C/C++은 **clangd**(LLVM), C#/.NET은 Roslyn 기반 LSP인
-`Microsoft.CodeAnalysis.LanguageServer`, 즉 Visual Studio / C# Dev Kit가 쓰는 엔진). 검색이 폭발할 때는
-간결한 `file:line` 목록(소스 본문 없음)만 반환해 토큰을 상한선으로 막습니다. `grep`이 느리고 컨텍스트를
-잡아먹는 대형 Unreal C++ 및 .NET/C# 코드베이스를 위해 만들었습니다.
+Claude가 Bash `grep` 대신 공식 언어 서버 인덱스로 심볼 검색, 참조(references) 찾기, 정의로 이동을 하게
+만드는 Claude Code 플러그인입니다(C/C++은 **clangd**(LLVM), C#/.NET은 Roslyn 기반 LSP인
+`Microsoft.CodeAnalysis.LanguageServer`, 즉 Visual Studio / C# Dev Kit가 쓰는 엔진). hover, 파일
+아웃라인, 프로젝트 전역 rename도 같은 인덱스로 처리합니다. 검색이 폭발할 때는 간결한 `file:line`
+목록(소스 본문 없음)만 반환해 토큰을 상한선으로 막습니다. `grep`이 느리고 컨텍스트를 잡아먹는 대형
+Unreal C++ 및 .NET/C# 코드베이스를 위해 만들었습니다.
 
 [rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer)의 IDE 비종속 형제 프로젝트입니다.
 토큰 효율 목표는 같지만 실행 중인 IDE의 MCP 서버를 프록시하지 않고 공식 언어 서버를 헤드리스로
