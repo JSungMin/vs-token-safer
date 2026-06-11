@@ -17,6 +17,7 @@ const IG = path.join(os.tmpdir(), `vts-eval-ig-${process.pid}.json`); // isolate
 process.env.VTS_INCLUDE_GRAPH = IG;
 const CF = path.join(os.tmpdir(), `vts-eval-cfg-${process.pid}.json`); // isolate the config file (vts_setup writes)
 process.env.VTS_CONFIG_FILE = CF;
+fs.writeFileSync(CF, "{}"); // start "configured" so the first-use setup nudge doesn't prefix other tests
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -282,6 +283,74 @@ const su = await runTool("vts_setup", { projectPath: setupDir });
 const setupOk = !su.isError && /Languages under/.test(su.text) && /prewarmBackends="all"/.test(su.text);
 try { fs.rmSync(setupDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 21) first-use setup nudge: with NO config file, a search result is prefixed with a setup pointer (once),
+// and the hook appends one to its block. Delete the isolated config to simulate an unconfigured install.
+try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
+const fnNudge = await runTool("find_files", { q: "no_such", projectPath: os.tmpdir() });
+const hNudge = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }); // CF gone → setup line
+const setupNudgeOk =
+  !fnNudge.isError && /isn't configured/.test(fnNudge.text) &&
+  hNudge.status === 2 && /\/vs-token-safer:setup/.test(hNudge.err);
+
+// 22) manifest version parity — the `claude plugin validate --strict` gate (CI `validate` job): each
+// marketplace.json entry version MUST match that plugin's plugin.json, or strict validation fails. This
+// caught a real drift (bundled gamedev synced to 0.10.3 while the marketplace entry stayed 0.10.1).
+const rd = (rel) => JSON.parse(fs.readFileSync(new URL(rel, import.meta.url)));
+const mkt = rd("../.claude-plugin/marketplace.json");
+const mEntry = (n) => mkt.plugins.find((p) => p.name === n) || {};
+const manifestOk =
+  mEntry("vs-token-safer").version === rd("../.claude-plugin/plugin.json").version &&
+  mEntry("gamedev-log-analyzer").version === rd("../gamedev-log-analyzer/.claude-plugin/plugin.json").version;
+
+// 23) buffer freshness: didOpen on a NEW doc → didOpen(v1); re-didOpen an already-open doc → didChange
+// (bumped version, current disk text — refreshes a file changed after warm-up); a since-deleted file →
+// didClose. Capture the wire by spying on notify().
+const fc = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+await fc.initialize(process.cwd());
+const sent = [];
+const realNotify = fc.notify.bind(fc);
+fc.notify = (m, p) => { sent.push(m); return realNotify(m, p); };
+const ftmp = path.join(os.tmpdir(), `vts-eval-${process.pid}-fresh.cpp`);
+fs.writeFileSync(ftmp, "int A = 1;\n");
+fc.didOpen(ftmp, "cpp"); // → didOpen v1
+fs.writeFileSync(ftmp, "int B = 2;\n");
+fc.didOpen(ftmp, "cpp"); // already open → didChange v2
+fs.rmSync(ftmp, { force: true });
+fc.didOpen(ftmp, "cpp"); // read fails → didClose
+await fc.shutdown();
+const freshOk =
+  sent.filter((m) => m === "textDocument/didOpen").length === 1 &&
+  sent.includes("textDocument/didChange") &&
+  sent.includes("textDocument/didClose");
+
+// 24) LSP spec conformance: server→client request replies have correct shapes (config→array, applyEdit→
+// {applied}, showDocument→{success}, void→null, unknown→MethodNotFound); $/cancelRequest fires on timeout;
+// the client declares the synchronization + workspace.configuration capabilities it actually uses.
+const lc = new LspClient(process.execPath, [process.env.VTS_CLANGD_ARGS], { cwd: process.cwd() });
+const rep = (method, params) => lc._serverRequestReply({ id: 7, method, params });
+const cfg = rep("workspace/configuration", { items: [{}, {}, {}] });
+const replyShapesOk =
+  Array.isArray(cfg.result) && cfg.result.length === 3 && cfg.result.every((x) => x === null) &&
+  rep("workspace/applyEdit", {}).result?.applied === false &&
+  rep("window/showDocument", {}).result?.success === false &&
+  rep("client/registerCapability", {}).result === null &&
+  rep("window/workDoneProgress/create", {}).result === null &&
+  rep("x/unknownMethod", {}).error?.code === -32601;
+let initParams = null;
+const origSend = lc._send.bind(lc);
+lc._send = (obj) => { if (obj && obj.method === "initialize") initParams = obj.params; return origSend(obj); };
+await lc.initialize(process.cwd());
+const capOk = !!(initParams && initParams.capabilities.textDocument.synchronization && initParams.capabilities.workspace.configuration === true);
+const csent = [];
+const rn = lc.notify.bind(lc);
+lc.notify = (m, pr) => { csent.push(m); return rn(m, pr); };
+let cancelOk = false;
+try { process.env.VTS_LSP_TIMEOUT_MS = "50"; await lc.symbol("SLOW"); } // mock delays 300ms → times out at 50ms
+catch { cancelOk = csent.includes("$/cancelRequest"); }
+finally { delete process.env.VTS_LSP_TIMEOUT_MS; }
+await lc.shutdown();
+const conformanceOk = replyShapesOk && capOk && cancelOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -308,6 +377,10 @@ const rows = [
   ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
   ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
   ["vts_setup language census auto-config", setupOk, "true", setupOk],
+  ["first-use setup nudge (tool + hook)", setupNudgeOk, "true", setupNudgeOk],
+  ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
+  ["buffer freshness: didOpen→didChange→didClose", freshOk, "true", freshOk],
+  ["LSP conformance: server-req replies + cancel + caps", conformanceOk, "true", conformanceOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
