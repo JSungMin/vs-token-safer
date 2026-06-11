@@ -21,6 +21,14 @@
  * hookSpecificOutput.additionalContext payload on stdout (stderr on exit 0 isn't reliably surfaced).
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
+const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
+const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
+
 const SEARCH_EXECS = new Set(["grep", "rg", "ack", "ag", "findstr"]);
 // ripgrep --type aliases for the languages we index (the Grep tool's `type` param forwards to rg).
 const CODE_TYPES = new Set(["c", "cpp", "csharp", "cs", "cxx", "cc", "cuda", "js", "ts", "typescript", "javascript", "jsx", "tsx", "py", "python"]);
@@ -133,10 +141,14 @@ process.stdin.on("end", () => {
   const enforce = String(process.env.VTS_ENFORCE ?? "1").toLowerCase();
   if (enforce === "0" || enforce === "false" || enforce === "off") process.exit(0);
 
+  // First-use setup nudge: if the plugin was never configured, append a pointer to setup on whatever
+  // message we emit (the user is already mid-grep, exactly when configuring helps).
+  const setup = notSetUp() ? SETUP_LINE : "";
+
   // Grep TOOL — warn-only, never block (Grep is the sanctioned fallback).
   if (toolName === "Grep") {
-    if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE);
-    else if (isCodeGrepTool(ti)) emitWarn(GREP_NUDGE);
+    if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
+    else if (isCodeGrepTool(ti)) emitWarn(GREP_NUDGE + setup);
     process.exit(0);
   }
 
@@ -146,11 +158,11 @@ process.stdin.on("end", () => {
   const segments = cmd.split(/\|\||&&|[|;&\n]/g).filter((s) => s.trim());
 
   if (segments.some(isCodeSearchSegment)) {
-    process.stderr.write(BLOCK_MSG + "\n");
+    process.stderr.write(BLOCK_MSG + setup + "\n");
     process.exit(2); // block
   }
   if (segments.some(isLogSearchSegment)) {
-    emitWarn(LOG_NUDGE);
+    emitWarn(LOG_NUDGE + setup);
     process.exit(0); // logs were never blocked — just point at the right tool
   }
   process.exit(0);

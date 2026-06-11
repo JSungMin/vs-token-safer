@@ -17,6 +17,7 @@ const IG = path.join(os.tmpdir(), `vts-eval-ig-${process.pid}.json`); // isolate
 process.env.VTS_INCLUDE_GRAPH = IG;
 const CF = path.join(os.tmpdir(), `vts-eval-cfg-${process.pid}.json`); // isolate the config file (vts_setup writes)
 process.env.VTS_CONFIG_FILE = CF;
+fs.writeFileSync(CF, "{}"); // start "configured" so the first-use setup nudge doesn't prefix other tests
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -282,6 +283,25 @@ const su = await runTool("vts_setup", { projectPath: setupDir });
 const setupOk = !su.isError && /Languages under/.test(su.text) && /prewarmBackends="all"/.test(su.text);
 try { fs.rmSync(setupDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 21) first-use setup nudge: with NO config file, a search result is prefixed with a setup pointer (once),
+// and the hook appends one to its block. Delete the isolated config to simulate an unconfigured install.
+try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
+const fnNudge = await runTool("find_files", { q: "no_such", projectPath: os.tmpdir() });
+const hNudge = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }); // CF gone → setup line
+const setupNudgeOk =
+  !fnNudge.isError && /isn't configured/.test(fnNudge.text) &&
+  hNudge.status === 2 && /\/vs-token-safer:setup/.test(hNudge.err);
+
+// 22) manifest version parity — the `claude plugin validate --strict` gate (CI `validate` job): each
+// marketplace.json entry version MUST match that plugin's plugin.json, or strict validation fails. This
+// caught a real drift (bundled gamedev synced to 0.10.3 while the marketplace entry stayed 0.10.1).
+const rd = (rel) => JSON.parse(fs.readFileSync(new URL(rel, import.meta.url)));
+const mkt = rd("../.claude-plugin/marketplace.json");
+const mEntry = (n) => mkt.plugins.find((p) => p.name === n) || {};
+const manifestOk =
+  mEntry("vs-token-safer").version === rd("../.claude-plugin/plugin.json").version &&
+  mEntry("gamedev-log-analyzer").version === rd("../gamedev-log-analyzer/.claude-plugin/plugin.json").version;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -308,6 +328,8 @@ const rows = [
   ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
   ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
   ["vts_setup language census auto-config", setupOk, "true", setupOk],
+  ["first-use setup nudge (tool + hook)", setupNudgeOk, "true", setupNudgeOk],
+  ["marketplace ↔ plugin.json version parity", manifestOk, "true", manifestOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
