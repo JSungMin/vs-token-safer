@@ -442,6 +442,10 @@ generated automatically. The badge at the top always points at the latest. Highl
   `didChange`/`didClose`, not answered from a stale buffer) and fuller LSP-spec conformance (server-request
   replies, `$/cancelRequest` on timeout, declared capabilities). `scripts/sync-gamedev.mjs` keeps the
   bundled-plugin version from drifting.
+- **v0.12.0** — a C++ project with no `compile_commands.json` no longer returns silent empty results:
+  clangd warns how to generate the DB, `search_symbol` falls back to a literal text search, and `vts_setup`
+  flags it. New `vts_gen_compile_db` builds (and optionally runs) the UBT `GenerateClangDatabase` command —
+  the user's choice between full semantic clangd and lightweight no-DB mode.
 
 ## Contributing
 
