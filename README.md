@@ -271,6 +271,29 @@ clangd needs a compile database (`compile_commands.json`):
   Clang x64`). The MSVC-compiler database still resolves the full engine include graph for clangd.
 - **CMake:** configure with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
+### No compile DB yet? Here's exactly what happens
+
+A fresh Unreal project usually doesn't have a `compile_commands.json`, and clangd can't build a semantic
+index without one. The plugin doesn't fail silently or leave you at a dead end:
+
+1. **You still get answers.** `search_symbol` falls back to a bounded literal text search, clearly
+   labeled (`Literal text matches … not a semantic decl`) — the name is still locatable, just as text
+   rather than as a resolved symbol.
+2. **You're told why, once.** The first clangd result carries a one-time advisory explaining the index
+   is empty because the compile DB is missing, and `/vs-token-safer:setup` flags it up front when it
+   censuses a C++ project without one.
+3. **The fix is one command, and it's your call.** `vts_gen_compile_db` (CLI: `vts gen-compile-db`)
+   assembles the exact UBT `GenerateClangDatabase` command for your project: it finds the `.uproject`,
+   derives the `<Name>Editor` target, locates the engine (`VTS_UE_ROOT`, an `engineRoot` arg, or a
+   walk-up from the project), and adds `-Compiler=VisualCpp` for clang-cl targets. **Dry-run by
+   default** — it prints the command and runs nothing. Pass `apply=true` and it runs UBT (takes a few
+   minutes), then copies the resulting DB to the project root where clangd looks.
+4. Restart the MCP server (or rerun the query) and `search_symbol` / `find_references` /
+   `goto_definition` answer semantically from the full engine index.
+
+Staying in no-DB text mode is a perfectly reasonable choice for quick lookups. The full DB pays off
+when you need references and definitions resolved across the engine include graph.
+
 ## Install
 
 ```bash
