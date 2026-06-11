@@ -60,11 +60,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge, then resync `dev` to `main`. Bump on
   main + tag `v<x>` (`node scripts/bump.mjs <level>`, then commit + `git tag -a`); the `v*` tag publishes a
   **GitHub Release** (release.yml). **No npm publish from this repo** — the gamedev-log-analyzer npm
-  package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. When you
-  sync that copy to a new version, ALSO bump its entry in `.claude-plugin/marketplace.json` — `claude
-  plugin validate . --strict` (CI `validate` job) fails if `plugins[].version` ≠ the plugin's
-  `plugin.json` version; the eval guards this parity. Use Edit/Write for files + short `git`/`gh` Bash
-  (no heredocs/`node -e` — they break tool calls). `timeout: 300000` for network Bash.
+  package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. To refresh it
+  run **`node scripts/sync-gamedev.mjs`** — it mirrors the source AND bumps the `.claude-plugin/marketplace.json`
+  gamedev entry to match (never hand-copy: `claude plugin validate . --strict` / CI `validate` fails if
+  `plugins[].version` ≠ the plugin's `plugin.json` version, and the eval guards this parity). Use Edit/Write
+  for files + short `git`/`gh` Bash (no heredocs/`node -e` — they break tool calls). `timeout: 300000` for network Bash.
 - **Reuse, don't reinvent.** Pull patterns from `../rider-mcp-enforcer` and `../gamedev-log-analyzer`
   (token-cap, savings ledger, grep-block hook, routing skill, CLI-first, release CI).
 - Commit author: `JSungMin <jsm1505104@gmail.com>`. End commits with the Claude Code co-author line.
