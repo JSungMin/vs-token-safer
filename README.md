@@ -96,6 +96,10 @@ symbol/source. A typical loop:
 2. Hand that location to vs-token-safer's `goto_definition` / `find_references` (or `search_symbol`) to
    open and understand the code, without ever grepping or dumping the raw log.
 
+The handoff also runs in reverse: if a code search (a vs-search tool, or a Bash/Grep search) is aimed at a
+log — a `Logs/` dir or a `.log`/`.jsonl` file — vs-token-safer points you back at gamedev-log instead of
+returning an empty result from the code index. The language-server index covers source, not logs.
+
 ## What it does
 
 clangd and Roslyn already do semantic symbol/reference analysis on their own. What this plugin adds on
@@ -150,7 +154,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (15/15 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (17/17 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:

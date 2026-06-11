@@ -18,6 +18,9 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 - Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
 - File by name (substring or glob) → `find_files`  (args: `q`, `projectPath`). Replaces `find -name`.
 - Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`. Pre-warm → `vts_warmup`.
+- **Log file** (`.log`/`.jsonl`, or a `Logs/` dir) → NOT a vs-search tool. The language-server index covers
+  source, not logs — use **gamedev-log** (`/gamedev-log-analyzer:logs`). vts-search results aimed at a log
+  carry a one-line pointer there.
 
 Delegate a whole "where is X / what calls Y / find file W" lookup to the **`code-locator`** subagent —
 it runs the searches in its own context and returns just the `file:line` table, so the matches never

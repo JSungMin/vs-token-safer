@@ -93,6 +93,10 @@ dogfood합니다.
 2. 그 위치를 vs-token-safer의 `goto_definition`/`find_references`(또는 `search_symbol`)에 넘겨 코드를
    엽니다. raw 로그를 grep하거나 덤프하지 않고요.
 
+역방향도 동작합니다: 코드 검색(vs-search 도구나 Bash/Grep 검색)이 로그를 겨냥하면 — `Logs/` 디렉터리나
+`.log`/`.jsonl` 파일 — vs-token-safer가 코드 인덱스에서 빈 결과를 주는 대신 gamedev-log로 안내합니다.
+언어 서버 인덱스는 소스를 다루지 로그를 다루지 않으니까요.
+
 ## 무엇을 하나
 
 clangd와 Roslyn은 그 자체로 이미 의미 기반 심볼/참조 분석을 합니다. 이 플러그인이 그 위에 더하는 건
@@ -146,7 +150,7 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
   줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
   캡해서 반환합니다.
 - 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 15/15).
+  `~57,308 tok` → 캡된 출력 `~1,515 tok` = **97.4%** (체크 17/17).
 
 ### 정확도 차이와 그 이유
 "누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
