@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (32/32) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (34/34) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -43,8 +43,14 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
-  BYPASSED vts → missed-token report). `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`,
-  default on-truncate) when a result is capped so the full set is recoverable without re-running.
+  BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set).
+  `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`, default on-truncate) when a result is
+  capped so the full set is recoverable without re-running; a capped `search_symbol`/`find_references`
+  ("… N more") tees too (`teeOverflow` — the rows are already in memory, no re-query). The ledger
+  aggregates PER TOOL (`by tool:` line in `vts savings`) so you can see where the win comes from. BOOT AUTO-LEARN (`index.js`, `VTS_AUTO_LEARN`
+  default on when projectPath set): 3s after boot, `autoLearn(root, 7)` (core.js, shares `scanBypasses`
+  with discover) harvests bypassed-search result files into query-history — the self-improvement loop runs
+  unattended every server start.
 - `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
@@ -60,9 +66,15 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   boot warms each selected backend with its adaptive cap → a multi-lang repo warms in language proportion.
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block. A Bash code search (grep/rg/ack/ag/findstr/
   `git grep`/`find -name`) that is a SINGLE safe segment is REWRITTEN to the equivalent `vts` CLI command via
-  PreToolUse `updatedInput` (token-capped, flow unbroken); anything ambiguous (pipeline, non-literal pattern,
-  quote in the root) falls back to the exit-2 block. `VTS_REWRITE=0` → block instead of rewrite;
-  `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out; escape hatch `VTS_ENFORCE=0`.
+  PreToolUse `updatedInput` (token-capped, flow unbroken); anything ambiguous (pipeline, unsafe pattern,
+  quote in the root) falls back to the exit-2 block. Segment splitting is QUOTE-AWARE (`splitSegments` in
+  `server/shell-split.js`, SHARED with `vts discover` so enforcement and measurement agree): a `|` inside
+  quotes is pattern, not pipeline — so `grep "FooA|FooB"` / `grep "^#include"` (the top bypass shapes per
+  `vts discover`) rewrite to `vts text` (regex); inside double quotes `\"` is an escaped literal; SAFE_TEXT
+  allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). The Grep TOOL stays warn-only but `grepNudgeFor` embeds a
+  READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in the nudge. `VTS_REWRITE=0`
+  → block instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out;
+  escape hatch `VTS_ENFORCE=0`.
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
 - Config dir `~/.vs-token-safer`, env prefix `VTS_`. MCP server name `vs-search`.
