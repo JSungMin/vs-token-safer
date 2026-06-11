@@ -48,7 +48,7 @@ function findAllShallow(root, re, depth = 2) {
   const stack = [[root, 0]];
   while (stack.length) {
     const [dir, d] = stack.pop();
-    let ents = [];
+    let ents;
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       if (e.isFile() && re.test(e.name)) out.push(path.join(dir, e.name));
@@ -65,7 +65,7 @@ function findRoslynMsDll() {
   const override = env("VTS_ROSLYN_DLL");
   if (override) return fs.existsSync(override) ? override : null;
   const extRoot = path.join(os.homedir(), ".vscode", "extensions");
-  let dirs = [];
+  let dirs;
   try { dirs = fs.readdirSync(extRoot).filter((n) => n.startsWith("ms-dotnettools.csharp-")); } catch { return null; }
   dirs.sort().reverse(); // lexical sort puts the newest semver-ish folder last → reverse for first
   for (const d of dirs) {
@@ -82,7 +82,7 @@ const ROSLYN_MS_DLL = findRoslynMsDll();
 // Override with VTS_ROSLYN_CMD. Falls back to "dotnet" (works if a new-enough runtime is on PATH).
 function findRoslynDotnetHost() {
   const base = path.join(os.homedir(), "AppData", "Roaming", "Code", "User", "globalStorage", "ms-dotnettools.vscode-dotnet-runtime", ".dotnet");
-  let dirs = [];
+  let dirs;
   try { dirs = fs.readdirSync(base).filter((n) => /^\d+\.\d+/.test(n)); } catch { return "dotnet"; }
   // Newest version folder first (e.g. "10.0.8~x64~aspnetcore"); pick the first with a dotnet.exe.
   dirs.sort((a, b) => {
@@ -106,7 +106,7 @@ function findShallow(root, re, depth = 2) {
   const stack = [[root, 0]];
   while (stack.length) {
     const [dir, d] = stack.pop();
-    let ents = [];
+    let ents;
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       if (e.isFile() && re.test(e.name)) return path.join(dir, e.name);

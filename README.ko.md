@@ -259,6 +259,29 @@ clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:
   Clang x64`). MSVC-컴파일러 DB도 clangd용 전체 엔진 include 그래프를 해석합니다.
 - **CMake:** `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`로 구성.
 
+### compile DB가 아직 없을 때
+
+새로 만든 Unreal 프로젝트에는 대개 `compile_commands.json`이 없습니다. clangd는 이 파일이 없으면 의미
+기반 인덱스를 만들지 못합니다. 그렇다고 플러그인이 말없이 멈추거나 사용자를 막다른 곳에 두지는 않습니다.
+
+1. **그래도 결과는 돌아옵니다.** `search_symbol`이 범위를 좁힌 리터럴 텍스트 검색으로 넘어가고, 결과에
+   그 사실을 분명히 표시합니다(`Literal text matches … not a semantic decl`). 해석된 심볼이 아니라
+   텍스트로 찾은 것일 뿐, 이름은 여전히 찾을 수 있습니다.
+2. **원인은 한 번만 알려줍니다.** 첫 clangd 결과에 "compile DB가 없어 인덱스가 비어 있다"는 안내가 한 번
+   붙고, `/vs-token-safer:setup`도 DB가 없는 C++ 프로젝트를 센서스할 때 같은 내용을 미리 경고합니다.
+3. **해결은 명령 하나로 끝나며, 실행 여부는 직접 정합니다.** `vts_gen_compile_db`(CLI는
+   `vts gen-compile-db`)가 프로젝트에 맞는 UBT `GenerateClangDatabase` 명령을 알아서 조립합니다.
+   `.uproject`를 찾고, `<Name>Editor` 타깃을 추론하고, 엔진 위치를 찾고(`VTS_UE_ROOT`나 `engineRoot`
+   인자, 또는 프로젝트에서 상위로 거슬러 올라가며 탐색), clang-cl로 빌드하는 타깃이면
+   `-Compiler=VisualCpp`를 덧붙입니다. 기본 동작은 dry-run이라 명령만 출력하고 아무것도 실행하지
+   않습니다. `apply=true`를 주면 그제야 UBT를 돌리고(몇 분 걸립니다), 만들어진 DB를 clangd가 들여다보는
+   프로젝트 루트로 복사합니다.
+4. 이후 MCP 서버를 재시작하거나 쿼리를 다시 실행하면 `search_symbol`, `find_references`,
+   `goto_definition`이 엔진 전체 인덱스를 바탕으로 의미 기반 답을 돌려줍니다.
+
+빠른 조회만 하면 된다면 DB 없이 텍스트 모드로 두는 것도 충분히 합리적인 선택입니다. 전체 DB가 진짜
+필요해지는 순간은 엔진 include 그래프를 가로질러 참조와 정의를 해석해야 할 때입니다.
+
 ## 설치
 
 ```bash
