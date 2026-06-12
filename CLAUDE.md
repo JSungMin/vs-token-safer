@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (34/34) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (36/36) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -110,8 +110,19 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   (same path as ts/py 0-results) so the name is still locatable without a DB. The user's CHOICE: tool
   **`vts_gen_compile_db`** (CLI `vts gen-compile-db`) builds the UBT `GenerateClangDatabase` command (auto:
   .uproject→target `<Name>Editor`, engine root via `VTS_UE_ROOT`/arg/walk-up, `-Compiler=VisualCpp`) — DRY
-  RUN by default (prints the exact command), `apply=true` runs it (`VTS_UBT_TIMEOUT_MS`) then copies the DB
-  to the project root so clangd's `--compile-commands-dir` finds it. `genCompileDbPlan` exported for the eval. **✅ real UE 5.x project live-verified end-to-end**
+  RUN by default (prints the exact command), `apply=true` runs it (`VTS_UBT_TIMEOUT_MS`). APPLY runs the
+  `.bat` THROUGH THE SHELL (`execSync(plan.cmdline)`) — Node refuses to spawn `.bat`/`.cmd` directly
+  (EINVAL, CVE-2024-27980 hardening; found live on the real UE depot). The DB lands **OUT-OF-TREE by
+  default**: `dbDirFor(root)` (backends/index.js) = `~/.vs-token-safer/db/<basename>-<sha1[:10]>`
+  (`VTS_DB_DIR` overrides the base); `resolveCdbDir(root)` (in-tree shallow scan WINS, else the
+  out-of-tree home) feeds clangd's `--compile-commands-dir`, `detect`, `afterInit`, and `hasCompileDb` —
+  and clangd writes its `.cache/` index NEXT TO the CDB, so the whole artifact set stays outside the
+  source tree (nothing for git or `p4 reconcile`). `inTree=true` keeps the classic project-root layout,
+  protected by `ensureDbIgnored(root)`: appends `compile_commands.json` + `.cache/` to `.gitignore` (git
+  work tree) or an existing P4IGNORE/.p4ignore (walk-UP to the depot root — the live depot keeps it 2
+  levels above the game dir; read-only/versioned file → exact `p4 edit` instructions instead). The
+  engine-root DB copy is removed after the move in both modes. `genCompileDbPlan` + `ensureDbIgnored` +
+  `dbDirFor` + `resolveCdbDir` exported for the eval. **✅ real UE 5.x project live-verified end-to-end**
   (`search_symbol` returned the game `UCLASS` + its `*.generated.h` symbols as `file:line`):
   - `GenerateClangDatabase` needs **`-Compiler=VisualCpp`** when the targets build with clang-cl — else
     clang-toolchain validation fails (`Unable to find valid <ver> C++ toolchain for Clang x64`). Override
