@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 
@@ -384,6 +384,27 @@ function getClient(root, backendName) {
 export async function disposeClients() {
   for (const p of clients.values()) { try { (await p).shutdown(); } catch { /* ignore */ } }
   clients.clear();
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Return-when-found query for clangd with a PERSISTED index that's still loading: afterInit no longer
+// blocks on the full re-index, so the first workspace/symbol can land while shards are still loading and
+// come back empty. Instead of a fixed wait, POLL — re-issue the query with backoff and return the INSTANT
+// the sought symbol's shard is loaded (usually well before the cap). `client.indexLoaded` flips true when
+// clangd's background index finishes, so an empty result after that is genuine (stop polling). Capped by
+// VTS_CLANGD_PERSISTED_WAIT_MS. Non-persisted / non-clangd → one call, no polling.
+export async function symbolReady(c, q, persisted, capMs) {
+  let syms = (await c.symbol(q)) || [];
+  if (syms.length || !persisted) return syms;
+  const t0 = Date.now();
+  let delay = 1000;
+  while (Date.now() - t0 < capMs) {
+    if (c.indexLoaded) break; // index finished loading → an empty result is real, stop
+    await sleep(Math.min(delay, Math.max(0, capMs - (Date.now() - t0))));
+    syms = (await c.symbol(q)) || [];
+    if (syms.length) break;
+    delay = Math.min(Math.round(delay * 1.5), 5000);
+  }
+  return syms;
 }
 // Proactively spawn + warm a backend WITHOUT issuing a query (IDE-style background indexing). Fire-and-
 // forget at MCP boot so the user's first search reuses an already-warming/warm client. Returns the
@@ -823,7 +844,8 @@ export async function runTool(name, a = {}) {
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
       const c = await getClient(root, backendName);
-      const syms = (await c.symbol(String(a.q))) || [];
+      const persisted = backendName === "clangd" && hasPersistedIndex(root);
+      const syms = await symbolReady(c, String(a.q), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
       try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
       const adv = backendAdvisory(backendName, root);
       if (!syms.length) {
@@ -856,7 +878,8 @@ export async function runTool(name, a = {}) {
       // "where is FooBar used" is ONE call, not the locate→position→refs dance that pushes the model to grep.
       let pos = null, originLabel = "";
       if (a.symbol) {
-        const syms = (await c.symbol(String(a.symbol))) || [];
+        const persisted = backendName === "clangd" && hasPersistedIndex(root);
+        const syms = await symbolReady(c, String(a.symbol), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
         const want = String(a.symbol);
         const wantPath = a.path ? String(a.path).replace(/\\/g, "/").toLowerCase() : null;
         // exact-name matches first; if a path is given, prefer a match in that file (disambiguates overloads).
