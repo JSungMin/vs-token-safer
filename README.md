@@ -550,6 +550,14 @@ generated automatically. The badge at the top always points at the latest. Highl
   read 97.4%, not 90.8%). Multi-project installs also stop bleeding into each other: `projectPath`
   scopes the count to entries that ran under that root, harvested relative paths resolve against the
   entry's own cwd, and learn/auto-learn attribute only files that live under the target root.
+- **v0.16.0** — two things, both aimed at how you actually use this while editing. `find_references` now
+  takes a symbol NAME (`find_references symbol="FooBar"`) and resolves the declaration for you, so finding
+  every call site no longer needs a line/column — the step that used to push you back to grep. And clangd
+  is much faster to first answer on a big tree: it indexes at `normal` priority, skips re-opening 100 files
+  when a built index is already on disk, and — the big one — stops waiting for clangd's full background
+  re-index before the first query when a persisted index exists (it answers from the loaded shards). On a
+  real 26k-TU Unreal project the first semantic query dropped from ~369s to ~99s; keep the MCP server
+  running and the rest are warm.
 
 ## Contributing
 
