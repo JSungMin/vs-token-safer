@@ -620,18 +620,22 @@ const { dbDirFor, resolveCdbDir } = await import("../server/backends/index.js");
 const applied = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true });
 const outDir = dbDirFor(ueGame);
 const { hasCompileDb: hasDb2 } = await import("../server/core.js");
+const dbGitignore = (() => { try { return fs.readFileSync(path.join(ueGame, ".gitignore"), "utf8"); } catch { return ""; } })();
 const applyOutOk =
   !applied.isError && /Generated compile_commands\.json/.test(applied.text) &&
-  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // landed out of tree
-  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // source tree untouched
-  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // no ignore churn needed
-  !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
+  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // DB landed out of tree
+  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // no DB in the source tree
   /OUTSIDE the source tree/.test(applied.text) &&
+  dbGitignore.includes(".cache/") && !dbGitignore.includes("compile_commands.json") && // .cache/ ignored in-tree; DB not (it's out-of-tree)
+  !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
   resolveCdbDir(ueGame) === outDir &&                                  // clangd resolves the out-of-tree home
-  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for this one check
+  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for these checks
     const saved = process.env.VTS_CLANGD_ARGS; delete process.env.VTS_CLANGD_ARGS;
-    const ok = BACKENDS.clangd.args(ueGame).some((x) => x === `--compile-commands-dir=${outDir}`);
-    process.env.VTS_CLANGD_ARGS = saved; return ok;
+    const args = BACKENDS.clangd.args(ueGame);
+    process.env.VTS_CLANGD_ARGS = saved;
+    return args.some((x) => x === `--compile-commands-dir=${outDir}`) &&
+      args.includes("--background-index-priority=normal") &&          // index at real priority, not idle-only
+      args.some((x) => /^-j=\d+$/.test(x));                            // multiple workers
   })() &&
   hasDb2(ueGame);                                                      // advisory suppressed
 // inTree=true keeps the classic layout, protected by the VCS-ignore guard.
@@ -650,6 +654,18 @@ delete process.env.VTS_DB_DIR;
 const applyOk = applyOutOk && applyInOk;
 try { fs.rmSync(ueRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 try { fs.rmSync(DBH, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 36) perf: a persisted clangd index (`.cache/clangd/index/*.idx`, in-tree — clangd's fixed location) is
+// detected, so afterInit can open a small nudge set instead of re-parsing 100 TUs (the cold-start cost).
+const { hasPersistedIndex } = await import("../server/backends/index.js");
+const piDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-persist`);
+fs.mkdirSync(piDir, { recursive: true });
+const noIndexSeen = hasPersistedIndex(piDir);
+fs.mkdirSync(path.join(piDir, ".cache", "clangd", "index"), { recursive: true });
+fs.writeFileSync(path.join(piDir, ".cache", "clangd", "index", "Foo.cpp.ABC123.idx"), "x");
+const indexSeen = hasPersistedIndex(piDir);
+const persistedIndexOk = noIndexSeen === false && indexSeen === true;
+try { fs.rmSync(piDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -694,7 +710,8 @@ const rows = [
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
   ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
   ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
-  ["gen-compile-db apply: out-of-tree default + inTree guard", applyOk, "true", applyOk],
+  ["gen-compile-db apply: out-of-tree DB + in-tree .cache ignored + perf flags", applyOk, "true", applyOk],
+  ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

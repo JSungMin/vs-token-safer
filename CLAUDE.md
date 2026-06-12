@@ -141,6 +141,19 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
     parse fine; only the full game-TU header chain trips 19.x.
   - Secondary tuning for cold/large indexes: `VTS_LSP_TIMEOUT_MS` (request timeout), `VTS_LSP_INDEX_WAIT_MS`
     (afterInit waits for `$/progress` index-ready), `VTS_CLANGD_OPEN_CAP` (warm-up open cap).
+  - **LATENCY (why it felt slower than a warm IDE like Rider — root-caused this session, all fixed):**
+    (1) clangd's background-index priority defaults to `background` = MINIMUM/idle-CPU-only, so a fresh
+    index crawls → we pass **`--background-index-priority=normal`** (`VTS_CLANGD_INDEX_PRIORITY`) + **`-j=`**
+    `cores-1` (`VTS_CLANGD_JOBS`). (2) afterInit `didOpen`s up to `VTS_CLANGD_OPEN_CAP` (100) real UE TUs and
+    clangd PARSES each (~seconds each) before the first query — that parse storm was the bulk of cold-start
+    (measured: OPEN_CAP=0 → 6.5s vs a 100-open timeout). When a persisted index exists, **`hasPersistedIndex`**
+    (backends/index.js) shrinks the open-set to `VTS_CLANGD_WARM_CAP_PERSISTED` (8) — clangd serves
+    workspace/symbol from the loaded shards, no re-parse. (3) clangd has NO index-relocation flag (`--help`
+    confirmed) — it persists the background index at `<project>/.cache/clangd` IN-TREE. v0.15.0 wrongly moved
+    `.cache` out-of-tree → orphaned → re-index every spawn. FIX: only compile_commands.json goes out-of-tree;
+    **`.cache` stays in-tree (VCS-ignored, ALWAYS — both layouts) so clangd REUSES it** → warm starts.
+    `ensureDbIgnored(root, patterns)` now guards `.cache/` in both modes; the MCP server keeps clangd alive
+    so first-query cost is paid once.
 - **roslyn** (C#/.NET): `.sln/.csproj`. **✅ live-verified** against **Microsoft.CodeAnalysis.LanguageServer**
   (the real VS / C# Dev Kit engine), auto-detected from the VS Code C# extension bundle + its net10
   runtime; opens the workspace via `solution/open`/`project/open` then waits for

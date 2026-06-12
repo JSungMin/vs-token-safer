@@ -397,7 +397,10 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | Max files the JS/TS / Python warm-up opens to prime the server. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large (e.g. UE) index. |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query. |
-| — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index. |
+| — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index (cold, no persisted index). |
+| — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | Open cap when a persisted `.cache/clangd` index exists — clangd answers from the index, so few files need re-parsing. |
+| — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd background-index thread priority. Default `normal` builds it fast; `background` is idle-CPU-only (slower, but a better citizen on a shared box). |
+| — | `VTS_CLANGD_JOBS` | `cores-1` | clangd async/index workers (`-j`). |
 | — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style); set `0` to disable. |
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly CLI/non-MCP). |
 | — | `VTS_PREWARM_BACKENDS` | auto | Which backends to pre-warm. `auto` = the single detected/dominant one; `all` = every language present in the repo (each warmed in proportion to its file count); or a comma list like `clangd,typescript`. |
@@ -434,7 +437,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `/vs-token-safer:setup` not in autocomplete | Plugin not installed (only marketplace added), or stale | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. Check version with `/plugin`. |
-| First clangd query is very slow or times out | Cold UE-scale index; clangd is indexing engine headers | Pre-warm (`VTS_PREWARM` on, or run `vts warmup`); raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS`. Keep the MCP server running so the index stays warm. |
+| First clangd query is very slow or times out | Cold UE-scale index being built from scratch; clangd's default index priority is idle-CPU-only | The first build is unavoidable, but it now runs at `normal` priority and **persists in-tree at `.cache/clangd`** (VCS-ignored), so every later start REUSES it and is fast. Keep the MCP server running so clangd stays warm; raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS` for the first build; don't delete `.cache/clangd` (that forces a full re-index). |
 | clangd query never returns (hangs) on a real UE project | The clangd 19.1.x bundled with Visual Studio **deadlocks** on UE TUs | Install **clangd ≥ 22** and point `VTS_CLANGD_CMD` at it. vts prints a version advisory when it detects an old clangd. |
 | `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl; UBT validates a Clang toolchain | Add **`-Compiler=VisualCpp`** to the UBT command; the MSVC database still resolves the include graph. |
 | clangd resolves only header-free symbols | Compile DB has no include dirs → system/3rd-party headers don't resolve | Use a UBT-generated DB (it includes the paths); a hand-rolled `compile_commands.json` must list the include dirs. |

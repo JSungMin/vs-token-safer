@@ -103,15 +103,28 @@ const exists = (root, ...names) => names.some((n) => {
   try { return fs.existsSync(path.join(root, n)); } catch { return false; }
 });
 
-// --- out-of-tree compile-DB home: keep generated artifacts (compile_commands.json AND clangd's .cache/
-// index, which clangd writes NEXT TO the compile DB) outside the source tree entirely, so nothing ever
-// shows up for git or `p4 reconcile` to track. One dir per project root under ~/.vs-token-safer/db/
-// (VTS_DB_DIR overrides the base). clangd is pointed here via --compile-commands-dir. ---
+// --- out-of-tree compile-DB home: keep the generated compile_commands.json outside the source tree, so
+// the big generated JSON never shows up for git or `p4 reconcile`. One dir per project root under
+// ~/.vs-token-safer/db/ (VTS_DB_DIR overrides the base); clangd reads it via --compile-commands-dir.
+// (clangd's .cache/clangd index is NOT here — clangd has no flag to relocate it and persists it in-tree;
+// it's VCS-ignored instead, and kept there so warm queries reuse it.) ---
 export function dbDirFor(root) {
   const base = env("VTS_DB_DIR", path.join(os.homedir(), ".vs-token-safer", "db"));
   const norm = path.resolve(root).replace(/\\/g, "/").toLowerCase();
   const slug = `${path.basename(norm) || "root"}-${crypto.createHash("sha1").update(norm).digest("hex").slice(0, 10)}`;
   return path.join(base, slug);
+}
+// Does a persisted clangd background index already exist for this root? clangd stores it at
+// `<project>/.cache/clangd/index/*.idx` (in-tree — no flag relocates it). When it's there, clangd serves
+// workspace/symbol from the loaded shards, so afterInit doesn't need to re-PARSE 100 TUs (the parse storm
+// was the bulk of the cold-start latency vs a warm IDE like Rider) — a tiny nudge-open + shard load is
+// enough. Returns true if any .idx shard is present under the root's (or the CDB dir's) clangd cache.
+export function hasPersistedIndex(root) {
+  for (const base of [root, resolveCdbDir(root)].filter(Boolean)) {
+    const idxDir = path.join(base, ".cache", "clangd", "index");
+    try { if (fs.readdirSync(idxDir).some((f) => /\.idx$/i.test(f))) return true; } catch { /* none */ }
+  }
+  return false;
 }
 // Where this root's compile DB actually lives: in-tree (shallow scan, the classic layout) wins, else the
 // out-of-tree home. Returns the DIRECTORY containing compile_commands.json, or null.
@@ -161,10 +174,17 @@ export const BACKENDS = {
       const ov = splitArgs(env("VTS_CLANGD_ARGS"));
       if (ov) return ov;
       const a = [
-        // in-tree CDB wins; else the out-of-tree home (~/.vs-token-safer/db/<slug>) — clangd also writes
-        // its .cache/ index next to the CDB, so the whole artifact set stays out of the source tree.
+        // --compile-commands-dir only tells clangd where to FIND compile_commands.json (out-of-tree home
+        // or in-tree); it does NOT relocate the index. clangd has no index-dir flag — it persists its
+        // background index in `<project>/.cache/clangd` (in-tree), reused across spawns for warm speed.
         `--compile-commands-dir=${resolveCdbDir(root) || root}`,
         "--background-index",
+        // Default priority is `background` = MINIMUM, idle-CPU-only — so a fresh index crawls (a big reason
+        // the first query felt far slower than a warm IDE like Rider). We want it built NOW; `normal` lets
+        // it use real CPU. Override with VTS_CLANGD_INDEX_PRIORITY (e.g. `background` to be a good citizen).
+        `--background-index-priority=${env("VTS_CLANGD_INDEX_PRIORITY", "normal")}`,
+        // More async workers → faster background indexing (default is conservative). Cap at the box's cores.
+        `-j=${Math.max(2, parseInt(env("VTS_CLANGD_JOBS", String(Math.max(2, (os.cpus()?.length || 4) - 1))), 10) || 4)}`,
         "--header-insertion=never",
       ];
       // Prebuilt/remote index (zero per-dev warmup): point clangd at a shared clangd-index-server.
@@ -185,9 +205,15 @@ export const BACKENDS = {
         try { files = JSON.parse(fs.readFileSync(cc, "utf8")).map((e) => e.file).filter(Boolean); } catch { /* ignore */ }
       }
       const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2);
+      // When a persisted index already exists, clangd answers workspace/symbol from the loaded shards —
+      // re-opening 100 TUs only triggers a costly re-parse (~seconds EACH on UE) for no symbol-search gain.
+      // Open just a small nudge set so clangd starts loading; the full project is already in the index.
+      // (A cold project with NO index still opens the full cap to force the first dynamic index.)
+      const persisted = hasPersistedIndex(root);
+      const cap = persisted ? Math.min(warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100), envInt("VTS_CLANGD_WARM_CAP_PERSISTED", 8)) : warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100);
       // Order the open-set by likely-query-first (query-history > git-recency > mtime), then cap — this
       // steers clangd's IndexBoostedFile priority so the warm window covers what the dev actually queries.
-      const open = orderForWarm(root, [...new Set([...files, ...extra])], warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100));
+      const open = orderForWarm(root, [...new Set([...files, ...extra])], cap);
       for (const f of open) client.didOpen(f, "cpp");
       if (open.length) {
         // On a huge tree (e.g. a cold UE-scale index) the dynamic index isn't ready when the first
