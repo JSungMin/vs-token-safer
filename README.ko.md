@@ -46,18 +46,12 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 
 ---
 
-Claude가 Bash `grep` 대신 공식 언어 서버 인덱스로 심볼 검색, 참조(references) 찾기, 정의로 이동을 하게
-만드는 Claude Code 플러그인입니다(C/C++은 **clangd**(LLVM), C#/.NET은 Roslyn 기반 LSP
-`Microsoft.CodeAnalysis.LanguageServer`(Visual Studio / C# Dev Kit 엔진), JS/TS는
-**typescript-language-server**(tsserver), Python은 **pyright**). hover, 파일 아웃라인, 프로젝트 전역
-rename도 같은 인덱스로 처리합니다. 검색이 폭발할 때는 간결한 `file:line` 목록(소스 본문 없음)만 반환해
-토큰을 상한선으로 막습니다. `grep`이 느리고 컨텍스트를 잡아먹는 대형 Unreal C++ 및 .NET/C# 코드베이스를
-위해 만들었습니다. JS/Python 백엔드 덕분에 플러그인이 자기 소스도 검색할 수 있어, 개발하면서 직접
-dogfood합니다.
-
-[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer)의 IDE 비종속 형제 프로젝트입니다.
-토큰 효율 목표는 같지만 실행 중인 IDE의 MCP 서버를 프록시하지 않고 공식 언어 서버를 헤드리스로
-실행합니다. 그래서 에디터를 열지 않아도 Visual Studio나 임의의 C++·C# 프로젝트에서 동작합니다.
+심볼 검색, 참조 찾기, 정의로 이동, hover, 아웃라인, 프로젝트 전역 rename이 전부 Bash `grep` 대신 공식
+언어 서버 인덱스 — **clangd**(C/C++), **Roslyn**(C#/.NET), **tsserver**(JS/TS), **pyright**(Python) — 를
+거쳐, 간결하고 상한이 걸린 `file:line` 목록(소스 본문 없음)으로 돌아옵니다. `grep`이 느리고 컨텍스트를
+잡아먹는 대형 Unreal C++ / .NET 코드베이스를 위해 만들었습니다.
+[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer)의 IDE 비종속 형제로, 목표는 같지만
+IDE를 프록시하지 않고 언어 서버를 헤드리스로 실행합니다 — 에디터를 열 필요가 없습니다.
 
 ## 마켓플레이스 — 2개 플러그인
 
@@ -384,6 +378,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 
 ## 설정 항목 (env)
 
+<details>
+<summary><b>전체 환경변수 펼치기</b></summary>
+
 우선순위: **환경변수(`VTS_*`) > `~/.vs-token-safer/config.json` > 기본값.**
 
 | 설정 키 | 환경변수 | 기본값 | 의미 |
@@ -424,6 +421,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 스캔할 대화 기록 위치. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 compile DB의 트리 밖 보관소(프로젝트별 하위 디렉터리, clangd `.cache/` 인덱스도 함께). |
 
+
+</details>
+
 ## 강제(enforcement) 동작 방식
 
 - **훅**은 Bash 호출이 일어나기 전마다 실행됩니다. 명령이 코드 검색(grep/rg/ack/ag/findstr/`git grep`,
@@ -438,6 +438,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 
 ## 문제 해결
 
+<details>
+<summary><b>문제 해결 표 펼치기</b></summary>
+
 | 증상 | 원인 | 해결 |
 | --- | --- | --- |
 | `/vs-token-safer:setup`가 자동완성에 안 뜸 | 플러그인 미설치(마켓플레이스만 add) 또는 구버전 | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. `/plugin`에서 버전 확인. |
@@ -449,6 +452,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | JS/TS·Python 결과 없음 | 동봉 LSP 미설치(오프라인 첫 실행, npm 실패) | 세션을 다시 시작해 의존성 재설치, 또는 PATH의 `typescript-language-server`/`pyright-langserver`를 `VTS_TS_CMD`/`VTS_PY_CMD`로 지정. |
 | 원하던 grep인데 코드 검색이 차단됨 | 훅이 인덱스로 유도 중 | `VTS_ENFORCE=0`으로 grep 허용(예: 언어 서버 불가 시). |
 | 잘못된 백엔드 선택됨 | 루트 아래 프로젝트 파일이 여럿 | 고정: `VTS_BACKEND=clangd`(또는 `roslyn`), 또는 호출마다 `backend` 전달. |
+
+
+</details>
 
 ## 상태 / 주의
 
@@ -477,112 +483,9 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 
 ## 버전 히스토리
 
-**[Releases](https://github.com/JSungMin/vs-token-safer/releases)** 페이지를 참고하세요. 버전 태그마다
-카테고리·PR 링크된 노트(🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance)가 자동
-생성됩니다. 상단 배지는 항상 최신을 가리킵니다. 지금까지의 하이라이트는 다음과 같습니다:
-
-- **v0.1.0** — 초기 vs-token-safer: clangd/Roslyn 기반 `search_symbol`/`find_references`/
-  `goto_definition`, 토큰 캡 코어, grep 차단 훅, 라우팅 스킬, MCP 서버 + `vts` CLI.
-- **v0.2.0** — clangd ≥ 22 권고(오래된 clangd는 UE에서 데드락), 설정 가능한 LSP 타임아웃, 동봉된
-  gamedev-log-analyzer 마켓플레이스 플러그인.
-- **v0.3.0** — 기동 시 IDE식 pre-warm + hit-rate 정렬 warm-up 세트(git/Perforce), 공유/사전구축 원격
-  인덱스(`VTS_CLANGD_REMOTE`).
-- **v0.4.0** — warm-up 정렬에 working-now(`git status` / `p4 opened`)와 include 중심성 추가;
-  gamedev-log-analyzer 0.10.1.
-- **v0.5.0** — README와 커뮤니티 문서를 성숙한 repo 수준으로(배지, env 표, 트러블슈팅, 버전 이력).
-- **v0.6.0** — 적응형 include 중심성: 프리픽스 읽기, warm-up당 시간 예산, 회차마다 커버리지가 늘어나는
-  영속 include-그래프 캐시로 큰 모듈을 건너뛰지 않음.
-- **v0.7.0** — Rider 형제와 내비게이션 패리티: `hover`, `document_symbols`, `find_files`,
-  `search_text`, 컨텍스트 격리형 `code-locator` 서브에이전트 — 그리고 `rename`(기본은 미리보기,
-  `apply=true`일 때만 기록하는 의미 기반 프로젝트 전역 이름 변경).
-- **v0.8.0** — 백엔드 두 개 추가: **JS/TS**(typescript-language-server)와 **Python**(pyright). 둘 다
-  플러그인 의존성으로 동봉되어 자동 설치됩니다. 이제 vts가 자기 소스도 검색할 수 있어, 개발하면서 직접
-  dogfood합니다.
-- **v0.9.0** — 로그 분석 토스: 코드 검색이 `Logs/` 디렉터리나 `.log`/`.jsonl` 파일을 겨냥하면 코드
-  인덱스의 빈 결과 대신 gamedev-log로 안내합니다. grep-block 훅이 내장 Grep 툴도 커버합니다(warn 전용).
-- **v0.10.0** — 언어 인식 setup·warm-up. `vts_setup`이 프로젝트 언어를 인구조사해 `prewarmBackends`를
-  자동 선택하고, warm-up open-cap이 각 언어 파일수에 비례 스케일하며 멀티언어 repo는 모든 백엔드를 비율로
-  warm할 수 있습니다(`VTS_PREWARM_BACKENDS`). `search_text`가 JS/TS/Python도 스캔하고(기존 C/C++/C#만),
-  tsserver/pyright의 `search_symbol`은 인덱스가 안 연 심볼에 대해 리터럴 텍스트 검색으로 폴백합니다.
-  동봉 gamedev-log-analyzer → 0.10.3.
-- **v0.11.0** — 최초 사용 setup 유도(미설정이면 첫 결과와 grep-block 훅이 `/vs-token-safer:setup`을
-  안내); LSP 버퍼 신선도(warm-up 후 디스크에서 바뀐 파일을 `didChange`/`didClose`로 갱신, stale 버퍼로
-  답하지 않음)와 LSP 스펙 적합성 강화(서버요청 응답, 타임아웃 시 `$/cancelRequest`, capability 선언).
-  `scripts/sync-gamedev.mjs`로 동봉 플러그인 버전 드리프트 방지.
-- **v0.12.0** — `compile_commands.json` 없는 C++ 프로젝트도 조용한 빈 결과 대신: clangd가 DB 생성법을
-  안내하고, `search_symbol`은 리터럴 텍스트 검색으로 폴백하며, `vts_setup`이 미리 경고합니다. 새
-  `vts_gen_compile_db`가 UBT `GenerateClangDatabase` 명령을 구성(옵션으로 실행)합니다 — 풀 semantic
-  clangd와 경량 no-DB 모드 사이의 선택권.
-- **v0.13.0** — grep-block 훅이 이제 Bash 코드 검색(`grep`/`rg`/`findstr`/`git grep`/`find -name`)을 차단만
-  하지 않고 동등한 토큰-캡 `vts` 명령으로 **재작성**합니다. 모델 흐름이 끊기지 않고 출력은 항상 캡됩니다
-  (`VTS_REWRITE=0`이면 기존 차단 유지, `excludeCommands`/`VTS_EXCLUDE_COMMANDS`로 특정 명령 제외).
-  새 `vts discover`는 최근 Claude 대화 기록에서 vts를 우회한 검색과 소모한 토큰을 보고하고, `vts savings`는
-  30일 그래프·일별/이력 분석·추정 가치를 추가하며, 잘린 `find_files`/`search_text`는 전체 결과를 복구
-  (tee) 파일로 씁니다. 이들은 자기개선으로 결합됩니다: 재작성은 식별자 패턴을 텍스트 grep이 아닌 **semantic**
-  `search_symbol`로 보내고(백엔드가 없으면 텍스트로 자동 폴백), `vts discover --learn`은 우회한 검색이 맞춘
-  파일들을 warm-up 세트에 넣어 다음 prewarm이 먼저 열게 하며, `discover`는 **catch-rate**(vts가 잡은 토큰 vs
-  여전히 우회 중)를 보고합니다. 또한 `document_symbols`가 아웃라인 노이즈(익명 콜백/중첩 로컬)를 숨기고,
-  잘린 스윕은 조용히 캡되지 않고 표시됩니다.
-- **v0.14.0** — 자가개선 루프가 사람 손 없이 돕니다. 서버가 부팅할 때 최근 우회 검색이 실제로 적중한
-  파일을 warm-up 세트로 직접 끌어옵니다(`VTS_AUTO_LEARN`, 로컬·읽기 전용). 재작성의 가장 큰 구멍이던
-  명령 파싱도 따옴표를 인식하도록 손봤습니다. 이제 `grep "FooA|FooB"`나 `grep "^#include"`는 훅을 그냥
-  통과하지 않고 regex를 그대로 받는 `search_text`로 넘어가며, 실제 파이프는 여전히 막힙니다.
-  `vts discover`도 같은 파서를 쓰기 때문에 미터에 잡히는 것과 훅이 막는 것이 어긋나지 않습니다. Grep
-  도구 경고에는 바로 복사해 쓸 수 있는 동등 호출이 함께 나오고, 캡에 걸려 잘린
-  `search_symbol`·`find_references` 결과는 전체 행을 복구용 파일로 남깁니다. `vts savings`는 절감량을
-  도구별로 쪼개서 보여 줍니다.
-- **v0.15.0** — 생성된 산출물이 버전 관리에 섞여 들어갈 일이 사라졌습니다. 애초에 소스 트리 안에 두지
-  않기 때문입니다. 이제 `vts_gen_compile_db apply=true`는 `compile_commands.json`을
-  `~/.vs-token-safer/db/<project>`에 만들고, clangd를 `--compile-commands-dir`로 그 위치에 연결합니다.
-  clangd가 `.cache/` 인덱스를 DB 바로 옆에 쓰기 때문에 인덱스까지 함께 트리 밖에 머뭅니다. git에도
-  `p4 reconcile`에도 잡히는 것이 없는 셈입니다. 예전처럼 프로젝트 루트에 두고 싶다면 `inTree=true`를
-  주면 되는데, 이때는 VCS-ignore 가드가 따라붙습니다. `.gitignore`에 항목을 더하고, Perforce ignore
-  파일은 depot 루트까지 거슬러 올라가 찾아내며, 버전 관리 중인 읽기 전용 파일이라면 `p4 edit` 뒤에 넣을
-  줄까지 정확히 일러줍니다. 엔진 루트에 남는 DB 사본은 어느 모드에서든 지웁니다. 최신 Node에서 `apply`가
-  깨지던 문제도 함께 고쳤습니다. CVE-2024-27980 하드닝 이후로는 `RunUBT.bat`를 직접 부르면 EINVAL이
-  나기 때문에, `.bat` 경로는 셸을 한 번 거치도록 했습니다. 실제 Unreal depot에서 끝까지 돌려
-  확인했습니다. UBT가 112초, DB는 약 18MB, 첫 semantic 쿼리는 선언 86건을 토큰 93% 절감으로
-  돌려줬습니다.
-- **v0.15.1** — `vts discover`가 이제 정직하게 측정합니다. since 창을 거를 때 파일 mtime이 아니라
-  transcript 엔트리 각각의 timestamp를 보기 때문에, 오래 도는 세션의 옛 우회가 매일 다시 잡히는 일이
-  없습니다. 실측에서 "최근 1일" 숫자가 4배 가까이 부풀어 있었고, 바로잡은 catch-rate는 90.8%가 아니라
-  97.4%였습니다. 멀티 프로젝트 설치에서 서로 섞이던 문제도 같이 막았습니다. `projectPath`는 해당 root
-  아래에서 돌린 엔트리만 집계하도록 범위를 좁혔고, 수확한 상대경로는 엔트리 자신의 cwd를 기준으로 풀며,
-  learn과 auto-learn은 대상 root 아래의 파일만 귀속시킵니다.
-- **v0.16.0** — 변화는 두 가지인데, 둘 다 코드를 고치는 도중에 실제로 마주치는 흐름을 노렸습니다. 먼저
-  `find_references`가 심볼 이름을 그대로 받습니다. `find_references symbol="FooBar"`처럼 쓰면 선언을
-  알아서 찾아 해석하므로, 호출 지점을 전부 훑는 데 더 이상 line/column을 짚어줄 필요가 없습니다. 예전엔
-  바로 이 대목에서 grep으로 되돌아가곤 했습니다. 다른 하나는 속도입니다. 큰 트리에서 clangd가 첫 답을
-  내놓기까지 걸리던 시간이 눈에 띄게 줄었습니다. 인덱싱은 normal 우선순위로 돌고, 빌드된 인덱스가
-  디스크에 남아 있으면 파일 100개를 다시 열지 않습니다. 결정적으로, persisted 인덱스가 있을 때는 첫 쿼리
-  전에 clangd가 백그라운드 재인덱싱을 끝낼 때까지 기다리지 않고 이미 로드된 샤드에서 답합니다. 실제
-  26k-TU Unreal 프로젝트에서 첫 semantic 쿼리가 약 369s에서 약 99s로 떨어졌습니다. MCP 서버를 켜 두면
-  그다음부터는 warm 상태입니다.
-- **v0.16.1** — 첫 쿼리 경로를 한 번 더 손봤습니다. 인덱스가 다 뜰 때까지 정해진 시간만큼 기다리지 않고,
-  로딩 중인 인덱스를 폴링하다가 찾는 심볼이 나타나면 그 순간 바로 결과를 돌려줍니다. 인덱스가 완전히
-  로드됐는데도 심볼이 없으면 더 기다릴 것 없이 곧장 없다고 답합니다. 대기 상한도 60s로 낮췄습니다.
-  덕분에 같은 프로젝트에서 첫 쿼리가 약 70s 만에 심볼까지 해석해 돌아왔습니다.
-- **v0.17.0** — 인덱스가 손대지 못하는 명령의 출력을 압축합니다. 이번에 추가된 `vts_git` / `vts_p4`는
-  읽기 전용 git/p4 명령을 실행한 뒤 결과를 묶고 중복을 접고 상한을 걸어 돌려줍니다. `git status`는 변경
-  종류와 디렉터리별로, `git log`는 커밋당 한 줄로, `git diff`는 본문을 떼고 파일별 `+/-` 통계로,
-  `p4 opened`는 액션과 depot 디렉터리별로 정리합니다. 덕분에 지저분한 `git diff`나 파일 500개짜리
-  `p4 opened`이 ~20–130배로 줄고, 같은 절감 원장에 함께 잡힙니다. `search_text`에도 조준 기능을
-  달았습니다. `path=<파일>` / `glob=<패턴>`은 지정한 파일이나 글롭을 검색하면서 그 확장자를 알아서
-  포함하니 `.md` 하나쯤은 그냥 잡히고, `docs=true`를 주면 프로젝트 전역 검색이 README·문서·설정까지
-  넓어집니다. grep-block 훅도 읽기 전용 `git status|log|diff` / `p4 opened|…`과 특정 파일을 콕 집은
-  텍스트 grep을 이쪽으로 보냅니다.
-- **v0.17.1 – v0.17.4** — 새로 생긴 압축 기능을 비판적으로 뜯어보고 직접 dogfood하면서 찾아낸 것들을
-  다졌습니다. `vts_git` / `vts_p4`는 읽기 전용 서브커맨드만 허용하도록 묶어, 상태를 바꾸는 `git reset`이나
-  `p4 submit`은 거부하고 `p4 reconcile`은 미리보기로만 돌게 했습니다. `search_text path=`는 프로젝트 루트
-  안에 가둬 엉뚱한 파일을 읽지 못하게 했고, 절감 원장은 문자열 출력을 부풀려 세지 않으며 음수도 남기지
-  않습니다. 정확성도 손봤습니다. `git status`의 rename은 목적지 경로로 보여주고, `git diff`에서 바뀐
-  바이너리는 `(binary)`로 표시하며, `vts_git`/`vts_p4`는 현재 디렉터리를 기준으로 돌고,
-  `document_symbols` 아웃라인은 한때 도배되던 객체 리터럴 키(`COMMANDS::git`, `STATUS::M`)를 떨궈 실제
-  파일 하나가 심볼 34개에서 12개로 줄었습니다.
-- **v0.18.0** — grep-block·넛지·로그 안내 메시지가 OS 로케일이 `ko-*`이거나 `VTS_LANG`·config `lang`이
-  `ko`이면 자동으로 **한국어**로 나옵니다(`VTS_LANG=en`이면 영어로 고정). 차단 문구도 안심되고 절감을
-  짚어주는 톤으로 다시 썼습니다. 빨간 박스는 실패가 아니라 훅이 "잠깐"이라고 말을 거는 것이고, 방금 아낀
-  토큰부터 알려줍니다.
+버전별 노트(🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance)는 `v*` 태그마다 PR과 함께
+자동 생성됩니다. 상단 배지가 항상 최신을 가리킵니다. 전체 이력은
+**[Releases](https://github.com/JSungMin/vs-token-safer/releases)** 페이지를 보세요.
 
 ## 기여
 
