@@ -682,6 +682,75 @@ const returnWhenFoundOk =
   noPollRes.length === 0 &&                            // non-persisted → no polling
   genuine.length === 0 && genuineFast;                 // indexLoaded → empty is genuine, returns immediately
 
+// 38) output compaction — pure string→string compaction of git/p4/grep output: grouping by type/dir,
+// identical-line dedup (×N), per-file diffstat, and capping. Deterministic (no toolchain), so asserted
+// directly on canned input. The token win comes from collapsing the repetitive boilerplate a raw dump has.
+const { compactGit, compactP4, compactGrepLines } = await import("../server/compact.js");
+const gitStatusRaw = [" M server/core.js", " M server/cli.js", "?? server/compact.js", "?? eval/new.mjs", "A  server/index.js"].join("\n");
+const gitStatusOut = compactGit("status", gitStatusRaw, 60);
+const gitLogRaw = Array.from({ length: 50 }, (_, i) => `abc${i} commit subject ${i}`).join("\n");
+const gitLogOut = compactGit("log", gitLogRaw, 10);
+const gitDiffRaw = "diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1 +1,2 @@\n-old\n+new\n+added\ndiff --git a/y.js b/y.js\n--- a/y.js\n+++ b/y.js\n@@ -1 +1 @@\n-a\n+b\n";
+const gitDiffOut = compactGit("diff", gitDiffRaw, 60);
+const gitDiffStatOut = compactGit("diff", " x.js | 3 +++\n y.js | 2 +-\n 2 files changed, 4 insertions(+), 1 deletion(-)\n", 60); // --stat: no unified headers → passthrough, not mangled
+const grepRaw = "src/Foo.cpp:1:SpawnActor\n".repeat(200) + "src/Bar.cpp:9:other\n";
+const grepOut = compactGrepLines(grepRaw, 60);
+const p4OpenedRaw = Array.from({ length: 30 }, (_, i) => `//depot/Game/Src/F${i}.cpp#${i} - edit default change (text)`).join("\n");
+const p4Out = compactP4("opened", p4OpenedRaw, 60);
+const compactPureOk =
+  /modified: 2/.test(gitStatusOut) && /untracked: 2/.test(gitStatusOut) && /added: 1/.test(gitStatusOut) &&
+  /… \+40 more commit/.test(gitLogOut) &&                                  // 50 commits → 10 shown + 40 more
+  /x\.js \| \+2 -1/.test(gitDiffOut) && /y\.js \| \+1 -1/.test(gitDiffOut) && // per-file diffstat, bodies dropped
+  /2 files changed/.test(gitDiffStatOut) && /x\.js \| 3/.test(gitDiffStatOut) && // --stat passthrough, not "(no file changes)"
+  /\(×200\)/.test(grepOut) && tok(grepOut) < tok(grepRaw) / 5 &&            // 200 identical hits → one ×200 row
+  /edit: 30/.test(p4Out) && /depot\/Game\/Src/.test(p4Out);                 // p4 opened grouped by action + dir
+
+// 39) vts_git live — run the wrapper against a REAL temp git repo (git is in CI; guard 34 already spawns it)
+// and confirm it returns compacted status. Also search_text docs=true sweeps README/docs text (off by default).
+const gwDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-gitwrap`);
+fs.mkdirSync(gwDir, { recursive: true });
+spawnSync("git", ["-C", gwDir, "init", "-q"], { encoding: "utf8" });
+spawnSync("git", ["-C", gwDir, "config", "user.email", "e@x.t"], { encoding: "utf8" });
+spawnSync("git", ["-C", gwDir, "config", "user.name", "t"], { encoding: "utf8" });
+fs.writeFileSync(path.join(gwDir, "a.cpp"), "int a;\n");
+fs.writeFileSync(path.join(gwDir, "b.cpp"), "int b;\n");
+const gw = await runTool("vts_git", { argv: ["status", "-s"], projectPath: gwDir });
+const gwPlain = await runTool("vts_git", { argv: ["status"], projectPath: gwDir }); // long-format → --porcelain forced
+const gitWrapOk = !gw.isError && /git status -s \(compacted\)/.test(gw.text) && /untracked: 2/.test(gw.text) &&
+  !gwPlain.isError && /--porcelain/.test(gwPlain.text) && /untracked: 2/.test(gwPlain.text); // plain status still grouped
+const gwBad = await runTool("vts_git", { argv: [], projectPath: gwDir });
+const gitWrapGuardOk = gwBad.isError && /subcommand/.test(gwBad.text);
+const docDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-docs`);
+fs.mkdirSync(docDir, { recursive: true });
+fs.writeFileSync(path.join(docDir, "README.md"), "# Title\nDOC_NEEDLE here\n");
+const stCode = await runTool("search_text", { q: "DOC_NEEDLE", projectPath: docDir });            // code-only → miss
+const stDocs = await runTool("search_text", { q: "DOC_NEEDLE", projectPath: docDir, docs: true }); // docs → hit
+const stPath = await runTool("search_text", { q: "DOC_NEEDLE", projectPath: docDir, path: "README.md" }); // path → auto .md
+const stGlob = await runTool("search_text", { q: "DOC_NEEDLE", projectPath: docDir, glob: "*.md" });      // glob → auto .md
+const docsTextOk =
+  !stCode.isError && /No text matches/.test(stCode.text) &&
+  !stDocs.isError && /README\.md:2/.test(stDocs.text) && /text\+docs/.test(stDocs.text) &&
+  !stPath.isError && /README\.md:2/.test(stPath.text) && /in README\.md/.test(stPath.text) &&  // path target, ext auto
+  !stGlob.isError && /README\.md:2/.test(stGlob.text) && /glob \*\.md/.test(stGlob.text);       // glob target, ext auto
+for (const d of [gwDir, docDir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const vcsToolsOk = compactPureOk && gitWrapOk && gitWrapGuardOk && docsTextOk;
+
+// 40) hook VCS rerouting — `git status` / `p4 opened` reroute to the vts wrapper (updatedInput), `git grep`
+// stays a CODE search (NOT captured by VCS compaction), and VTS_COMPACT_VCS=0 disables the reroute.
+const hGitStatus = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git status -s" } }));
+const hGitLog = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git log --oneline" } }));
+const hP4 = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "p4 opened" } }));
+const hGitGrep2 = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "git grep SpawnActor" } })); // code search, not VCS
+const hVcsOff = runHook({ tool_name: "Bash", tool_input: { command: "git status -s" } }, { VTS_COMPACT_VCS: "0" });
+const hDocsGrep = parseRw(runHook({ tool_name: "Bash", tool_input: { command: "grep DOC_NEEDLE README.md" } })); // docs grep + file → vts text --path
+const vcsHookOk =
+  /cli\.js" git "status" "-s"/.test(hGitStatus.updatedInput?.command || "") &&
+  /cli\.js" git "log" "--oneline"/.test(hGitLog.updatedInput?.command || "") &&
+  /cli\.js" p4 "opened"/.test(hP4.updatedInput?.command || "") &&
+  /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep2.updatedInput?.command || "") &&   // git grep → code symbol, not vts_git
+  /cli\.js" text --q "DOC_NEEDLE" --path "README\.md"/.test(hDocsGrep.updatedInput?.command || "") && // docs grep → targeted text
+  hVcsOff.status === 0 && !/vts_git/.test(JSON.parse(hVcsOff.out || "{}").hookSpecificOutput?.updatedInput?.command || ""); // disabled → no VCS reroute
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -728,6 +797,9 @@ const rows = [
   ["gen-compile-db apply: out-of-tree DB+index + inTree guard + perf flags", applyOk, "true", applyOk],
   ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
   ["perf: return-when-found poll on a loading index", returnWhenFoundOk, "true", returnWhenFoundOk],
+  ["compact: git/p4/grep output grouped+deduped+capped (pure)", compactPureOk, "true", compactPureOk],
+  ["vts_git live wrapper + search_text docs sweep", vcsToolsOk, "true", vcsToolsOk],
+  ["hook: git/p4 reroute to vts wrapper (git grep stays code)", vcsHookOk, "true", vcsHookOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

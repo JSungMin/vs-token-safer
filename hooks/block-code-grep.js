@@ -57,6 +57,13 @@ const CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const rewriteOff = () => /^(0|false|off|no)$/i.test(String(process.env.VTS_REWRITE ?? "1"));
 
 const SEARCH_EXECS = new Set(["grep", "rg", "ack", "ag", "findstr"]);
+// VCS output compaction (separate from code-search): a read-only git/p4 command whose raw output is verbose
+// + repetitive is rerouted to the vts wrapper (runs it, then groups/dedups/caps). Never blocks — a git
+// command must still run; on by default, VTS_COMPACT_VCS=0 disables. `git grep` is NOT here (it's a code
+// search, handled by the grep path).
+const GIT_COMPACT_SUBS = new Set(["status", "log", "diff"]);
+const P4_COMPACT_SUBS = new Set(["opened", "status", "changes", "reconcile"]);
+const compactVcsOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_COMPACT_VCS ?? "1"));
 // ripgrep --type aliases for the languages we index (the Grep tool's `type` param forwards to rg).
 const CODE_TYPES = new Set(["c", "cpp", "csharp", "cs", "cxx", "cc", "cuda", "js", "ts", "typescript", "javascript", "jsx", "tsx", "py", "python"]);
 const CODE_EXT_RE = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/;
@@ -172,6 +179,44 @@ function buildRewrite(segment) {
   return pat ? rewriteForPattern(root, pat) : null;
 }
 
+// Build a vts wrapper rewrite for a SINGLE read-only git/p4 command (status/log/diff/opened/…), or null.
+// Conservative: bail on ANY shell metachar (quote/backtick/$/redirect/backslash) and on a global flag
+// before the subcommand (`git -C path status` — the -C is ambiguous to split safely). The vts wrapper runs
+// the command and compacts its output; the model's flow is unbroken and the result is token-capped.
+function buildVcsRewrite(segment) {
+  if (/["'`$\\<>]/.test(segment)) return null; // any quoting/redirect → leave the original command alone
+  const toks = segment.trim().split(/\s+/);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // FOO=bar prefixes
+  const exec = (toks[i] || "").replace(/^.*[\\/]/, "").replace(/\.(exe|bat|cmd|ps1)$/i, "").toLowerCase();
+  if (exec !== "git" && exec !== "p4") return null;
+  const sub = (toks[i + 1] || "").toLowerCase();
+  if (!sub || sub.startsWith("-")) return null; // a global flag before the subcommand → too ambiguous
+  const ok = exec === "git" ? GIT_COMPACT_SUBS.has(sub) : P4_COMPACT_SUBS.has(sub);
+  if (!ok) return null;
+  const rest = toks.slice(i + 1); // subcommand + its flags (passed verbatim as argv to the vts wrapper)
+  if (!rest.every((t) => /^[A-Za-z0-9_.:=/-]+$/.test(t))) return null; // simple tokens only (no pathspec quoting)
+  const argv = rest.map((t) => `"${t}"`).join(" ");
+  return { bin: exec, tool: exec === "git" ? "vts_git" : "vts_p4", sub, cmd: `node "${CLI_PATH}" ${exec} ${argv}` };
+}
+
+// A docs/text grep WITH an explicit text-file target (`grep foo README.md`) → reroute to `vts text` scoped
+// to that file (search_text path= auto-includes any extension; output token-capped). Targeted, so no
+// broad-scan surprise — and a docs grep was never blocked, so this only ever rewrites, never blocks.
+const SAFE_PATH = /^[A-Za-z0-9_.:/\\-]+$/;
+function buildDocsGrepRewrite(segment) {
+  const exec = execOf(segment);
+  if (!SEARCH_EXECS.has(exec) || exec === "findstr") return null; // grep/rg/ack/ag (findstr flags differ)
+  const pat = extractGrepPattern(segment, false);
+  if (!pat || !SAFE_TEXT.test(pat)) return null;                  // only a shell-safe literal/regex pattern
+  const toks = segment.trim().split(/\s+/);
+  const fileTok = toks.find((t) => !t.startsWith("-") && t !== pat && TEXT_TARGET_RE.test(t) && SAFE_PATH.test(t));
+  if (!fileTok) return null;                                      // no explicit text-file target → leave alone
+  const root = rewriteRoot();
+  if (/["\r\n]/.test(root)) return null;
+  return { tool: "search_text", q: pat, file: fileTok, cmd: `node ${quote(CLI_PATH)} text --q ${quote(pat)} --path ${quote(fileTok)} --projectPath ${quote(root)}` };
+}
+
 // A search segment whose target is a LOG (steer to gamedev-log; never blocked).
 function isLogSearchSegment(segment) {
   return isSearchSegment(segment) && LOG_TARGET_RE.test(segment);
@@ -284,6 +329,27 @@ process.stdin.on("end", () => {
   if (!cmd) process.exit(0);
   const segments = splitSegments(cmd);
 
+  // VCS output compaction: a SINGLE read-only git/p4 command (status/log/diff/opened/…) is rerouted to the
+  // vts wrapper, which runs it and compacts the output. Runs BEFORE code-search handling (so `git grep`
+  // stays a code search) and NEVER blocks — if we can't build a safe rewrite, the original command runs.
+  if (!rewriteOff() && compactVcsOn() && segments.length === 1 && !excludedCommands().has(execOf(segments[0]))) {
+    const v = buildVcsRewrite(segments[0]);
+    if (v) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: `Rerouted ${v.bin} ${v.sub} → vts ${v.tool} (output grouped/deduped/token-capped).`,
+          updatedInput: { ...ti, command: v.cmd },
+          additionalContext:
+            `[vs-token-safer] Compacted \`${v.bin} ${v.sub}\` output (grouped/deduped/capped) to save tokens. ` +
+            `Disable VCS compaction: VTS_COMPACT_VCS=0. Disable all rewrites: VTS_REWRITE=0.`,
+        },
+      }) + "\n");
+      process.exit(0);
+    }
+  }
+
   // #5 honor excludeCommands — drop excluded execs from enforcement.
   const excluded = excludedCommands();
   const codeSegs = segments.filter((s) => isCodeSearchSegment(s) && !excluded.has(excludeKeyOf(s)));
@@ -312,6 +378,25 @@ process.stdin.on("end", () => {
     }
     process.stderr.write(BLOCK_MSG + setup + "\n");
     process.exit(2); // block
+  }
+  // Docs/text grep with an explicit file target (not code, not log) → reroute to `vts text --path <file>`,
+  // which auto-includes that file's extension and token-caps the result. Rewrite-only, never blocks.
+  if (!rewriteOff() && segments.length === 1 && !excluded.has(execOf(segments[0])) && !isLogSearchSegment(segments[0])) {
+    const dr = buildDocsGrepRewrite(segments[0]);
+    if (dr) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: `Rerouted docs/text grep → vts search_text scoped to ${dr.file} (token-capped).`,
+          updatedInput: { ...ti, command: dr.cmd },
+          additionalContext:
+            `[vs-token-safer] Rewrote your grep over ${dr.file} → \`vts text --path ${dr.file}\` (q="${dr.q}"), ` +
+            `token-capped — search_text path= auto-includes that file's extension. Disable: VTS_REWRITE=0 / VTS_ENFORCE=0.`,
+        },
+      }) + "\n");
+      process.exit(0);
+    }
   }
   if (segments.some(isLogSearchSegment)) {
     emitWarn(LOG_NUDGE + setup);

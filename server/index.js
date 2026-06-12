@@ -155,10 +155,46 @@ const TOOLS = [
       type: "object",
       properties: {
         q: { type: "string", description: "String or regular expression to find." },
+        path: { type: "string", description: "Search ONE named file (any extension — naming a README.md/.txt/etc auto-includes it; no docs flag needed). Relative to the project root or absolute." },
+        glob: { type: "string", description: "Search only files matching this basename glob (e.g. *.md, *.json) — any extension the glob covers, no docs flag needed." },
         projectPath: { type: "string" },
         maxResults: { type: "number" },
+        docs: { type: "boolean", description: "When NO path/glob is given, widen the project-wide sweep to README/docs/config text (md/txt/json/yaml/…), not just source. Ignored when path/glob targets a file directly." },
       },
       required: ["q"],
+    },
+  },
+  {
+    name: "vts_git",
+    description:
+      "Run a git command and return its output COMPACTED (token-capped) — for status/log/diff, which the " +
+      "language-server index can't help with but whose raw dump is verbose and repetitive. status groups " +
+      "by change-type + directory; log keeps one line per commit; diff collapses to a per-file +/- " +
+      "diffstat (no hunk bodies). Use instead of a raw `git status/log/diff` to save tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        argv: { type: "array", items: { type: "string" }, description: 'Git subcommand + flags, e.g. ["status","-s"] or ["log","--oneline"].' },
+        args: { type: "string", description: 'Alternative to argv: the subcommand as one string, e.g. "status -s".' },
+        projectPath: { type: "string", description: "Repo root to run in (default: configured projectPath or cwd)." },
+        maxResults: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "vts_p4",
+    description:
+      "Run a Perforce (p4) command and return its output COMPACTED (token-capped) — for opened/status/" +
+      "reconcile/changes, whose raw output is long and repetitive. Groups files by action + depot " +
+      "directory and caps the list. Use instead of a raw `p4 opened` etc. to save tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        argv: { type: "array", items: { type: "string" }, description: 'p4 subcommand + flags, e.g. ["opened"] or ["changes","-m","50"].' },
+        args: { type: "string", description: 'Alternative to argv: the subcommand as one string, e.g. "opened".' },
+        projectPath: { type: "string", description: "Workspace root to run in (default: configured projectPath or cwd)." },
+        maxResults: { type: "number" },
+      },
     },
   },
   {
