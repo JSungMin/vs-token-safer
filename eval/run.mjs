@@ -44,9 +44,15 @@ const rawTok = tok(rawBig), outTok = tok(big.text);
 const capReduction = 1 - outTok / rawTok;
 const capped = /… 940 more/.test(big.text);
 
-// 4) references wiring.
+// 4) references wiring — by position AND by NAME. find_references({symbol}) resolves the declaration via
+// workspace/symbol (mock: "Spawn" → SpawnHandler @ Foo.cpp:42) then queries references there, so a
+// code-modder gets call sites from a NAME with no line/column. Omitting both errors.
 const r2 = await runTool("find_references", { path: "src/Foo.cpp", line: 41, character: 6, projectPath: process.cwd(), backend: "clangd" });
-const refOk = !r2.isError && /reference\(s\)/.test(r2.text);
+const r2name = await runTool("find_references", { symbol: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+const r2none = await runTool("find_references", { projectPath: process.cwd(), backend: "clangd" });
+const refOk = !r2.isError && /reference\(s\)/.test(r2.text) &&
+  !r2name.isError && /references of "Spawn"/.test(r2name.text) && /Foo\.cpp:42/.test(r2name.text) && /reference\(s\)/.test(r2name.text) &&
+  r2none.isError && /symbol/.test(r2none.text) && /path/.test(r2none.text); // "needs symbol … or path …"
 
 // 5) MCP=CLI parity: both go through runTool; the dispatch is the shared layer (smoke).
 const dispatchOk = lspOk && fmtOk && refOk;
@@ -534,7 +540,7 @@ const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOut
 const nIdent = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }));
 const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
 const nudgeOk =
-  /search_symbol q="Foo"/.test(nIdent) &&   // identifier → semantic suggestion
+  /find_references symbol="Foo"/.test(nIdent) && /search_symbol q="Foo"/.test(nIdent) && // identifier → usages + decl
   /search_text q="FooA\|FooB"/.test(nRegex); // regex → text suggestion
 const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
 fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
@@ -616,16 +622,19 @@ const outDir = dbDirFor(ueGame);
 const { hasCompileDb: hasDb2 } = await import("../server/core.js");
 const applyOutOk =
   !applied.isError && /Generated compile_commands\.json/.test(applied.text) &&
-  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // landed out of tree
-  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // source tree untouched
-  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // no ignore churn needed
+  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // DB landed out of tree
+  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // no DB in the source tree
+  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // clangd's index is out-of-tree too → nothing to ignore in-tree
+  /both live OUTSIDE the source tree/.test(applied.text) &&
   !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
-  /OUTSIDE the source tree/.test(applied.text) &&
   resolveCdbDir(ueGame) === outDir &&                                  // clangd resolves the out-of-tree home
-  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for this one check
+  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for these checks
     const saved = process.env.VTS_CLANGD_ARGS; delete process.env.VTS_CLANGD_ARGS;
-    const ok = BACKENDS.clangd.args(ueGame).some((x) => x === `--compile-commands-dir=${outDir}`);
-    process.env.VTS_CLANGD_ARGS = saved; return ok;
+    const args = BACKENDS.clangd.args(ueGame);
+    process.env.VTS_CLANGD_ARGS = saved;
+    return args.some((x) => x === `--compile-commands-dir=${outDir}`) &&
+      args.includes("--background-index-priority=normal") &&          // index at real priority, not idle-only
+      args.some((x) => /^-j=\d+$/.test(x));                            // multiple workers
   })() &&
   hasDb2(ueGame);                                                      // advisory suppressed
 // inTree=true keeps the classic layout, protected by the VCS-ignore guard.
@@ -644,6 +653,18 @@ delete process.env.VTS_DB_DIR;
 const applyOk = applyOutOk && applyInOk;
 try { fs.rmSync(ueRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 try { fs.rmSync(DBH, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 36) perf: a persisted clangd index (`.cache/clangd/index/*.idx`, in-tree — clangd's fixed location) is
+// detected, so afterInit can open a small nudge set instead of re-parsing 100 TUs (the cold-start cost).
+const { hasPersistedIndex } = await import("../server/backends/index.js");
+const piDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-persist`);
+fs.mkdirSync(piDir, { recursive: true });
+const noIndexSeen = hasPersistedIndex(piDir);
+fs.mkdirSync(path.join(piDir, ".cache", "clangd", "index"), { recursive: true });
+fs.writeFileSync(path.join(piDir, ".cache", "clangd", "index", "Foo.cpp.ABC123.idx"), "x");
+const indexSeen = hasPersistedIndex(piDir);
+const persistedIndexOk = noIndexSeen === false && indexSeen === true;
+try { fs.rmSync(piDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -688,7 +709,8 @@ const rows = [
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
   ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
   ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
-  ["gen-compile-db apply: out-of-tree default + inTree guard", applyOk, "true", applyOk],
+  ["gen-compile-db apply: out-of-tree DB+index + inTree guard + perf flags", applyOk, "true", applyOk],
+  ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
