@@ -559,6 +559,10 @@ generated automatically. The badge at the top always points at the latest. Highl
   re-index before the first query when a persisted index exists (it answers from the loaded shards). On a
   real 26k-TU Unreal project the first semantic query dropped from ~369s to ~99s; keep the MCP server
   running and the rest are warm.
+- **v0.16.1** — refines that first-query path: instead of waiting a fixed time for the index, the query
+  polls the still-loading index and returns the instant the symbol it's looking for appears (and a genuine
+  miss on a fully-loaded index returns immediately). The cap dropped to 60s. On the same project the first
+  query came back in ~70s with the symbol resolved.
 
 ## Contributing
 
