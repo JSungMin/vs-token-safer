@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 
@@ -370,6 +370,9 @@ let _advisoryShown = false;
 // advise how to generate it — otherwise semantic search_symbol/find_references/goto/hover silently return
 // nothing on a `.uproject`-only project (clangd is still the picked backend for C++). Exported for the eval.
 export function hasCompileDb(root) {
+  // the out-of-tree home (~/.vs-token-safer/db/<slug>) counts — clangd is pointed there via
+  // --compile-commands-dir, so a DB living there is just as usable as an in-tree one.
+  if (resolveCdbDir(root)) return true;
   const stack = [[root, 0]];
   while (stack.length) {
     const [dir, d] = stack.pop();
@@ -700,7 +703,7 @@ export async function runTool(name, a = {}) {
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
       if (!apply) {
-        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, vts also keeps the generated DB out of version control: it git/p4-ignores compile_commands.json + .cache/ (appending to .gitignore / an existing P4IGNORE file) and removes the engine-root copy after moving it.`);
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, the DB (and clangd's .cache/ index next to it) lands OUTSIDE the source tree at ${dbDirFor(root)} — nothing for git or p4 to track — and the engine-root copy is removed. Prefer the classic project-root layout? Pass inTree=true; the VCS-ignore guard (.gitignore / P4IGNORE append-or-instruct) then protects it.`);
       }
       if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
       try {
@@ -713,15 +716,27 @@ export async function runTool(name, a = {}) {
         else execFileSync(plan.runUbt, plan.args, opts);
         // UBT writes compile_commands.json to the engine root; our clangd backend looks under the project
         // root → copy it there if it isn't already.
-        let where = hasCompileDb(root) ? path.join(root, "compile_commands.json") : null;
+        // Destination: OUT of the source tree by default (~/.vs-token-safer/db/<slug> — clangd reads it
+        // via --compile-commands-dir and writes its .cache/ index next to it, so neither git nor
+        // `p4 reconcile` ever sees an artifact). inTree=true keeps the classic project-root layout, with
+        // the VCS-ignore guard as the safety net.
+        const inTree = a.inTree === true || a.inTree === "true";
+        const destDir = inTree ? root : dbDirFor(root);
+        const dest = path.join(destDir, "compile_commands.json");
         const atEngine = path.join(plan.engineRoot, "compile_commands.json");
-        if (!where && fs.existsSync(atEngine)) { try { fs.copyFileSync(atEngine, path.join(root, "compile_commands.json")); where = path.join(root, "compile_commands.json"); } catch { where = atEngine; } }
-        // VCS guard: the generated DB (and clangd's .cache/) must never be committed — ignore it where we
-        // safely can, and drop the engine-root copy once it lives at the project root (one stray fewer).
+        let where = null;
+        if (fs.existsSync(atEngine)) {
+          try { fs.mkdirSync(destDir, { recursive: true }); fs.copyFileSync(atEngine, dest); where = dest; } catch { where = atEngine; }
+        } else if (fs.existsSync(dest)) where = dest;
         let cleanup = "";
         if (where && where !== atEngine && fs.existsSync(atEngine)) { try { fs.rmSync(atEngine); cleanup = " Engine-root copy removed."; } catch { /* leave it */ } }
-        const ign = ensureDbIgnored(root);
-        const ignNote = ign.length ? `\nVCS guard: ${ign.join(" ")}${cleanup}` : cleanup ? `\nVCS guard:${cleanup}` : "";
+        let ignNote;
+        if (inTree) {
+          const ign = ensureDbIgnored(root);
+          ignNote = ign.length ? `\nVCS guard: ${ign.join(" ")}${cleanup}` : cleanup ? `\nVCS guard:${cleanup}` : "";
+        } else {
+          ignNote = `\nArtifacts live OUTSIDE the source tree (${destDir}) — compile_commands.json and clangd's .cache/ index never touch git or p4.${cleanup}`;
+        }
         return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.${ignNote}`);
       } catch (e) {
         return err(`UBT GenerateClangDatabase failed: ${e.message}\nRun it manually:\n  ${plan.cmdline}`);

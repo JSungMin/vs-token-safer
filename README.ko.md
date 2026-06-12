@@ -274,11 +274,12 @@ clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:
    `.uproject`를 찾고, `<Name>Editor` 타깃을 추론하고, 엔진 위치를 찾고(`VTS_UE_ROOT`나 `engineRoot`
    인자, 또는 프로젝트에서 상위로 거슬러 올라가며 탐색), clang-cl로 빌드하는 타깃이면
    `-Compiler=VisualCpp`를 덧붙입니다. 기본 동작은 dry-run이라 명령만 출력하고 아무것도 실행하지
-   않습니다. `apply=true`를 주면 그제야 UBT를 돌리고(몇 분 걸립니다), 만들어진 DB를 clangd가 들여다보는
-   프로젝트 루트로 복사합니다. 생성된 DB가 버전 관리에 올라가는 일도 막아 줍니다.
-   `compile_commands.json`과 clangd의 `.cache/`를 `.gitignore`에 넣어 주고(`P4IGNORE` 파일은 depot
-   루트까지 거슬러 올라가며 찾되, 버전 관리 중이라 읽기 전용이면 `p4 edit` 후 넣을 줄을 그대로
-   알려줍니다), 프로젝트 루트로 복사가 끝난 엔진 루트 쪽 사본은 지워서 떠돌이 파일을 남기지 않습니다.
+   않습니다. `apply=true`를 줘야 비로소 UBT를 돌리고(몇 분 걸립니다), 만들어진 DB를 소스 트리 바깥
+   `~/.vs-token-safer/db/<project>`에 둔 다음 clangd를 그 위치에 연결합니다. clangd가 `.cache/`
+   인덱스를 DB 옆에 쓰므로 git에도 `p4 reconcile`에도 산출물이 전혀 잡히지 않습니다. 예전처럼 프로젝트
+   루트에 두고 싶다면 `inTree=true`를 주세요. 그러면 VCS-ignore 가드가 `.gitignore`에 항목을 더하거나,
+   depot 루트까지 올라가며 Perforce ignore 파일을 찾아 처리하고(읽기 전용이면 `p4 edit` 뒤에 넣을 줄을
+   알려줍니다), 어느 모드에서든 엔진 루트에 남은 사본을 지웁니다.
 4. 이후 MCP 서버를 재시작하거나 쿼리를 다시 실행하면 `search_symbol`, `find_references`,
    `goto_definition`이 엔진 전체 인덱스를 바탕으로 의미 기반 답을 돌려줍니다.
 
@@ -393,6 +394,7 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_TEE` | `truncate` | `truncate`면 잘린 `find_files`/`search_text` 전체 결과를 복구 파일로 씁니다. `off`면 비활성화. 디렉터리: `VTS_TEE_DIR`. |
 | — | `VTS_USD_PER_MTOK` | `3` | `vts savings`/`discover`의 추정 가치 줄에 쓰는 $/Mtok 단가. 참고용. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 스캔할 대화 기록 위치. |
+| — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 compile DB의 트리 밖 보관소(프로젝트별 하위 디렉터리, clangd `.cache/` 인덱스도 함께). |
 
 ## 강제(enforcement) 동작 방식
 
@@ -501,6 +503,18 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
   도구 경고에는 바로 복사해 쓸 수 있는 동등 호출이 함께 나오고, 캡에 걸려 잘린
   `search_symbol`·`find_references` 결과는 전체 행을 복구용 파일로 남깁니다. `vts savings`는 절감량을
   도구별로 쪼개서 보여 줍니다.
+- **v0.15.0** — 생성된 산출물이 버전 관리에 섞여 들어갈 일이 사라졌습니다. 애초에 소스 트리 안에 두지
+  않기 때문입니다. 이제 `vts_gen_compile_db apply=true`는 `compile_commands.json`을
+  `~/.vs-token-safer/db/<project>`에 만들고, clangd를 `--compile-commands-dir`로 그 위치에 연결합니다.
+  clangd가 `.cache/` 인덱스를 DB 바로 옆에 쓰기 때문에 인덱스까지 함께 트리 밖에 머뭅니다. git에도
+  `p4 reconcile`에도 잡히는 것이 없는 셈입니다. 예전처럼 프로젝트 루트에 두고 싶다면 `inTree=true`를
+  주면 되는데, 이때는 VCS-ignore 가드가 따라붙습니다. `.gitignore`에 항목을 더하고, Perforce ignore
+  파일은 depot 루트까지 거슬러 올라가 찾아내며, 버전 관리 중인 읽기 전용 파일이라면 `p4 edit` 뒤에 넣을
+  줄까지 정확히 일러줍니다. 엔진 루트에 남는 DB 사본은 어느 모드에서든 지웁니다. 최신 Node에서 `apply`가
+  깨지던 문제도 함께 고쳤습니다. CVE-2024-27980 하드닝 이후로는 `RunUBT.bat`를 직접 부르면 EINVAL이
+  나기 때문에, `.bat` 경로는 셸을 한 번 거치도록 했습니다. 실제 Unreal depot에서 끝까지 돌려
+  확인했습니다. UBT가 112초, DB는 약 18MB, 첫 semantic 쿼리는 선언 86건을 토큰 93% 절감으로
+  돌려줬습니다.
 
 ## 기여
 

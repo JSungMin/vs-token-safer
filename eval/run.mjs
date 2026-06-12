@@ -592,14 +592,45 @@ if (process.platform === "win32") {
   fs.chmodSync(sh, 0o755);
 }
 spawnSync("git", ["-C", ueGame, "init", "-q"], { encoding: "utf8" });
+// Default apply = OUT-OF-TREE: the DB lands under VTS_DB_DIR/<slug>, the source tree stays clean (no
+// project-root DB, no .gitignore churn), clangd's --compile-commands-dir points at the out-of-tree dir,
+// and hasCompileDb sees it (advisory suppressed).
+const DBH = path.join(os.tmpdir(), `vts-eval-${process.pid}-dbhome`);
+process.env.VTS_DB_DIR = DBH;
+const { dbDirFor, resolveCdbDir } = await import("../server/backends/index.js");
 const applied = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true });
-const applyOk =
+const outDir = dbDirFor(ueGame);
+const { hasCompileDb: hasDb2 } = await import("../server/core.js");
+const applyOutOk =
   !applied.isError && /Generated compile_commands\.json/.test(applied.text) &&
-  fs.existsSync(path.join(ueGame, "compile_commands.json")) &&        // copied to the project root
+  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // landed out of tree
+  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // source tree untouched
+  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // no ignore churn needed
   !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
-  /Engine-root copy removed/.test(applied.text) &&
-  /VCS guard: git: added/.test(applied.text);                          // ignore appended in the git repo
+  /OUTSIDE the source tree/.test(applied.text) &&
+  resolveCdbDir(ueGame) === outDir &&                                  // clangd resolves the out-of-tree home
+  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for this one check
+    const saved = process.env.VTS_CLANGD_ARGS; delete process.env.VTS_CLANGD_ARGS;
+    const ok = BACKENDS.clangd.args(ueGame).some((x) => x === `--compile-commands-dir=${outDir}`);
+    process.env.VTS_CLANGD_ARGS = saved; return ok;
+  })() &&
+  hasDb2(ueGame);                                                      // advisory suppressed
+// inTree=true keeps the classic layout, protected by the VCS-ignore guard.
+fs.rmSync(path.join(outDir, "compile_commands.json"), { force: true }); // so resolveCdbDir prefers in-tree cleanly
+fs.writeFileSync(path.join(ueRoot, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh"),
+  process.platform === "win32" ? '@echo []>"%~dp0..\\..\\..\\compile_commands.json"\r\n' : '#!/bin/sh\necho "[]" > "$(dirname "$0")/../../../compile_commands.json"\n');
+if (process.platform !== "win32") fs.chmodSync(path.join(ueRoot, "Engine", "Build", "BatchFiles", "RunUBT.sh"), 0o755);
+const appliedIn = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true, inTree: true });
+const applyInOk =
+  !appliedIn.isError &&
+  fs.existsSync(path.join(ueGame, "compile_commands.json")) &&        // classic project-root layout
+  !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&
+  /Engine-root copy removed/.test(appliedIn.text) &&
+  /VCS guard: git: added/.test(appliedIn.text);                        // ignore appended in the git repo
+delete process.env.VTS_DB_DIR;
+const applyOk = applyOutOk && applyInOk;
 try { fs.rmSync(ueRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+try { fs.rmSync(DBH, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
@@ -644,7 +675,7 @@ const rows = [
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
   ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
   ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
-  ["gen-compile-db apply: .bat via shell + copy + cleanup + guard", applyOk, "true", applyOk],
+  ["gen-compile-db apply: out-of-tree default + inTree guard", applyOk, "true", applyOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

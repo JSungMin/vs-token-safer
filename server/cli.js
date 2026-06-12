@@ -39,7 +39,9 @@ Commands:
                  [--since N (days, default 7) --all (all projects, all time)
                   --learn (feed the files those searches hit into the warm-set) --projectPath <dir>]
   gen-compile-db Generate compile_commands.json for an Unreal project via UBT (full clangd index).
-                 Dry-run by default; --apply runs it. [--projectPath --apply --engineRoot --target ...]
+                 Dry-run by default; --apply runs it. The DB + clangd's .cache/ land OUTSIDE the source
+                 tree (~/.vs-token-safer/db/<project>; --inTree keeps the classic project-root layout).
+                 [--projectPath --apply --inTree --engineRoot --target ...]
 
 Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
   clangd  — C/C++ (needs compile_commands.json; Unreal: UBT -mode=GenerateClangDatabase)
@@ -47,7 +49,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree"]);
 
 function parseArgs(argv) {
   const a = {};
