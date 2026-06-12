@@ -67,8 +67,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   with discover) harvests bypassed-search result files into query-history — the self-improvement loop runs
   unattended every server start.
 - `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).
-- `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`/`compactGrepLines`, string→string,
-  no spawn) for the `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic).
+- `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`, string→string, no spawn) for the
+  `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic). (No grep compaction here —
+  grep reroutes to search_text, which scans + token-caps itself; there is no raw grep output to compact.)
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
 - `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > working-now [`git status` /
