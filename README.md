@@ -399,7 +399,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query. |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index (cold, no persisted index). |
 | — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | Open cap when a persisted `.cache/clangd` index exists — clangd answers from the index, so few files need re-parsing. |
-| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `90000` | With a persisted index, how long to let the static shards load before the first query (instead of waiting for the full background re-index — the difference was ~7× on a real UE project). |
+| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `60000` | With a persisted index, the cap on how long a query polls the still-loading index before giving up — it returns the instant the symbol is found (not at a fixed deadline). |
+| — | `VTS_CLANGD_PERSISTED_FLOOR_MS` | `3000` | With a persisted index, the brief floor the warm-up waits before letting the first query start polling. |
 | — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd background-index thread priority. Default `normal` builds it fast; `background` is idle-CPU-only (slower, but a better citizen on a shared box). |
 | — | `VTS_CLANGD_JOBS` | `cores-1` | clangd async/index workers (`-j`). |
 | — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style); set `0` to disable. |
@@ -558,6 +559,10 @@ generated automatically. The badge at the top always points at the latest. Highl
   re-index before the first query when a persisted index exists (it answers from the loaded shards). On a
   real 26k-TU Unreal project the first semantic query dropped from ~369s to ~99s; keep the MCP server
   running and the rest are warm.
+- **v0.16.1** — refines that first-query path: instead of waiting a fixed time for the index, the query
+  polls the still-loading index and returns the instant the symbol it's looking for appears (and a genuine
+  miss on a fully-loaded index returns immediately). The cap dropped to 60s. On the same project the first
+  query came back in ~70s with the symbol resolved.
 
 ## Contributing
 

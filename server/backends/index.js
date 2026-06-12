@@ -216,23 +216,26 @@ export const BACKENDS = {
       const open = orderForWarm(root, [...new Set([...files, ...extra])], cap);
       for (const f of open) client.didOpen(f, "cpp");
       if (open.length) {
-        // On a COLD tree (no persisted index) the dynamic index isn't ready when the first file's
-        // diagnostics fire, so we wait for clangd's background-index COMPLETION ($/progress kind:end),
-        // bounded by VTS_LSP_INDEX_WAIT_MS — the index must be built before the first query can answer.
-        //
-        // But when a PERSISTED index exists, workspace/symbol answers from the loaded static shards LONG
-        // before the full background RE-validation finishes. Waiting for kind:end then wastes minutes per
-        // spawn (measured on a real 26k-TU UE project: 369s for the full wait vs 51s once the static index
-        // had loaded — a 7× tax). So for the persisted case we cap the wait to VTS_CLANGD_PERSISTED_WAIT_MS
-        // (default 90s) — long enough to load the shards, short enough not to block on the re-index. If the
-        // query still comes back empty (slow box, shards not loaded yet), the search tools degrade to a
-        // literal text fallback, so an early return is safe.
         const fullWait = envInt("VTS_LSP_INDEX_WAIT_MS", 120000);
-        const idxWait = persisted ? Math.min(fullWait, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 90000)) : fullWait;
-        const indexed = await client.waitForNotification("$/progress", idxWait, (p) => p && p.value && p.value.kind === "end");
-        // Fallback only for a server that emits no work-done progress (clangd always does). idxWait was
-        // already spent above, so this is a short "did the first file parse?" check, not a second full wait.
-        if (!indexed) await client.waitForNotification("textDocument/publishDiagnostics", Math.min(idxWait, 30000));
+        if (persisted) {
+          // PERSISTED index: don't BLOCK on the full background re-validation ($/progress kind:end) — it
+          // takes minutes (measured: 369s) while workspace/symbol can answer from the static shards far
+          // sooner (51s). Instead return after a short floor and let the QUERY poll the loading index, so
+          // it returns the INSTANT the sought symbol's shard is loaded (often well under the cap) — not at
+          // a fixed deadline. `indexLoaded` flips when the background index finishes, so the poll knows an
+          // empty result is then genuine (not "still loading"). Fire-and-forget; never blocks here.
+          client.indexLoaded = false;
+          const cap = envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000);
+          client.waitForNotification("$/progress", cap, (p) => p && p.value && p.value.kind === "end")
+            .then(() => { client.indexLoaded = true; }, () => { client.indexLoaded = true; });
+          await client.waitForNotification("textDocument/publishDiagnostics", envInt("VTS_CLANGD_PERSISTED_FLOOR_MS", 3000));
+        } else {
+          // COLD (no persisted index): the dynamic index must be BUILT before the first query can answer,
+          // so block on completion, bounded by VTS_LSP_INDEX_WAIT_MS; fall back to a diagnostics check for
+          // a server that emits no work-done progress (clangd always does).
+          const indexed = await client.waitForNotification("$/progress", fullWait, (p) => p && p.value && p.value.kind === "end");
+          if (!indexed) await client.waitForNotification("textDocument/publishDiagnostics", Math.min(fullWait, 30000));
+        }
       }
     },
   },

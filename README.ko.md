@@ -385,7 +385,8 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | clangd warm-up이 첫 쿼리 전 백그라운드 인덱싱 완료를 기다리는 시간. |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | warm-up이 clangd 인덱스를 데우려 여는 파일 최대 수(persisted 인덱스 없는 cold 상태). |
 | — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | persisted `.cache/clangd` 인덱스가 있을 때 여는 파일 수 — clangd가 인덱스에서 답하므로 재파싱이 거의 불필요. |
-| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `90000` | persisted 인덱스가 있을 때 첫 쿼리 전에 static 샤드 로드를 기다리는 시간(full 백그라운드 재인덱싱 완료를 기다리는 대신 — 실제 UE 프로젝트에서 약 7배 차이). |
+| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `60000` | persisted 인덱스가 있을 때, 로딩 중인 인덱스를 쿼리가 폴링하는 상한 — 고정 시각이 아니라 심볼이 잡히는 순간 즉시 반환. |
+| — | `VTS_CLANGD_PERSISTED_FLOOR_MS` | `3000` | persisted 인덱스가 있을 때 첫 쿼리가 폴링을 시작하기 전 warm-up이 기다리는 짧은 바닥 시간. |
 | — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd 백그라운드 인덱싱 스레드 우선순위. 기본 `normal`은 빠르게 구축, `background`는 유휴 CPU만(느리지만 공용 머신에 양보). |
 | — | `VTS_CLANGD_JOBS` | `코어수-1` | clangd async/인덱스 워커 수(`-j`). |
 | — | `VTS_PREWARM` | on (`projectPath` 설정 시) | MCP 서버가 기동 시 인덱스 pre-warm(IDE식); `0`이면 비활성. |
@@ -539,6 +540,10 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
   전에 clangd가 백그라운드 재인덱싱을 끝낼 때까지 기다리지 않고 이미 로드된 샤드에서 답합니다. 실제
   26k-TU Unreal 프로젝트에서 첫 semantic 쿼리가 약 369s에서 약 99s로 떨어졌습니다. MCP 서버를 켜 두면
   그다음부터는 warm 상태입니다.
+- **v0.16.1** — 첫 쿼리 경로를 한 번 더 손봤습니다. 인덱스가 다 뜰 때까지 정해진 시간만큼 기다리지 않고,
+  로딩 중인 인덱스를 폴링하다가 찾는 심볼이 나타나면 그 순간 바로 결과를 돌려줍니다. 인덱스가 완전히
+  로드됐는데도 심볼이 없으면 더 기다릴 것 없이 곧장 없다고 답합니다. 대기 상한도 60s로 낮췄습니다.
+  덕분에 같은 프로젝트에서 첫 쿼리가 약 70s 만에 심볼까지 해석해 돌아왔습니다.
 
 ## 기여
 
