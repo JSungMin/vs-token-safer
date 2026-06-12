@@ -47,19 +47,13 @@ $ grep -rn "SpawnActor" Source/**/*.cpp
 
 ---
 
-A Claude Code plugin that routes symbol search, find-references, and go-to-definition through an
-official language server's index instead of Bash `grep`: **clangd** (LLVM) for C/C++, a Roslyn-based
-LSP (`Microsoft.CodeAnalysis.LanguageServer`, the engine Visual Studio and the C# Dev Kit use) for
-C#/.NET, **typescript-language-server** (tsserver) for JS/TS, and **pyright** for Python. Hover, file
-outline, and a project-wide rename go through the same index. It caps the tokens a search flood can spend
-by returning a compact `file:line` list, never source bodies. It's built for large Unreal C++ and .NET/C#
-codebases, where `grep` is slow and burns context — and the JS/Python backends let it search its own
-source, so we dogfood the plugin while building it.
-
-It's the IDE-agnostic sibling of
-[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer). Same token-efficiency goal, but
-instead of proxying a running IDE's MCP server, it spawns the official language server headlessly, so it
-works with Visual Studio or any C++/C# project without an editor open.
+Symbol search, find-references, go-to-definition, hover, outline, and project-wide rename all route
+through an official language server's index — **clangd** (C/C++), **Roslyn** (C#/.NET), **tsserver**
+(JS/TS), **pyright** (Python) — instead of Bash `grep`, and come back as a compact, capped `file:line`
+list (never source bodies). Built for large Unreal C++ / .NET codebases where `grep` is slow and burns
+context. The IDE-agnostic sibling of
+[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer): same goal, but it spawns the
+language server headlessly — no editor open.
 
 ## Marketplace — two plugins
 
@@ -399,6 +393,9 @@ Check what's installed with `/plugin` (it lists each plugin's version). If a com
 
 ## Configuration (env)
 
+<details>
+<summary><b>Show all environment variables</b></summary>
+
 Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` > default.**
 
 | Config key | Env var | Default | Meaning |
@@ -439,6 +436,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts to scan. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs (one subdir per project; clangd's `.cache/` index lives there too). |
 
+
+</details>
+
 ## How enforcement works
 
 - The **hook** runs before every Bash call. If the command is a code search (grep/rg/ack/ag/findstr/
@@ -455,6 +455,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 
 ## Troubleshooting
 
+<details>
+<summary><b>Show the troubleshooting table</b></summary>
+
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `/vs-token-safer:setup` not in autocomplete | Plugin not installed (only marketplace added), or stale | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. Check version with `/plugin`. |
@@ -466,6 +469,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | No JS/TS or Python results | The bundled LSP didn't install (offline first run, npm failure) | Re-run the session so deps reinstall, or set `VTS_TS_CMD` / `VTS_PY_CMD` at a `typescript-language-server` / `pyright-langserver` on PATH. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | Set `VTS_ENFORCE=0` to let grep through (e.g. when the language server is unavailable). |
 | Wrong backend picked | Multiple project files under the root | Pin it: `VTS_BACKEND=clangd` (or `roslyn`), or pass `backend` per call. |
+
+
+</details>
 
 ## Status / caveats
 
@@ -495,114 +501,9 @@ See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 
 ## Version history
 
-See the **[Releases](https://github.com/JSungMin/vs-token-safer/releases)** page. Every version tag
-publishes categorized, PR-linked notes (🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance),
-generated automatically. The badge at the top always points at the latest. Highlights so far:
-
-- **v0.1.0** — initial vs-token-safer: clangd/Roslyn-backed `search_symbol` / `find_references` /
-  `goto_definition`, token-cap core, grep-blocking hook, routing skill, MCP server + `vts` CLI.
-- **v0.2.0** — clangd ≥ 22 advisory (older clangd deadlocks on UE), configurable LSP timeouts, and the
-  bundled gamedev-log-analyzer marketplace plugin.
-- **v0.3.0** — IDE-style pre-warm at boot + hit-rate-ordered warm-up set (git/Perforce), shared/prebuilt
-  remote index (`VTS_CLANGD_REMOTE`).
-- **v0.4.0** — warm-up ordering extended with working-now (`git status` / `p4 opened`) and include
-  centrality; gamedev-log-analyzer 0.10.1.
-- **v0.5.0** — README and community files brought up to a mature-repo standard (badges, env table,
-  troubleshooting, version history).
-- **v0.6.0** — adaptive include-centrality: prefix reads, a per-warm-up time budget, and a persistent
-  include-graph cache that grows coverage across warm-ups instead of skipping big modules.
-- **v0.7.0** — navigation parity with the Rider sibling: `hover`, `document_symbols`, `find_files`,
-  `search_text`, and a context-isolated `code-locator` subagent — plus `rename`, a semantic
-  project-wide rename that previews by default and only writes with `apply=true`.
-- **v0.8.0** — two more backends: **JS/TS** (typescript-language-server) and **Python** (pyright), both
-  shipped as plugin dependencies so they install automatically. vts now searches its own source, so we
-  dogfood it while building it.
-- **v0.9.0** — log-analysis steer: a code search aimed at a `Logs/` dir or a `.log`/`.jsonl` file is
-  pointed at gamedev-log instead of returning an empty code-index result. The grep-block hook now also
-  covers the built-in Grep tool (warn-only).
-- **v0.10.0** — language-aware setup and warm-up. `vts_setup` now censuses the project's languages and
-  auto-picks `prewarmBackends`; the warm-up open-cap scales to each language's file count and a
-  multi-language repo can warm every backend in proportion (`VTS_PREWARM_BACKENDS`). `search_text` now
-  scans JS/TS/Python (not just C/C++/C#), and `search_symbol` on tsserver/pyright falls back to a literal
-  text search for a symbol the index hasn't opened. Bundled gamedev-log-analyzer → 0.10.3.
-- **v0.11.0** — first-use setup nudge (if never configured, the first result and the grep-block hook point
-  at `/vs-token-safer:setup`); LSP buffer freshness (a file changed on disk after warm-up is refreshed via
-  `didChange`/`didClose`, not answered from a stale buffer) and fuller LSP-spec conformance (server-request
-  replies, `$/cancelRequest` on timeout, declared capabilities). `scripts/sync-gamedev.mjs` keeps the
-  bundled-plugin version from drifting.
-- **v0.12.0** — a C++ project with no `compile_commands.json` no longer returns silent empty results:
-  clangd warns how to generate the DB, `search_symbol` falls back to a literal text search, and `vts_setup`
-  flags it. New `vts_gen_compile_db` builds (and optionally runs) the UBT `GenerateClangDatabase` command —
-  the user's choice between full semantic clangd and lightweight no-DB mode.
-- **v0.13.0** — the grep-block hook now **rewrites** a Bash code search (`grep`/`rg`/`findstr`/`git grep`/
-  `find -name`) into the equivalent token-capped `vts` command instead of only blocking it, so the model's
-  flow is unbroken and the output is always capped (`VTS_REWRITE=0` keeps the old block; `excludeCommands` /
-  `VTS_EXCLUDE_COMMANDS` opt a command out). New `vts discover` scans recent Claude transcripts for searches
-  that bypassed vts and reports the tokens they spent; `vts savings` gains a 30-day graph, daily/history
-  breakdowns and an estimated value; a truncated `find_files`/`search_text` writes the full result to a
-  recovery (tee) file. These compose for self-improvement: the rewrite routes a bare identifier to the
-  **semantic** `search_symbol` (not just a text grep, degrading to text when no backend resolves); `vts
-  discover --learn` feeds the files those bypassed searches hit into the warm-up set so prewarm front-loads
-  them next time; and `discover` reports a **catch-rate** (tokens caught by vts vs still bypassing). Also:
-  `document_symbols` hides outline noise (anonymous callbacks / nested locals) and truncated sweeps are
-  flagged, never silently capped.
-- **v0.14.0** — the self-improvement loop now runs unattended: at boot the server harvests the files that
-  recent bypassed searches actually hit into the warm-up set (`VTS_AUTO_LEARN`, local and read-only).
-  Quote-aware command parsing closes the biggest rewrite gap — `grep "FooA|FooB"` and `grep "^#include"`
-  reroute to the regex-capable `search_text` instead of slipping past the hook (a real pipe still blocks),
-  and `vts discover` uses the same parser, so the meter counts exactly what enforcement sees. The Grep-tool
-  nudge now carries a ready-to-use equivalent call; a capped `search_symbol`/`find_references` writes its
-  full row set to a recovery file; `vts savings` breaks the win down per tool.
-- **v0.15.0** — generated artifacts can no longer leak into version control, because they no longer
-  live in the source tree at all: `vts_gen_compile_db apply=true` now puts `compile_commands.json`
-  under `~/.vs-token-safer/db/<project>` and points clangd there via `--compile-commands-dir`, which
-  also pulls clangd's `.cache/` index out of the tree (clangd writes it next to the DB). Nothing for
-  git or `p4 reconcile` to see. Prefer the classic project-root layout? `inTree=true` restores it,
-  protected by a VCS-ignore guard that appends to `.gitignore`, finds the Perforce ignore file by
-  walking up to the depot root (a versioned read-only file gets the exact `p4 edit` instructions
-  instead), and removes the stray engine-root DB copy. Also fixes `apply` on current Node — spawning
-  `RunUBT.bat` directly throws EINVAL since the CVE-2024-27980 hardening, so the `.bat` path now runs
-  through the shell. Verified end-to-end on a real Unreal depot: UBT in 112s, an ~18 MB DB, and the
-  first semantic query returning 86 declarations at 93% token savings.
-- **v0.15.1** — `vts discover` measures honestly now. The since-window filters individual transcript
-  entries by their timestamp instead of whole files by mtime, so a long-running session's old misses
-  stop recounting every day (the live "last 1 day" numbers were ~4× inflated; the corrected catch-rate
-  read 97.4%, not 90.8%). Multi-project installs also stop bleeding into each other: `projectPath`
-  scopes the count to entries that ran under that root, harvested relative paths resolve against the
-  entry's own cwd, and learn/auto-learn attribute only files that live under the target root.
-- **v0.16.0** — two things, both aimed at how you actually use this while editing. `find_references` now
-  takes a symbol NAME (`find_references symbol="FooBar"`) and resolves the declaration for you, so finding
-  every call site no longer needs a line/column — the step that used to push you back to grep. And clangd
-  is much faster to first answer on a big tree: it indexes at `normal` priority, skips re-opening 100 files
-  when a built index is already on disk, and — the big one — stops waiting for clangd's full background
-  re-index before the first query when a persisted index exists (it answers from the loaded shards). On a
-  real 26k-TU Unreal project the first semantic query dropped from ~369s to ~99s; keep the MCP server
-  running and the rest are warm.
-- **v0.16.1** — refines that first-query path: instead of waiting a fixed time for the index, the query
-  polls the still-loading index and returns the instant the symbol it's looking for appears (and a genuine
-  miss on a fully-loaded index returns immediately). The cap dropped to 60s. On the same project the first
-  query came back in ~70s with the symbol resolved.
-- **v0.17.0** — output compaction for the commands the index can't help with. New `vts_git` / `vts_p4`
-  tools run a read-only git/p4 command and hand back its output grouped, deduped, and capped: `git status`
-  by change-type and directory, `git log` one line per commit, `git diff` as a per-file `+/-` diffstat with
-  the hunk bodies dropped, `p4 opened` by action and depot directory. A noisy `git diff` or a 500-file
-  `p4 opened` collapses ~20–130×, and it lands in the same savings ledger. `search_text` also grows a
-  target: `path=<file>` / `glob=<pattern>` search a named file or glob and auto-include whatever extension
-  it is (so a `.md` just works), while `docs=true` widens a project-wide sweep to README/docs/config. The
-  grep-block hook reroutes a read-only `git status|log|diff` / `p4 opened|…` and a file-targeted text grep
-  to these, too.
-- **v0.17.1 – v0.17.4** — hardening, most of it found by critically reviewing and dogfooding that new
-  compaction surface. `vts_git` / `vts_p4` are pinned to a read-only subcommand allowlist — a mutating
-  `git reset` / `p4 submit` is refused, and `p4 reconcile` is forced to preview — and `search_text path=`
-  is confined to the project root so it can't read an arbitrary file. The savings ledger stops over-counting
-  string output and never records a negative run. Plus correctness: `git status` renames show the
-  destination path, a changed binary in `git diff` is marked `(binary)`, `vts_git`/`vts_p4` run in the
-  current directory, and the `document_symbols` outline drops object-literal keys (`COMMANDS::git`,
-  `STATUS::M`) that used to flood it — a real file's outline shrank from 34 symbols to 12.
-- **v0.18.0** — the grep-block / nudge / log-steer messages localize to **Korean** automatically when the
-  OS locale is `ko-*` (or `VTS_LANG` / config `lang` is `ko`; `VTS_LANG=en` forces English). The block copy
-  is also reworded to be reassuring and savings-positive — a red box is the hook saying "hold on," not a
-  failure, and it leads with the tokens you just saved.
+Per-release notes — 🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance — are auto-generated,
+PR-linked, on every `v*` tag. The badge at the top tracks the latest. See the full history on the
+**[Releases](https://github.com/JSungMin/vs-token-safer/releases)** page.
 
 ## Contributing
 
