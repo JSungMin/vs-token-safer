@@ -5,6 +5,7 @@
 // Each backend is { cmd, args(root), detect(root) }. cmd/args are overridable via config/env
 // (VTS_<NAME>_CMD / VTS_<NAME>_ARGS) so users can point at their own clangd / csharp-ls / MS C# LSP.
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -101,6 +102,26 @@ const ROSLYN_DOTNET = ROSLYN_MS_DLL ? findRoslynDotnetHost() : "dotnet";
 const exists = (root, ...names) => names.some((n) => {
   try { return fs.existsSync(path.join(root, n)); } catch { return false; }
 });
+
+// --- out-of-tree compile-DB home: keep generated artifacts (compile_commands.json AND clangd's .cache/
+// index, which clangd writes NEXT TO the compile DB) outside the source tree entirely, so nothing ever
+// shows up for git or `p4 reconcile` to track. One dir per project root under ~/.vs-token-safer/db/
+// (VTS_DB_DIR overrides the base). clangd is pointed here via --compile-commands-dir. ---
+export function dbDirFor(root) {
+  const base = env("VTS_DB_DIR", path.join(os.homedir(), ".vs-token-safer", "db"));
+  const norm = path.resolve(root).replace(/\\/g, "/").toLowerCase();
+  const slug = `${path.basename(norm) || "root"}-${crypto.createHash("sha1").update(norm).digest("hex").slice(0, 10)}`;
+  return path.join(base, slug);
+}
+// Where this root's compile DB actually lives: in-tree (shallow scan, the classic layout) wins, else the
+// out-of-tree home. Returns the DIRECTORY containing compile_commands.json, or null.
+export function resolveCdbDir(root) {
+  const inTree = findShallow(root, /^compile_commands\.json$/);
+  if (inTree) return path.dirname(inTree);
+  const out = dbDirFor(root);
+  try { if (fs.existsSync(path.join(out, "compile_commands.json"))) return out; } catch { /* ignore */ }
+  return null;
+}
 // shallow scan for a file matching a predicate (1 level) — for .sln/.csproj/compile_commands in subdirs
 function findShallow(root, re, depth = 2) {
   const stack = [[root, 0]];
@@ -140,7 +161,9 @@ export const BACKENDS = {
       const ov = splitArgs(env("VTS_CLANGD_ARGS"));
       if (ov) return ov;
       const a = [
-        `--compile-commands-dir=${path.dirname(findShallow(root, /^compile_commands\.json$/) || path.join(root, "x"))}`,
+        // in-tree CDB wins; else the out-of-tree home (~/.vs-token-safer/db/<slug>) — clangd also writes
+        // its .cache/ index next to the CDB, so the whole artifact set stays out of the source tree.
+        `--compile-commands-dir=${resolveCdbDir(root) || root}`,
         "--background-index",
         "--header-insertion=never",
       ];
@@ -149,13 +172,14 @@ export const BACKENDS = {
       if (remote) a.push(`--remote-index-address=${remote}`, `--project-root=${root}`);
       return a;
     },
-    detect: (root) => !!findShallow(root, /^compile_commands\.json$/) || exists(root, "*.uproject") || !!findShallow(root, /\.uproject$/, 1),
+    detect: (root) => !!resolveCdbDir(root) || exists(root, "*.uproject") || !!findShallow(root, /\.uproject$/, 1),
     // clangd indexes asynchronously after launch; a one-shot CLI query would race (and kill) it
     // before the index exists. Open the compile_commands TUs (+ nearby headers) so their symbols
     // enter clangd's dynamic index, then wait until at least one file is parsed (publishDiagnostics)
     // before the first query. Long-lived MCP use also benefits: the warm-up primes the index.
     afterInit: async (client, root) => {
-      const cc = findShallow(root, /^compile_commands\.json$/);
+      const cdbDir = resolveCdbDir(root);
+      const cc = cdbDir ? path.join(cdbDir, "compile_commands.json") : null;
       let files = [];
       if (cc) {
         try { files = JSON.parse(fs.readFileSync(cc, "utf8")).map((e) => e.file).filter(Boolean); } catch { /* ignore */ }

@@ -9,9 +9,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 
@@ -370,6 +370,9 @@ let _advisoryShown = false;
 // advise how to generate it — otherwise semantic search_symbol/find_references/goto/hover silently return
 // nothing on a `.uproject`-only project (clangd is still the picked backend for C++). Exported for the eval.
 export function hasCompileDb(root) {
+  // the out-of-tree home (~/.vs-token-safer/db/<slug>) counts — clangd is pointed there via
+  // --compile-commands-dir, so a DB living there is just as usable as an in-tree one.
+  if (resolveCdbDir(root)) return true;
   const stack = [[root, 0]];
   while (stack.length) {
     const [dir, d] = stack.pop();
@@ -430,7 +433,68 @@ export function genCompileDbPlan(root, a = {}) {
   if (!engineRoot) return { error: `Couldn't resolve the UE engine root. Set VTS_UE_ROOT or pass engineRoot= (the folder containing Engine/Build/BatchFiles/RunUBT).`, uproject: upr };
   const runUbt = runUbtPath(engineRoot);
   const args = [target, platform, config, `-project=${upr}`, "-mode=GenerateClangDatabase", `-Compiler=${compiler}`];
-  return { uproject: upr, engineRoot, runUbt, args, cmdline: `"${runUbt}" ${args.join(" ")}` };
+  // cmdline doubles as the dry-run output AND the actual shell command for the .bat path — quote any
+  // arg with spaces (a `-project=` under "Program Files" etc.) so both stay correct.
+  const q = (s) => (/\s/.test(s) ? `"${s}"` : s);
+  return { uproject: upr, engineRoot, runUbt, args, cmdline: `"${runUbt}" ${args.map(q).join(" ")}` };
+}
+// --- VCS-ignore guard: a generated compile_commands.json (and clangd's .cache/ index dir) must never
+// reach git or Perforce. ensureDbIgnored(root) makes that true where it safely can, and says exactly
+// what to do where it can't. Exported for the eval. ---
+const DB_IGNORES = ["compile_commands.json", ".cache/"];
+export function ensureDbIgnored(root) {
+  const notes = [];
+  // git: inside a work tree and the DB not ignored → append to the project-root .gitignore.
+  try {
+    execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore", timeout: 5000 });
+    let ignored = true;
+    try { execFileSync("git", ["-C", root, "check-ignore", "-q", "compile_commands.json"], { stdio: "ignore", timeout: 5000 }); }
+    catch { ignored = false; }
+    if (ignored) notes.push("git: compile_commands.json already ignored.");
+    else {
+      const gi = path.join(root, ".gitignore");
+      try {
+        const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
+        const have = cur.split(/\r?\n/).map((l) => l.trim());
+        const add = DB_IGNORES.filter((l) => !have.includes(l));
+        if (add.length) fs.appendFileSync(gi, (cur && !cur.endsWith("\n") ? "\n" : "") + "# clangd compile DB + index (generated; never commit)\n" + add.join("\n") + "\n");
+        notes.push(`git: added ${add.join(", ") || "(nothing — entries present)"} to ${gi}.`);
+      } catch (e) { notes.push(`git: could NOT update .gitignore (${e.code || e.message}) — add ${DB_IGNORES.join(" + ")} yourself.`); }
+    }
+  } catch { /* not a git work tree */ }
+  // Perforce: P4IGNORE names the ignore file(s); else the usual candidates. Only APPEND to an EXISTING
+  // file — creating one p4 doesn't read would be false security, and the file may itself be versioned
+  // (read-only until `p4 edit`, which we won't run silently).
+  const p4Env = String(process.env.P4IGNORE || "").split(/[;:]/).map((s) => s.trim()).filter((s) => s && !/^[A-Za-z]$/.test(s)); // drop the drive letter a `C:\…` split leaves behind
+  const names = p4Env.length ? p4Env : [".p4ignore", ".p4ignore.txt"];
+  // The ignore file usually lives at the DEPOT root, not the project subdir (a UE game dir sits levels
+  // below it) — walk up from root so it's actually found. Bare patterns match at any depth, so appending
+  // there still covers the project's DB. Absolute P4IGNORE entries are used as-is.
+  const candidates = [];
+  for (const f of names) {
+    if (path.isAbsolute(f)) { candidates.push(f); continue; }
+    let dir = path.resolve(root);
+    for (let i = 0; i < 7; i++) {
+      candidates.push(path.join(dir, f));
+      const up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+  }
+  const p4File = candidates.find((f) => { try { return fs.existsSync(f); } catch { return false; } });
+  const looksP4 = !!(process.env.P4CLIENT || process.env.P4PORT || process.env.P4CONFIG);
+  if (p4File) {
+    try {
+      const cur = fs.readFileSync(p4File, "utf8");
+      const have = cur.split(/\r?\n/).map((l) => l.trim());
+      const add = DB_IGNORES.filter((l) => !have.includes(l) && !have.includes(l.replace(/\/$/, "")));
+      if (add.length) { fs.appendFileSync(p4File, (cur.endsWith("\n") || !cur ? "" : "\n") + add.join("\n") + "\n"); notes.push(`p4: added ${add.join(", ")} to ${p4File}.`); }
+      else notes.push(`p4: ${path.basename(p4File)} already covers the DB.`);
+    } catch (e) { notes.push(`p4: ${p4File} exists but isn't writable (${e.code || e.message}; versioned? \`p4 edit\` it first) — add ${DB_IGNORES.join(" + ")} yourself.`); }
+  } else if (looksP4) {
+    notes.push(`p4: no ignore file found. p4 won't auto-add untracked files, but \`p4 reconcile\` WOULD pick the DB up — set P4IGNORE (e.g. a .p4ignore listing: ${DB_IGNORES.join(", ")}).`);
+  }
+  return notes;
 }
 let _dbAdvisoryShown = false;
 function backendAdvisory(backendName, root) {
@@ -639,18 +703,41 @@ export async function runTool(name, a = {}) {
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
       if (!apply) {
-        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.`);
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, the DB (and clangd's .cache/ index next to it) lands OUTSIDE the source tree at ${dbDirFor(root)} — nothing for git or p4 to track — and the engine-root copy is removed. Prefer the classic project-root layout? Pass inTree=true; the VCS-ignore guard (.gitignore / P4IGNORE append-or-instruct) then protects it.`);
       }
       if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
       try {
         const t0 = Date.now();
-        execFileSync(plan.runUbt, plan.args, { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000) });
+        // RunUBT is a .bat on Windows — Node refuses to spawn .bat/.cmd directly (EINVAL, CVE-2024-27980
+        // hardening), so that path goes through the shell using the already-quoted cmdline. The .sh path
+        // (and any direct binary) keeps the safer no-shell execFileSync.
+        const opts = { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000) };
+        if (/\.(bat|cmd)$/i.test(plan.runUbt)) execSync(plan.cmdline, opts);
+        else execFileSync(plan.runUbt, plan.args, opts);
         // UBT writes compile_commands.json to the engine root; our clangd backend looks under the project
         // root → copy it there if it isn't already.
-        let where = hasCompileDb(root) ? path.join(root, "compile_commands.json") : null;
+        // Destination: OUT of the source tree by default (~/.vs-token-safer/db/<slug> — clangd reads it
+        // via --compile-commands-dir and writes its .cache/ index next to it, so neither git nor
+        // `p4 reconcile` ever sees an artifact). inTree=true keeps the classic project-root layout, with
+        // the VCS-ignore guard as the safety net.
+        const inTree = a.inTree === true || a.inTree === "true";
+        const destDir = inTree ? root : dbDirFor(root);
+        const dest = path.join(destDir, "compile_commands.json");
         const atEngine = path.join(plan.engineRoot, "compile_commands.json");
-        if (!where && fs.existsSync(atEngine)) { try { fs.copyFileSync(atEngine, path.join(root, "compile_commands.json")); where = path.join(root, "compile_commands.json"); } catch { where = atEngine; } }
-        return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.`);
+        let where = null;
+        if (fs.existsSync(atEngine)) {
+          try { fs.mkdirSync(destDir, { recursive: true }); fs.copyFileSync(atEngine, dest); where = dest; } catch { where = atEngine; }
+        } else if (fs.existsSync(dest)) where = dest;
+        let cleanup = "";
+        if (where && where !== atEngine && fs.existsSync(atEngine)) { try { fs.rmSync(atEngine); cleanup = " Engine-root copy removed."; } catch { /* leave it */ } }
+        let ignNote;
+        if (inTree) {
+          const ign = ensureDbIgnored(root);
+          ignNote = ign.length ? `\nVCS guard: ${ign.join(" ")}${cleanup}` : cleanup ? `\nVCS guard:${cleanup}` : "";
+        } else {
+          ignNote = `\nArtifacts live OUTSIDE the source tree (${destDir}) — compile_commands.json and clangd's .cache/ index never touch git or p4.${cleanup}`;
+        }
+        return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.${ignNote}`);
       } catch (e) {
         return err(`UBT GenerateClangDatabase failed: ${e.message}\nRun it manually:\n  ${plan.cmdline}`);
       }

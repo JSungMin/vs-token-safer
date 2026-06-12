@@ -163,7 +163,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (34/34 checks).
+  raw index `~57,308 tok` → capped output `~1,515 tok` = **97.4%** (36/36 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -287,7 +287,12 @@ index without one. The plugin doesn't fail silently or leave you at a dead end:
    derives the `<Name>Editor` target, locates the engine (`VTS_UE_ROOT`, an `engineRoot` arg, or a
    walk-up from the project), and adds `-Compiler=VisualCpp` for clang-cl targets. **Dry-run by
    default** — it prints the command and runs nothing. Pass `apply=true` and it runs UBT (takes a few
-   minutes), then copies the resulting DB to the project root where clangd looks.
+   minutes), then parks the resulting DB **outside the source tree** at `~/.vs-token-safer/db/<project>`
+   and points clangd there — clangd writes its `.cache/` index next to the DB, so git and `p4 reconcile`
+   never see a single artifact. Want the classic project-root layout instead? Pass `inTree=true`: the DB
+   lands at the project root and a VCS-ignore guard protects it (`.gitignore` append, or the Perforce
+   ignore file found by walking up to the depot root — a versioned read-only file gets the exact
+   `p4 edit` lines instead), with the stray engine-root copy removed either way.
 4. Restart the MCP server (or rerun the query) and `search_symbol` / `find_references` /
    `goto_definition` answer semantically from the full engine index.
 
@@ -404,6 +409,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_TEE` | `truncate` | `truncate` writes the full result of a capped `find_files`/`search_text` to a recovery file; `off` disables it. Dir: `VTS_TEE_DIR`. |
 | — | `VTS_USD_PER_MTOK` | `3` | $/Mtok rate for the estimated-value line in `vts savings` / `discover`. Informational only. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts to scan. |
+| — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs (one subdir per project; clangd's `.cache/` index lives there too). |
 
 ## How enforcement works
 
@@ -519,6 +525,17 @@ generated automatically. The badge at the top always points at the latest. Highl
   and `vts discover` uses the same parser, so the meter counts exactly what enforcement sees. The Grep-tool
   nudge now carries a ready-to-use equivalent call; a capped `search_symbol`/`find_references` writes its
   full row set to a recovery file; `vts savings` breaks the win down per tool.
+- **v0.15.0** — generated artifacts can no longer leak into version control, because they no longer
+  live in the source tree at all: `vts_gen_compile_db apply=true` now puts `compile_commands.json`
+  under `~/.vs-token-safer/db/<project>` and points clangd there via `--compile-commands-dir`, which
+  also pulls clangd's `.cache/` index out of the tree (clangd writes it next to the DB). Nothing for
+  git or `p4 reconcile` to see. Prefer the classic project-root layout? `inTree=true` restores it,
+  protected by a VCS-ignore guard that appends to `.gitignore`, finds the Perforce ignore file by
+  walking up to the depot root (a versioned read-only file gets the exact `p4 edit` instructions
+  instead), and removes the stray engine-root DB copy. Also fixes `apply` on current Node — spawning
+  `RunUBT.bat` directly throws EINVAL since the CVE-2024-27980 hardening, so the `.bat` path now runs
+  through the shell. Verified end-to-end on a real Unreal depot: UBT in 112s, an ~18 MB DB, and the
+  first semantic query returning 86 declarations at 93% token savings.
 
 ## Contributing
 
