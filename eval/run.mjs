@@ -790,6 +790,29 @@ const truncMarkOk = !longRes.isError && /…/.test(longRes.text);
 try { fs.rmSync(longDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const hardeningOk = allowlistOk && allowlistAllowsRO && traversalOk && renameParseOk && budgetOk && binaryOk && truncMarkOk;
 
+// 43) polish: (a) vts_git/vts_p4 run in CWD, not the configured PROJECT_PATH — `vts git status` in repo B
+// shows repo B even when VTS_PROJECT_PATH points at repo A (was the live-QA surprise); (b) p4 changes parses
+// the quoted desc + optional *pending*; (c) the generic dedup summary says "unique line(s)".
+const mkGitRepo = (sub, files) => {
+  const d = path.join(os.tmpdir(), `vts-eval-${process.pid}-${sub}`);
+  fs.mkdirSync(d, { recursive: true });
+  spawnSync("git", ["-C", d, "init", "-q"]); spawnSync("git", ["-C", d, "config", "user.email", "e@x.t"]);
+  spawnSync("git", ["-C", d, "config", "user.name", "t"]); spawnSync("git", ["-C", d, "config", "core.autocrlf", "false"]);
+  for (const [n, b] of Object.entries(files)) fs.writeFileSync(path.join(d, n), b);
+  return d;
+};
+const repoA = mkGitRepo("repoA", { "aaa.cpp": "int a;\n" });
+spawnSync("git", ["-C", repoA, "add", "-A"]); spawnSync("git", ["-C", repoA, "commit", "-qm", "init"]); // clean
+const repoB = mkGitRepo("repoB", { "bbb_untracked.cpp": "int b;\n" }); // dirty (untracked)
+const cpCwd = spawnSync(process.execPath, [cliPath, "git", "status"], { cwd: repoB, encoding: "utf8", env: { ...process.env, VTS_PROJECT_PATH: repoA, VTS_ENFORCE: "0", VTS_CONFIG_FILE: CF } });
+const gitCwdOk = /bbb_untracked/.test(cpCwd.stdout || "") && !/aaa\.cpp/.test(cpCwd.stdout || ""); // CWD repoB won, not repoA
+for (const d of [repoA, repoB]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const p4ch = compactP4("changes", "Change 42 on 2026/01/02 by alice@ws *pending* 'rework combat'\nChange 41 on 2026/01/01 by bob@ws 'tidy'\n", 60);
+const p4ChangesOk = /42 2026\/01\/02 alice@ws \*pending\* rework combat/.test(p4ch) && /41 .*bob@ws tidy/.test(p4ch);
+const dedupOut = compactGit("unknownsub", Array.from({ length: 10 }, (_, i) => `uline${i}`).join("\n"), 3);
+const dedupWordOk = /more unique line\(s\)/.test(dedupOut);
+const polishOk = gitCwdOk && p4ChangesOk && dedupWordOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -841,6 +864,7 @@ const rows = [
   ["hook: git/p4 reroute to vts wrapper (git grep stays code)", vcsHookOk, "true", vcsHookOk],
   ["savings: string-raw not inflated + no negative tool (dogfood)", savingsLedgerOk, "true", savingsLedgerOk],
   ["hardening: ro-allowlist + path-confine + rename/binary/budget/trunc", hardeningOk, "true", hardeningOk],
+  ["polish: git/p4 run in cwd + p4-changes parse + dedup wording", polishOk, "true", polishOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

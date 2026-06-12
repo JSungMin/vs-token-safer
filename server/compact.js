@@ -102,7 +102,7 @@ function compactGitDiff(raw, max) {
     // No `diff --git` headers → not a unified diff (likely `--stat` / `--name-only`, already terse). Don't
     // mangle it: dedup + cap the raw output and pass it through.
     const { lines, total } = dedupCap(nonEmpty(raw), max);
-    return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more line(s).` : "");
+    return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more unique line(s).` : "");
   }
   const shown = files.slice(0, max);
   const body = shown.map((f) => `  ${f.file} | ${f.binary ? "(binary)" : `+${f.add} -${f.del}`}`).join("\n");
@@ -118,7 +118,7 @@ export function compactGit(sub, raw, max = 60) {
   // Unknown subcommand → generic dedup+cap (still a win on repetitive output).
   const { lines, total } = dedupCap(nonEmpty(raw), max);
   if (!lines.length) return "(no output).";
-  return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more line(s).` : "");
+  return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more unique line(s).` : "");
 }
 
 // ---- perforce ----
@@ -154,9 +154,13 @@ function compactP4Changes(raw, max) {
   const lines = nonEmpty(raw);
   if (!lines.length) return "(no changes).";
   const shown = lines.slice(0, max).map((l) => {
-    const m = l.match(/^Change (\d+) on (\S+) by (\S+)\s+(?:'(.*)'|\*pending\*\s*'(.*)')?/);
+    // `Change N on DATE by user@ws [*pending*] 'desc'` — grab the head fields and the quoted desc wherever
+    // it sits (the optional *pending* marker no longer breaks the match).
+    const m = l.match(/^Change (\d+) on (\S+) by (\S+)/);
     if (!m) return l.slice(0, 200);
-    return `${m[1]} ${m[2]} ${m[3]} ${(m[4] || m[5] || "").slice(0, 80)}`.trim();
+    const pending = /\*pending\*/.test(l) ? "*pending* " : "";
+    const desc = (l.match(/'([^']*)'/) || ["", ""])[1].slice(0, 80);
+    return `${m[1]} ${m[2]} ${m[3]} ${pending}${desc}`.trim();
   });
   return shown.join("\n") + (lines.length > shown.length ? `\n… +${lines.length - shown.length} more change(s).` : "");
 }
@@ -167,7 +171,7 @@ export function compactP4(sub, raw, max = 60) {
   if (s === "changes") return compactP4Changes(raw, max);
   const { lines, total } = dedupCap(nonEmpty(raw), max);
   if (!lines.length) return "(no output).";
-  return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more line(s).` : "");
+  return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more unique line(s).` : "");
 }
 
 // Exposed for the eval (deterministic unit coverage of the grouping helpers).
