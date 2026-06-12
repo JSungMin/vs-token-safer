@@ -36,6 +36,8 @@ Commands:
                  [--graph (30-day ASCII) --daily --history]
   savings-reset  Clear the savings ledger.
   discover       Scan recent Claude transcripts for code searches that BYPASSED vts (missed savings).
+                 The since-window filters individual entries by timestamp; --projectPath scopes the
+                 count to that root (and bounds what --learn attributes to it).
                  [--since N (days, default 7) --all (all projects, all time)
                   --learn (feed the files those searches hit into the warm-set) --projectPath <dir>]
   gen-compile-db Generate compile_commands.json for an Unreal project via UBT (full clangd index).
