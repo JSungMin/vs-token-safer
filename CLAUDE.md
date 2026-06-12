@@ -92,7 +92,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). The Grep TOOL stays warn-only but `grepNudgeFor` embeds a
   READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in the nudge. `VTS_REWRITE=0`
   → block instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out;
-  escape hatch `VTS_ENFORCE=0`.
+  escape hatch `VTS_ENFORCE=0`. The human-facing block/nudge/log messages are i18n'd: `uiLang()` picks
+  Korean when `VTS_LANG`/config `lang` is `ko` OR the OS locale (Intl) is `ko-*`, else English — and the
+  block copy is deliberately REASSURING (a red box is just the hook saying "hold on", not a failure) + leads
+  with the token-savings win. `VTS_LANG=en|ko` forces it.
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
 - Config dir `~/.vs-token-safer`, env prefix `VTS_`. MCP server name `vs-search`.
