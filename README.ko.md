@@ -353,9 +353,19 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 /plugin update vs-token-safer
 #   안 되면: /plugin uninstall vs-token-safer  그 다음  /plugin install vs-token-safer@vs-token-safer
 
-# 3) 새 훅/명령어/MCP 서버 적용 (의존성은 세션 시작 시 자동 재설치)
-/reload-plugins        # 또는 Claude Code 재시작
+# 3) 훅/명령어/스킬 리로드
+/reload-plugins
+
+# 4) Claude Code 세션 재시작 — 이 단계는 선택이 아니라 필수입니다.
+#    /reload-plugins는 훅·명령어·스킬만 리로드합니다. vs-search MCP 서버는 세션 시작 때 한 번 뜨는
+#    자식 프로세스라, 재시작 전까지 옛 코드를 계속 돌립니다. 그래서 새 버전의 도구(search_symbol,
+#    find_references 등)는 세션을 껐다 켜기 전엔 실제로 바뀌지 않습니다.
 ```
+
+> ⚠️ **새 플러그인 버전은 세션을 재시작해야 완전히 적용됩니다.** `/reload-plugins`만으로는 부족합니다 —
+> 돌고 있는 `vs-search` MCP 서버 프로세스는 리로드로 재시작되지 않아, Claude Code를 껐다 켜기 전까지
+> 이전 버전의 도구 코드를 그대로 제공합니다. 훅·명령어·스킬은 리로드로 갱신되지만, MCP 서버(따라서 모든
+> `search_*` / `find_*` 도구)는 재시작에서만 갱신됩니다.
 
 `/plugin`으로 설치 상태와 버전을 확인할 수 있습니다. `/vs-token-safer:setup` 같은 명령이 안 보이면
 설치본이 구버전이니 위 절차로 업데이트하세요.
