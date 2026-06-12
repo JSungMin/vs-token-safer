@@ -19,8 +19,9 @@ Usage: vts <command> [options]
 Commands:
   symbol         Search symbol declarations by name/substring across the project.
                  [--q <name> --projectPath <dir> --backend clangd|roslyn --maxResults N]
-  references     Find references of the symbol at a position (0-based line/character).
-                 [--path <file> --line N --character N --includeDeclaration]
+  references     Find every call site / usage of a symbol. Pass --symbol <name> (resolved via the index,
+                 no position needed — the tool to use when editing code); or a --path --line --character
+                 position. [--symbol <name> | --path <file> --line N --character N] [--includeDeclaration]
   definition     Go to the definition of the symbol at a position.
                  [--path <file> --line N --character N]
   hover          Type/signature info at a position. [--path <file> --line N --character N]
