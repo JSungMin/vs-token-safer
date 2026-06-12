@@ -247,6 +247,17 @@ function matchBypass(name, input) {
 // Shared transcript scan: find bypassed code searches and (always, cheaply) harvest the source-file
 // paths their results contained. discoverReport formats this; autoLearn feeds the harvest straight into
 // the warm-set so the loop closes without a human in it.
+// Accuracy (both gaps found by running discover on its own output):
+//  - the `since` window filters ENTRIES by their timestamp, not just files by mtime — a long-running
+//    session keeps its transcript's mtime fresh, so without this the same old misses recount every day;
+//  - `projectPath` scopes the count to entries whose `cwd` sits under that root (multi-project installs:
+//    one project's bypasses shouldn't pollute another's report), and harvested RELATIVE paths resolve
+//    against the entry's cwd so the learn attribution is a real path, not a scanner-cwd guess.
+const isUnder = (p, root) => {
+  const a2 = path.resolve(String(p)).replace(/\\/g, "/").toLowerCase();
+  const r = path.resolve(String(root)).replace(/\\/g, "/").toLowerCase();
+  return a2 === r || a2.startsWith(r + "/");
+};
 function scanBypasses(a = {}) {
   const base = process.env.VTS_CLAUDE_PROJECTS || path.join(os.homedir(), ".claude", "projects");
   let dirs;
@@ -278,6 +289,11 @@ function scanBypasses(a = {}) {
       if (!line.trim()) continue;
       if (++lines > MAX_LINES) break outer;
       let e; try { e = JSON.parse(line); } catch { continue; }
+      // entry-level window: a multi-day session keeps its file mtime fresh — without this, its old
+      // misses recount in every "last N days" report (and re-enter every auto-learn harvest).
+      if (!all && e && e.timestamp) { const t = Date.parse(e.timestamp); if (Number.isFinite(t) && t < cutoff) continue; }
+      // per-project scope: only count entries that ran under the requested root.
+      if (a.projectPath && e && e.cwd && !isUnder(e.cwd, a.projectPath)) continue;
       const content = e && e.message && e.message.content;
       if (!Array.isArray(content)) continue;
       for (const b of content) {
@@ -286,7 +302,14 @@ function scanBypasses(a = {}) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
           const rt = tok(o); rawTokTotal += rt; missed.push({ ...meta, rawTok: rt });
-          let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o)) && learned.size < 500) learned.add(pm[0]);
+          // resolve relative hits against the ENTRY's cwd (the project the search actually ran in) —
+          // recordQueryResults would otherwise resolve them against the scanner's cwd, mis-attributing.
+          let pm; PATH_RE.lastIndex = 0;
+          while ((pm = PATH_RE.exec(o)) && learned.size < 500) {
+            const hit = pm[0];
+            if (path.isAbsolute(hit) || /^[A-Za-z]:/.test(hit)) learned.add(hit);
+            else if (e.cwd) learned.add(path.join(e.cwd, hit));
+          }
         }
       }
     }
@@ -299,7 +322,11 @@ function scanBypasses(a = {}) {
 export function autoLearn(root, since = 7) {
   const r = scanBypasses({ since });
   if (r.error || !r.learned || !r.learned.size) return 0;
-  try { recordQueryResults(root, [...r.learned]); return r.learned.size; } catch { return 0; }
+  // Attribute only files that actually live under THIS root — a multi-project install must not pour
+  // another project's hits into this project's warm-set.
+  const mine = [...r.learned].filter((f) => isUnder(f, root));
+  if (!mine.length) return 0;
+  try { recordQueryResults(root, mine); return mine.length; } catch { return 0; }
 }
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
@@ -308,13 +335,16 @@ function discoverReport(a = {}) {
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
   const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
-  const scope = all ? "all time" : `last ${since} day(s)`;
+  const scope = (all ? "all time" : `last ${since} day(s)`) + (a.projectPath ? `, scoped to ${a.projectPath}` : "");
   // Synergy B: feed the files those bypassed searches actually hit into the warm-set's query-history, so
   // prewarm front-loads them next time — vts learns from the greps it didn't run.
   let learnLine = "";
   if (learn && learned.size) {
-    try { recordQueryResults(learnRoot, [...learned]); learnLine = `\n  ✓ learned ${learned.size} file(s) into the warm-set for ${learnRoot} (prewarm will front-load them).`; }
-    catch { /* best-effort */ }
+    const mine = [...learned].filter((f) => isUnder(f, learnRoot)); // same attribution rule as autoLearn
+    if (mine.length) {
+      try { recordQueryResults(learnRoot, mine); learnLine = `\n  ✓ learned ${mine.length} file(s) into the warm-set for ${learnRoot} (prewarm will front-load them).`; }
+      catch { /* best-effort */ }
+    } else learnLine = `\n  (nothing to learn for ${learnRoot} — the harvested files live under other roots.)`;
   }
   // Synergy C: combine with the savings ledger → a catch-rate (caught vs still-bypassing).
   const caught = (() => { const s = readSavings(); return Math.max(0, (s.rawTok || 0) - (s.outTok || 0)); })();

@@ -536,6 +536,12 @@ generated automatically. The badge at the top always points at the latest. Highl
   `RunUBT.bat` directly throws EINVAL since the CVE-2024-27980 hardening, so the `.bat` path now runs
   through the shell. Verified end-to-end on a real Unreal depot: UBT in 112s, an ~18 MB DB, and the
   first semantic query returning 86 declarations at 93% token savings.
+- **v0.15.1** — `vts discover` measures honestly now. The since-window filters individual transcript
+  entries by their timestamp instead of whole files by mtime, so a long-running session's old misses
+  stop recounting every day (the live "last 1 day" numbers were ~4× inflated; the corrected catch-rate
+  read 97.4%, not 90.8%). Multi-project installs also stop bleeding into each other: `projectPath`
+  scopes the count to entries that ran under that root, harvested relative paths resolve against the
+  entry's own cwd, and learn/auto-learn attribute only files that live under the target root.
 
 ## Contributing
 
