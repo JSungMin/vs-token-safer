@@ -613,24 +613,29 @@ function fmtDocSymbols(syms, max, file) {
   const maxDepth = envInt("VTS_OUTLINE_DEPTH", 4);
   const rows = [];
   let dropped = 0;
-  const walk = (arr, parent, depth) => {
+  // Class-like containers whose members (properties/fields) ARE structure worth keeping. Under anything else
+  // (a function, a const/var holding an object literal) a kind-7 property is just a DATA key — `COMMANDS::git`,
+  // `STATUS::M`, `_internals::compactGit` — and floods the outline. Hide those; keep class members.
+  const CLASSLIKE = new Set([5, 10, 11, 23]); // class, enum, interface, struct
+  const walk = (arr, parent, depth, parentKind) => {
     for (const s of arr || []) {
-      // Noise only when NESTED: a synthetic callback / angle-name, or a var/const/key local (not a decl).
-      // Still DESCEND into a hidden node's children (passing the hidden node's PARENT) so a real
-      // declaration inside a filtered wrapper isn't orphaned — only the wrapper row is dropped.
-      if (!raw && depth > 0 && (OUTLINE_NOISE.test(s.name || "") || s.kind === 13 || s.kind === 14 || s.kind === 20)) {
+      // Noise only when NESTED: a synthetic callback / angle-name, a var/const/key local, or an object-literal
+      // property key (kind 7 under a non-class parent). Still DESCEND into a hidden node's children (passing
+      // the hidden node's PARENT) so a real declaration inside a filtered wrapper isn't orphaned.
+      const objKey = s.kind === 7 && !CLASSLIKE.has(parentKind);
+      if (!raw && depth > 0 && (OUTLINE_NOISE.test(s.name || "") || s.kind === 13 || s.kind === 14 || s.kind === 20 || objKey)) {
         dropped++;
-        if (s.children && depth < maxDepth) walk(s.children, parent, depth + 1);
+        if (s.children && depth < maxDepth) walk(s.children, parent, depth + 1, parentKind);
         continue;
       }
       const r = s.range || (s.location && s.location.range);
       const ln = r ? r.start.line + 1 : 1;
       const loc = s.location ? fromUri(s.location.uri).replace(/\\/g, "/") : file;
       rows.push(`${SYMBOL_KIND[s.kind] || `k${s.kind}`} ${parent ? parent + "::" : ""}${s.name}  @ ${loc}:${ln}`);
-      if (s.children && depth < maxDepth) walk(s.children, (parent ? parent + "::" : "") + s.name, depth + 1);
+      if (s.children && depth < maxDepth) walk(s.children, (parent ? parent + "::" : "") + s.name, depth + 1, s.kind);
     }
   };
-  walk(syms, "", 0);
+  walk(syms, "", 0, 0);
   const shown = rows.slice(0, max);
   const note = dropped && !raw ? ` (${dropped} local/anonymous hidden; VTS_OUTLINE_RAW=1 to show)` : "";
   return `${rows.length} symbol(s)${note}:\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
@@ -770,6 +775,11 @@ function toArgv(a) {
 // is read-only ONLY with -n, so it's forced to preview below.
 const GIT_READONLY = new Set(["status", "log", "diff", "show", "blame", "shortlog", "ls-files", "ls-tree", "describe", "rev-parse", "rev-list", "cat-file", "name-rev", "whatchanged", "reflog", "grep", "diff-tree", "cherry", "count-objects"]);
 const P4_READONLY = new Set(["opened", "status", "changes", "describe", "filelog", "fstat", "files", "print", "dirs", "diff", "diff2", "where", "info", "annotate", "sizes", "cstat", "reconcile", "have"]);
+// p4 (and occasionally git) write a "nothing here" message to STDERR and exit non-zero — e.g. `p4 opened`
+// with nothing open prints "File(s) not opened on this client." That's an EMPTY RESULT, not a failure;
+// surfacing it as an error is wrong. Recognize the benign shapes so the wrapper returns a clean result.
+const BENIGN_EMPTY = /not opened|no file\(s\)|no files? to|up-to-date|nothing (?:opened|to)|no such file|no changes/i;
+export const isBenignEmpty = (s) => !!s && BENIGN_EMPTY.test(String(s));
 
 // ---- single dispatcher (async) ----
 export async function runTool(name, a = {}) {
@@ -947,7 +957,10 @@ export async function runTool(name, a = {}) {
       const { out: stdout, err: stderr, code } = runExternal(bin, argv, root);
       const raw = stdout || stderr || "";
       if (!stdout && (code !== 0 || stderr)) {
-        // command failed (binary missing, not a repo/workspace, bad args) — surface stderr, capped with a
+        // A benign "nothing here" message (p4 writes these to stderr + nonzero) is an empty result, not a
+        // failure — return it cleanly so the agent doesn't read an error where there's simply no work.
+        if (isBenignEmpty(stderr)) return finishOut("", `${bin} ${argv.join(" ")}: ${stderr.trim().slice(0, 200)}`);
+        // genuine failure (binary missing, not a repo/workspace, bad args) — surface stderr, capped with a
         // marker so a huge error isn't silently cut.
         const e = stderr || "no output";
         return err(`${bin} ${argv.join(" ")} failed (exit ${code}):\n${e.length > 1500 ? e.slice(0, 1500) + "\n…(stderr truncated)" : e}`);

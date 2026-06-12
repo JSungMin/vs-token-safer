@@ -147,8 +147,10 @@ const docSymOk =
   /realInner/.test(ds.text) &&                   // real decl inside a hidden wrapper NOT orphaned
   /func callback {2}@/.test(ds.text) &&          // top-level symbol named 'callback' kept (depth-0, not noise)
   !/map\(\) callback/.test(ds.text) && !/localTmp/.test(ds.text) && // anonymous + nested local hidden
+  !/noiseKey/.test(ds.text) &&                   // object-literal prop key (kind 7 under a func) hidden
+  /keepProp/.test(ds.text) && /Cls/.test(ds.text) && // but a class property (kind 7 under a class) is KEPT
   /local\/anonymous hidden/.test(ds.text) &&     // the hidden-count note
-  /map\(\) callback/.test(dsRaw.text) && /localTmp/.test(dsRaw.text); // VTS_OUTLINE_RAW=1 shows everything
+  /map\(\) callback/.test(dsRaw.text) && /localTmp/.test(dsRaw.text) && /noiseKey/.test(dsRaw.text); // RAW shows all
 const tdir = path.join(os.tmpdir(), `vts-files-${process.pid}`);
 fs.mkdirSync(tdir, { recursive: true });
 fs.writeFileSync(path.join(tdir, "Widget.cpp"), "int NEEDLE_TOKEN = 1;\n");
@@ -811,7 +813,11 @@ const p4ch = compactP4("changes", "Change 42 on 2026/01/02 by alice@ws *pending*
 const p4ChangesOk = /42 2026\/01\/02 alice@ws \*pending\* rework combat/.test(p4ch) && /41 .*bob@ws tidy/.test(p4ch);
 const dedupOut = compactGit("unknownsub", Array.from({ length: 10 }, (_, i) => `uline${i}`).join("\n"), 3);
 const dedupWordOk = /more unique line\(s\)/.test(dedupOut);
-const polishOk = gitCwdOk && p4ChangesOk && dedupWordOk;
+// benign empty-state stderr (p4 "File(s) not opened" + nonzero) is an empty result, not a failure.
+const { isBenignEmpty } = await import("../server/core.js");
+const benignOk = isBenignEmpty("File(s) not opened on this client.") && isBenignEmpty("No files to reconcile.") &&
+  !isBenignEmpty("fatal: not a git repository") && !isBenignEmpty("");
+const polishOk = gitCwdOk && p4ChangesOk && dedupWordOk && benignOk;
 
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
