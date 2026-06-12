@@ -546,6 +546,92 @@ const svTool = await runTool("vts_savings", {});
 const perToolOk = !svTool.isError && /by tool: .*search_symbol ~[\d,]+ \(\d+\)/.test(svTool.text);
 const round2Ok = lspTeeOk && perToolOk;
 
+// 34) VCS-ignore guard: a generated compile DB must never reach git/p4. git work tree → .gitignore gains
+// compile_commands.json + .cache/ (and `git check-ignore` then passes); an existing .p4ignore is appended;
+// both are idempotent (second run adds nothing).
+const { ensureDbIgnored } = await import("../server/core.js");
+const gitDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-gitign`);
+fs.mkdirSync(gitDir, { recursive: true });
+spawnSync("git", ["-C", gitDir, "init", "-q"], { encoding: "utf8" });
+const gNotes = ensureDbIgnored(gitDir);
+const giTxt = (() => { try { return fs.readFileSync(path.join(gitDir, ".gitignore"), "utf8"); } catch { return ""; } })();
+const gCheck = spawnSync("git", ["-C", gitDir, "check-ignore", "-q", "compile_commands.json"], { encoding: "utf8" });
+const gAgain = ensureDbIgnored(gitDir); // second run → already ignored, no duplicate append
+const giTxt2 = (() => { try { return fs.readFileSync(path.join(gitDir, ".gitignore"), "utf8"); } catch { return ""; } })();
+const gitIgnOk =
+  gNotes.some((n) => /git: added/.test(n)) &&
+  giTxt.includes("compile_commands.json") && giTxt.includes(".cache/") &&
+  gCheck.status === 0 &&
+  gAgain.some((n) => /already ignored/.test(n)) && giTxt2 === giTxt;
+// p4: the ignore file usually lives at the DEPOT root (the live UE test had it two levels above the
+// game dir) — ensureDbIgnored must walk UP from the project root to find it.
+const p4Dir = path.join(os.tmpdir(), `vts-eval-${process.pid}-p4ign`);
+const p4Proj = path.join(p4Dir, "Game", "Sub"); // .p4ignore at p4Dir; project two levels below
+fs.mkdirSync(p4Proj, { recursive: true });
+fs.writeFileSync(path.join(p4Dir, ".p4ignore"), "Intermediate/\n");
+const pNotes = ensureDbIgnored(p4Proj);
+const p4Txt = fs.readFileSync(path.join(p4Dir, ".p4ignore"), "utf8");
+const p4IgnOk = pNotes.some((n) => /p4: added/.test(n)) && p4Txt.includes("compile_commands.json") && p4Txt.includes("Intermediate/");
+for (const d of [gitDir, p4Dir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const vcsGuardOk = gitIgnOk && p4IgnOk;
+
+// 35) gen-compile-db APPLY end-to-end (the path the live UE test caught: Node refuses to spawn a .bat
+// directly — EINVAL — so Windows must go through the shell). A synthetic RunUBT writes the DB at the
+// ENGINE root; apply must run it, copy the DB to the project root, REMOVE the engine-root copy, and
+// run the VCS guard (the project dir is a git repo here → .gitignore note).
+const ueRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-ueapply`);
+const ueGame = path.join(ueRoot, "Game");
+fs.mkdirSync(path.join(ueRoot, "Engine", "Build", "BatchFiles"), { recursive: true });
+fs.mkdirSync(ueGame, { recursive: true });
+fs.writeFileSync(path.join(ueGame, "MyGame.uproject"), "{}");
+if (process.platform === "win32") {
+  fs.writeFileSync(path.join(ueRoot, "Engine", "Build", "BatchFiles", "RunUBT.bat"), '@echo []>"%~dp0..\\..\\..\\compile_commands.json"\r\n');
+} else {
+  const sh = path.join(ueRoot, "Engine", "Build", "BatchFiles", "RunUBT.sh");
+  fs.writeFileSync(sh, '#!/bin/sh\necho "[]" > "$(dirname "$0")/../../../compile_commands.json"\n');
+  fs.chmodSync(sh, 0o755);
+}
+spawnSync("git", ["-C", ueGame, "init", "-q"], { encoding: "utf8" });
+// Default apply = OUT-OF-TREE: the DB lands under VTS_DB_DIR/<slug>, the source tree stays clean (no
+// project-root DB, no .gitignore churn), clangd's --compile-commands-dir points at the out-of-tree dir,
+// and hasCompileDb sees it (advisory suppressed).
+const DBH = path.join(os.tmpdir(), `vts-eval-${process.pid}-dbhome`);
+process.env.VTS_DB_DIR = DBH;
+const { dbDirFor, resolveCdbDir } = await import("../server/backends/index.js");
+const applied = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true });
+const outDir = dbDirFor(ueGame);
+const { hasCompileDb: hasDb2 } = await import("../server/core.js");
+const applyOutOk =
+  !applied.isError && /Generated compile_commands\.json/.test(applied.text) &&
+  fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // landed out of tree
+  !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // source tree untouched
+  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // no ignore churn needed
+  !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
+  /OUTSIDE the source tree/.test(applied.text) &&
+  resolveCdbDir(ueGame) === outDir &&                                  // clangd resolves the out-of-tree home
+  (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for this one check
+    const saved = process.env.VTS_CLANGD_ARGS; delete process.env.VTS_CLANGD_ARGS;
+    const ok = BACKENDS.clangd.args(ueGame).some((x) => x === `--compile-commands-dir=${outDir}`);
+    process.env.VTS_CLANGD_ARGS = saved; return ok;
+  })() &&
+  hasDb2(ueGame);                                                      // advisory suppressed
+// inTree=true keeps the classic layout, protected by the VCS-ignore guard.
+fs.rmSync(path.join(outDir, "compile_commands.json"), { force: true }); // so resolveCdbDir prefers in-tree cleanly
+fs.writeFileSync(path.join(ueRoot, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh"),
+  process.platform === "win32" ? '@echo []>"%~dp0..\\..\\..\\compile_commands.json"\r\n' : '#!/bin/sh\necho "[]" > "$(dirname "$0")/../../../compile_commands.json"\n');
+if (process.platform !== "win32") fs.chmodSync(path.join(ueRoot, "Engine", "Build", "BatchFiles", "RunUBT.sh"), 0o755);
+const appliedIn = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true, inTree: true });
+const applyInOk =
+  !appliedIn.isError &&
+  fs.existsSync(path.join(ueGame, "compile_commands.json")) &&        // classic project-root layout
+  !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&
+  /Engine-root copy removed/.test(appliedIn.text) &&
+  /VCS guard: git: added/.test(appliedIn.text);                        // ignore appended in the git repo
+delete process.env.VTS_DB_DIR;
+const applyOk = applyOutOk && applyInOk;
+try { fs.rmSync(ueRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+try { fs.rmSync(DBH, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -588,6 +674,8 @@ const rows = [
   ["synergy A: search_symbol no-backend → text (no hard error)", symbolNoBackendOk, "true", symbolNoBackendOk],
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
   ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
+  ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
+  ["gen-compile-db apply: out-of-tree default + inTree guard", applyOk, "true", applyOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
