@@ -191,7 +191,7 @@ const TOOLS = [
   {
     name: "vts_discover",
     description: "Scan recent Claude Code transcripts (local, read-only) for code searches that BYPASSED vts — Bash grep/rg/find or the Grep tool aimed at source — and report the raw tokens they spent (the missed savings). Use to see where token-heavy text search is still slipping past vts.",
-    inputSchema: { type: "object", properties: { since: { type: "number", description: "Look back this many days (default 7)." }, all: { type: "boolean", description: "Scan all projects, all time (ignore the since window)." }, learn: { type: "boolean", description: "Feed the files those bypassed searches hit into the warm-set query-history (front-loads them in prewarm)." }, projectPath: { type: "string", description: "Root to attribute learned files to (default: configured projectPath or cwd)." } } },
+    inputSchema: { type: "object", properties: { since: { type: "number", description: "Look back this many days (default 7)." }, all: { type: "boolean", description: "Scan all projects, all time (ignore the since window)." }, learn: { type: "boolean", description: "Feed the files those bypassed searches hit into the warm-set query-history (front-loads them in prewarm). Only files under projectPath are attributed." }, projectPath: { type: "string", description: "Scope the scan to transcript entries that ran under this root, and attribute learned files to it (default for learn: configured projectPath or cwd)." } } },
   },
   {
     name: "vts_warmup",

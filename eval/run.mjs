@@ -477,31 +477,44 @@ try { fs.rmSync(teeDir, { recursive: true, force: true }); } catch { /* ignore *
 const projRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-claudeproj`);
 const projDir = path.join(projRoot, "G--some--project");
 fs.mkdirSync(projDir, { recursive: true });
+const learnRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-learnroot`);
+const otherRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-otherroot`);
+const NOW = new Date().toISOString();
+const OLD = new Date(Date.now() - 30 * 86400000).toISOString(); // 30 days ago → outside since:7
 const transcript = [
-  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "grep -rn SpawnActor src/Foo.cpp" } }] } },
-  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "src/Foo.cpp:1:SpawnActor\n".repeat(200) }] } },
-  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu2", name: "Grep", input: { pattern: "Tick", glob: "*.cpp" } }] } },
-  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "many matches\n".repeat(100) }] } },
-  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "grep Error Saved/Logs/run.log" } }] } }, // log → NOT counted
-  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu3", content: "log lines\n".repeat(50) }] } },
+  { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "grep -rn SpawnActor src/Foo.cpp" } }] } },
+  { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "src/Foo.cpp:1:SpawnActor\n".repeat(200) }] } },
+  { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu2", name: "Grep", input: { pattern: "Tick", glob: "*.cpp" } }] } },
+  { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "many matches\n".repeat(100) }] } },
+  { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu3", name: "Bash", input: { command: "grep Error Saved/Logs/run.log" } }] } }, // log → NOT counted
+  { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu3", content: "log lines\n".repeat(50) }] } },
   // quoted alternation — the naive splitter dissolved this into two non-matching halves and discover
   // MISSED it; the shared quote-aware splitter must count it as one bypassed grep.
-  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: 'grep -rn "QAlpha|QBeta" src/Quoted.cpp' } }] } },
-  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu4", content: "src/Quoted.cpp:3:QAlpha\n".repeat(40) }] } },
+  { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: 'grep -rn "QAlpha|QBeta" src/Quoted.cpp' } }] } },
+  { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu4", content: "src/Quoted.cpp:3:QAlpha\n".repeat(40) }] } },
+  // 30-day-old entry in a still-fresh transcript: counted by --all, EXCLUDED by the since window
+  // (entry-level timestamps — file mtime alone would recount this forever).
+  { type: "assistant", cwd: learnRoot, timestamp: OLD, message: { role: "assistant", content: [{ type: "tool_use", id: "tu5", name: "Bash", input: { command: "grep -rn STALEONE src/Old.cpp" } }] } },
+  { type: "user", cwd: learnRoot, timestamp: OLD, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu5", content: "src/Old.cpp:1:STALEONE\n".repeat(30) }] } },
+  // a DIFFERENT project's bypass: excluded whenever projectPath scopes the scan.
+  { type: "assistant", cwd: otherRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu6", name: "Bash", input: { command: "grep -rn OTHERGREP src/Other.cpp" } }] } },
+  { type: "user", cwd: otherRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu6", content: "src/Other.cpp:1:OTHERGREP\n".repeat(30) }] } },
 ].map((e) => JSON.stringify(e)).join("\n");
 fs.writeFileSync(path.join(projDir, "session.jsonl"), transcript);
 process.env.VTS_CLAUDE_PROJECTS = projRoot;
-const learnRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-learnroot`);
-const disc = await runTool("vts_discover", { all: true, learn: true, projectPath: learnRoot }); // synergy B+C
+const disc = await runTool("vts_discover", { all: true, learn: true, projectPath: learnRoot }); // synergy B+C, scoped
+const discSince = await runTool("vts_discover", { since: 7, projectPath: learnRoot }); // entry-level window
 delete process.env.VTS_CLAUDE_PROJECTS;
 const qhAfter = (() => { try { return fs.readFileSync(QH, "utf8"); } catch { return ""; } })();
 const discoverOk =
-  !disc.isError && /3 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep + quoted-pipe grep; NOT the log grep
-  /grep×2/.test(disc.text) && /Grep×1/.test(disc.text) &&
+  !disc.isError && /4 code search\(es\) bypassed vts/.test(disc.text) && // grep + Grep + quoted + stale; NOT the log grep
+  /grep×3/.test(disc.text) && /Grep×1/.test(disc.text) &&
   /SpawnActor/.test(disc.text) && /QAlpha\|QBeta/.test(disc.text) && // quote-aware: counted, not dissolved
+  !/OTHERGREP/.test(disc.text) && /scoped to/.test(disc.text) &&    // projectPath scope excludes the other root
   /catch-rate:/.test(disc.text) &&                  // synergy C: caught-vs-bypassing
   /learned \d+ file\(s\) into the warm-set/.test(disc.text) && // synergy B: learn line
-  /foo\.cpp/i.test(qhAfter);                        // src/Foo.cpp from the grep result → query-history
+  /foo\.cpp/i.test(qhAfter) && !/other\.cpp/i.test(qhAfter) && // attribution: learnRoot files only
+  !discSince.isError && /3 code search\(es\) bypassed vts/.test(discSince.text) && !/STALEONE/.test(discSince.text); // stale entry out of the window
 try { fs.rmSync(projRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 
 // 31) synergy A safety: search_symbol with NO backend resolved degrades to text (never a hard error), so
@@ -526,8 +539,8 @@ const nudgeOk =
 const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
 fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
 fs.writeFileSync(path.join(alRoot, "P--x", "s.jsonl"), [
-  { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "al1", name: "Bash", input: { command: "grep -rn Widget src/Gear.cpp" } }] } },
-  { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "al1", content: "src/Gear.cpp:7:Widget\n" }] } },
+  { type: "assistant", cwd: "/proj/alroot", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "tool_use", id: "al1", name: "Bash", input: { command: "grep -rn Widget src/Gear.cpp" } }] } },
+  { type: "user", cwd: "/proj/alroot", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "al1", content: "src/Gear.cpp:7:Widget\n" }] } },
 ].map((e) => JSON.stringify(e)).join("\n"));
 const { autoLearn } = await import("../server/core.js");
 process.env.VTS_CLAUDE_PROJECTS = alRoot;
