@@ -167,10 +167,11 @@ const TOOLS = [
   {
     name: "vts_git",
     description:
-      "Run a git command and return its output COMPACTED (token-capped) — for status/log/diff, which the " +
-      "language-server index can't help with but whose raw dump is verbose and repetitive. status groups " +
-      "by change-type + directory; log keeps one line per commit; diff collapses to a per-file +/- " +
-      "diffstat (no hunk bodies). Use instead of a raw `git status/log/diff` to save tokens.",
+      "Run a READ-ONLY git command and return its output COMPACTED (token-capped) — for status/log/diff, " +
+      "which the language-server index can't help with but whose raw dump is verbose and repetitive. status " +
+      "groups by change-type + directory; log keeps one line per commit; diff collapses to a per-file +/- " +
+      "diffstat (no hunk bodies). Mutating subcommands (commit/reset/checkout/clean/push/merge/rebase) are " +
+      "REFUSED — this only compacts output; run those directly. Use instead of a raw `git status/log/diff`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -184,9 +185,10 @@ const TOOLS = [
   {
     name: "vts_p4",
     description:
-      "Run a Perforce (p4) command and return its output COMPACTED (token-capped) — for opened/status/" +
-      "reconcile/changes, whose raw output is long and repetitive. Groups files by action + depot " +
-      "directory and caps the list. Use instead of a raw `p4 opened` etc. to save tokens.",
+      "Run a READ-ONLY Perforce (p4) command and return its output COMPACTED (token-capped) — for opened/" +
+      "status/reconcile/changes, whose raw output is long and repetitive. Groups files by action + depot " +
+      "directory and caps the list. `reconcile` is forced to preview (-n); mutating subcommands (submit/" +
+      "revert/edit/add/delete) are REFUSED — run those directly. Use instead of a raw `p4 opened` etc.",
     inputSchema: {
       type: "object",
       properties: {
