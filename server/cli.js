@@ -29,7 +29,13 @@ Commands:
   rename         Semantic rename across the project. Preview by default; --apply to write.
                  [--path <file> --line N --character N --newName <name> [--apply]]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
-  text           Raw text/regex search in code (token-capped). [--q <pattern> --projectPath <dir>]
+  text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
+                 --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
+                 --docs (no path/glob) widens the project sweep to README/docs/config text.
+  git            Run a git command and COMPACT its output (status/log/diff grouped+deduped+capped).
+                 Pass-through: 'vts git status -s', 'vts git log --oneline', 'vts git diff'.
+  p4             Run a Perforce command and COMPACT its output (opened/status/changes/reconcile).
+                 Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'.
   warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
   config         Show effective settings.
@@ -68,14 +74,16 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", files: "find_files", text: "search_text", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
 const name = COMMANDS[rawCmd] || (rawCmd.startsWith("vts_") || rawCmd.includes("_") ? rawCmd : null);
 if (!name) { console.error(`Unknown command: ${rawCmd}\n`); console.log(HELP); process.exit(2); }
 
-const args = parseArgs(rest);
+// git/p4 are pass-throughs: the entire tail is the VCS subcommand + flags (NOT vts --flags), so forward it
+// verbatim as argv. projectPath/maxResults come from env/config for these (the command runs in cwd).
+const args = (name === "vts_git" || name === "vts_p4") ? { argv: rest } : parseArgs(rest);
 try {
   const { text, isError } = await runTool(name, args);
   (isError ? process.stderr : process.stdout).write(text + "\n");
