@@ -40,19 +40,24 @@ function compactGitStatus(raw, max) {
     // porcelain: 2-char XY, space, path. Tolerate `-s` (same shape) and a leading marker.
     const xy = l.slice(0, 2);
     const key = (xy.trim()[0] || xy[0] || "?");
-    const p = l.slice(2).trim().replace(/^"|"$/g, "");
+    let p = l.slice(2).trim().replace(/^"|"$/g, "");
+    // Renames/copies render as `old -> new`; group + show the DESTINATION (the path that now exists).
+    if ((key === "R" || key === "C") && p.includes(" -> ")) p = p.split(" -> ").pop().replace(/^"|"$/g, "");
     if (!byCode.has(key)) byCode.set(key, []);
     byCode.get(key).push(p);
   }
   const out = [`${lines.length} change(s):`];
+  let shown = 0; // ONE shared listing budget across all groups (not per-group — that could dump ~max each)
   for (const [code, paths] of byCode) {
     const label = STATUS[code] || code;
     const dirs = new Map();
     for (const p of paths) dirs.set(topDir(p), (dirs.get(topDir(p)) || 0) + 1);
     const dirSummary = [...dirs].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([d, n]) => `${d}(${n})`).join(", ");
     out.push(`  ${label}: ${paths.length}  [${dirSummary}]`);
-    for (const p of paths.slice(0, Math.max(0, Math.min(paths.length, Math.floor(max / Math.max(byCode.size, 1)))))) out.push(`    ${p}`);
-    if (paths.length > Math.floor(max / Math.max(byCode.size, 1))) out.push(`    … +${paths.length - Math.floor(max / Math.max(byCode.size, 1))} more ${label}`);
+    const take = Math.min(paths.length, Math.max(0, max - shown));
+    for (const p of paths.slice(0, take)) out.push(`    ${p}`);
+    shown += take;
+    if (paths.length > take) out.push(`    … +${paths.length - take} more ${label}`);
   }
   return out.join("\n");
 }
@@ -86,8 +91,9 @@ function compactGitDiff(raw, max) {
   let cur = null;
   for (const l of lines) {
     const gm = l.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    if (gm) { cur = { file: gm[2], add: 0, del: 0 }; files.push(cur); continue; }
+    if (gm) { cur = { file: gm[2].replace(/^"|"$/g, ""), add: 0, del: 0, binary: false }; files.push(cur); continue; }
     if (!cur) continue;
+    if (/^Binary files /.test(l)) { cur.binary = true; continue; } // a changed binary, no +/- body to count
     if (l.startsWith("+++") || l.startsWith("---")) continue; // file headers, not content
     if (l.startsWith("+")) cur.add++;
     else if (l.startsWith("-")) cur.del++;
@@ -99,7 +105,7 @@ function compactGitDiff(raw, max) {
     return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more line(s).` : "");
   }
   const shown = files.slice(0, max);
-  const body = shown.map((f) => `  ${f.file} | +${f.add} -${f.del}`).join("\n");
+  const body = shown.map((f) => `  ${f.file} | ${f.binary ? "(binary)" : `+${f.add} -${f.del}`}`).join("\n");
   const totAdd = files.reduce((s, f) => s + f.add, 0), totDel = files.reduce((s, f) => s + f.del, 0);
   return `${files.length} file(s) changed, +${totAdd} -${totDel}:\n${body}` + (files.length > shown.length ? `\n… +${files.length - shown.length} more file(s).` : "");
 }

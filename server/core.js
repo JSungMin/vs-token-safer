@@ -660,6 +660,9 @@ function findFilesUnder(root, q, max) {
 }
 // Bounded, token-capped raw-text search (no LSP) — the sanctioned alternative to grep for strings/comments
 // /config keys the symbol index can't answer. Returns file:line: trimmed-line, capped in count and time.
+// Trim a match line for output and mark truncation (…) so a hit past col 200 in a long/minified line
+// isn't silently shown without its match — and the reader knows the line was cut.
+const trimMatchLine = (s) => { const t = String(s).trim(); return t.length > 200 ? t.slice(0, 200) + "…" : t; };
 // Doc/text extensions — the non-code text a grep over README/docs/config hits. Off by default (search_text
 // stays code-only per its contract); `docs=true` widens the sweep so a docs-grep can be compacted too.
 const DOC_EXTS = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|md|markdown|txt|json|ya?ml|toml|ini|cfg|conf|xml|html?|csv|rst|tex)$/i;
@@ -684,7 +687,7 @@ function scanTextUnder(root, q, max, accept) {
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
-      for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+      for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(lines[i])}`);
       if (out.length > max) break;
     }
     if (timedOut) break;
@@ -705,7 +708,7 @@ function scanTextFile(absPath, q, max) {
   const out = [];
   let txt; try { txt = fs.readFileSync(absPath, "utf8"); } catch { return out; }
   const lines = txt.split(/\r?\n/);
-  for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${absPath.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+  for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${absPath.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(lines[i])}`);
   if (out.length > max) { out.length = max; out.truncated = "cap"; }
   return out;
 }
@@ -739,7 +742,9 @@ function runExternal(bin, argv, root) {
     const out = execFileSync(bin, argv, {
       cwd: root, encoding: "utf8",
       timeout: envInt("VTS_EXTERNAL_TIMEOUT_MS", 20000),
-      maxBuffer: 64 * 1024 * 1024,
+      // A huge diff/log is exactly what compaction is for — don't let a big-but-valid output trip ENOBUFS
+      // and read as a failure. 256MB headroom (env-tunable); the compactor shrinks it after capture.
+      maxBuffer: envInt("VTS_EXTERNAL_MAXBUFFER", 256 * 1024 * 1024),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -758,6 +763,13 @@ function toArgv(a) {
   if (typeof a.sub === "string" && a.sub.trim()) return a.sub.trim().split(/\s+/);
   return [];
 }
+
+// vts_git/vts_p4 are COMPACTION wrappers for READ-ONLY commands — they must NOT become an arbitrary-VCS-
+// execution surface. Default-DENY: only these read-only subcommands run; anything else (commit/reset/
+// checkout/clean/push/merge/rebase, p4 submit/revert/edit/add/delete/sync-write) is refused. `p4 reconcile`
+// is read-only ONLY with -n, so it's forced to preview below.
+const GIT_READONLY = new Set(["status", "log", "diff", "show", "blame", "shortlog", "ls-files", "ls-tree", "describe", "rev-parse", "rev-list", "cat-file", "name-rev", "whatchanged", "reflog", "grep", "diff-tree", "cherry", "count-objects"]);
+const P4_READONLY = new Set(["opened", "status", "changes", "describe", "filelog", "fstat", "files", "print", "dirs", "diff", "diff2", "where", "info", "annotate", "sizes", "cstat", "reconcile", "have"]);
 
 // ---- single dispatcher (async) ----
 export async function runTool(name, a = {}) {
@@ -886,7 +898,11 @@ export async function runTool(name, a = {}) {
       const docs = a.docs === true || a.docs === "true";
       let runScan, scopeLabel;
       if (a.path) {
-        const abs = path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path));
+        const abs = path.resolve(path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path)));
+        // Confine the target to the project root — a `path=` outside it (absolute elsewhere, or ../ escape)
+        // would turn this "local file:line" tool into an arbitrary-file read. Reject it.
+        const rel = path.relative(path.resolve(root), abs);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) return err(`search_text path must be inside the project root (${root}). Refusing to read ${a.path}.`);
         runScan = (n) => scanTextFile(abs, String(a.q), n);
         scopeLabel = `in ${String(a.path)}`;
       } else if (a.glob) {
@@ -915,9 +931,17 @@ export async function runTool(name, a = {}) {
       const argv = toArgv(a);
       if (!argv.length) return err(`${bin} needs a subcommand (e.g. argv:["status"] or args:"status -s").`);
       const sub = String(argv[0]).toLowerCase();
+      // SAFETY: default-deny to read-only subcommands so the compaction wrapper can't run a mutating VCS op.
+      const allowed = bin === "git" ? GIT_READONLY : P4_READONLY;
+      if (!allowed.has(sub)) {
+        const mut = bin === "git" ? "commit/reset/checkout/clean/push/merge/rebase" : "submit/revert/edit/add/delete";
+        return err(`vts_${bin} runs READ-ONLY ${bin} subcommands only (it just compacts output) — "${sub}" is refused. Run mutating commands (${mut}) directly with ${bin}. Allowed: ${[...allowed].slice(0, 10).join(", ")}…`);
+      }
       // `git status` long-format is prose; compactGitStatus parses the porcelain `XY path` shape. Force it
       // (idempotent — leave an explicit -s/--short/--porcelain alone) so a plain `git status` compacts too.
       if (bin === "git" && sub === "status" && !argv.some((t) => /^(-s|--short|--porcelain)/.test(t))) argv.push("--porcelain");
+      // `p4 reconcile` MUTATES the workspace unless previewing — force -n so the wrapper is always read-only.
+      if (bin === "p4" && sub === "reconcile" && !argv.some((t) => t === "-n" || t === "--preview" || /^-[a-z]*n/i.test(t))) argv.push("-n");
       const { out: stdout, err: stderr, code } = runExternal(bin, argv, root);
       const raw = stdout || stderr || "";
       if (!stdout && (code !== 0 || stderr)) {
