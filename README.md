@@ -85,7 +85,7 @@ Want only the log analyzer? Install it alone: `/plugin install gamedev-log-analy
 | Task | Bash / raw | Plugin | Reduction |
 | --- | ---: | ---: | ---: |
 | Symbol search on a real UE5 repo (`FGameplayTag`) | ~282,194 tok | ~2,048 tok | **~99.3% (~138×)** |
-| Raw index response → capped list (eval, 1,000 symbols) | ~57,308 tok | ~1,515 tok | **~97.4%** |
+| Raw index response → capped list (eval, 1,000 symbols) | ~57,308 tok | ~1,549 tok | **~97.3%** |
 | Read a ~1 MB editor log (`summary`) | ~267,000 tok | ~130 tok | **~99.95%** |
 
 ### Using both together
@@ -112,6 +112,7 @@ instead of grep:
 | **Token-capping core** | `server/core.js` | `runTool()` shared by both adapters: turns LSP results into `kind name (in container) @ file:line`, caps at `maxResults`, appends a `… N more` footer. Never ranges, kinds, or source bodies. A truncated `find_files`/`search_text` writes the full set to a recovery (tee) file so nothing is silently dropped. |
 | **Savings + discover** | `server/core.js` | A local ledger records every search's tokens-saved (with a 30-day graph, daily/history, and an estimated value via `vts savings`). `vts discover` scans your recent Claude sessions for code searches that *bypassed* the index and reports the tokens they cost — so you can see the catch-rate, not just the wins. |
 | **Headless LSP client** | `server/lsp.js` + `server/backends/index.js` | A minimal, fully-owned LSP client (JSON-RPC 2.0, `Content-Length` framing) that spawns the official engine over stdio, plus the spawn configs, `pickBackend(root)` autodetect, and the IDE-style pre-warm (`afterInit`). |
+| **VCS output compaction** | `server/compact.js` | The index can't help with `git`/`p4` output, but the raw dump is verbose and repetitive. `vts_git` / `vts_p4` run a **read-only** command and group/dedup/cap the result (status by change-type + dir, log one line per commit, diff as a per-file diffstat, `p4 opened` by action + depot dir), recorded in the same savings ledger. Mutating subcommands are refused; the hook reroutes a plain `git status` / `p4 opened` here automatically. |
 
 > **Engine = official, glue = ours.** clangd (LLVM) and Roslyn (Microsoft) do the analysis; this repo
 > only writes the LSP↔MCP glue. No third-party MCP server runs over your source.
@@ -126,17 +127,21 @@ instead of grep:
 - `/vs-token-safer:setup` — configure the plugin (see [Setup](#setup--configuration-command)).
 - `/vs-token-safer:savings` — show cumulative token savings.
 - MCP tools (server `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `hover`,
-  `document_symbols`, `rename`, `find_files`, `search_text`, `vts_warmup`, `vts_setup`, `vts_config`,
-  `vts_savings`, `vts_savings_reset`, `vts_discover`. `find_files` and `search_text` are the token-capped
-  stand-ins for `find -name` and `grep` when you genuinely need a filename or raw text rather than a
-  symbol. `rename` is a semantic, project-wide rename: preview by default, `apply=true` to write the edits.
-  `vts_discover` finds code searches that bypassed the index (missed savings; `learn=true` feeds their
-  result files into the warm-up set).
+  `document_symbols`, `rename`, `find_files`, `search_text`, `vts_git`, `vts_p4`, `vts_warmup`, `vts_setup`,
+  `vts_config`, `vts_savings`, `vts_savings_reset`, `vts_discover`. `find_files` and `search_text` are the
+  token-capped stand-ins for `find -name` and `grep` when you genuinely need a filename or raw text rather
+  than a symbol — `search_text` can target one file (`path=`) or a glob (`glob=`, auto-including that
+  extension) or widen to docs (`docs=true`). `vts_git` / `vts_p4` run a **read-only** git/p4 command and
+  return its output compacted (grouped, deduped, capped) — `git status/log/diff`, `p4 opened/status/
+  changes`; mutating subcommands are refused. `rename` is a semantic, project-wide rename: preview by
+  default, `apply=true` to write the edits. `vts_discover` finds code searches that bypassed the index
+  (missed savings; `learn=true` feeds their result files into the warm-up set).
 - **Editing a symbol?** `find_references` takes the symbol NAME directly — `find_references symbol="FooBar"`
   returns every call site, no line/column needed. It's the one to reach for when you change a function or
   type and have to touch every use; grepping the name gives you comments and substrings, this gives you the
   semantic references. (A `path`+`line`+`character` position still works to pin an exact overload.)
-- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`,
+- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`
+  (`--path`/`--glob`/`--docs`), `git`, `p4` (compacted, read-only — e.g. `vts git status`, `vts p4 opened`),
   `warmup`, `setup`, `config`, `savings` (`--graph`/`--daily`/`--history`), `savings-reset`, `discover`
   (`--since N`/`--all`/`--learn`).
 - Or hand a whole "where is X / what calls Y / find file W" lookup to the `code-locator` subagent. It
@@ -167,7 +172,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,549 tok` = **97.3%** (41/41 checks).
+  raw index `~57,308 tok` → capped output `~1,549 tok` = **97.3%** (45/45 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -427,6 +432,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_ENFORCE` | `1` | `0`/`false`/`off` lets Bash code-grep through (escape hatch when the language server is unavailable). |
 | — | `VTS_REWRITE` | `1` | `0` makes the hook block a code-grep instead of rewriting it to a `vts` query. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt from rewrite/block (e.g. `rg,find`). Also `excludeCommands` in config.json. |
+| — | `VTS_COMPACT_VCS` | `1` | `0` stops the hook from rerouting a read-only `git status/log/diff` / `p4 opened/…` to the compacted `vts_git`/`vts_p4` wrapper. |
+| `lang` | `VTS_LANG` | auto | UI language for the hook's block/nudge/log messages: `ko` or `en`. Auto-detects Korean from the OS locale; `VTS_LANG` (or config `lang`) forces it. |
 | — | `VTS_TEE` | `truncate` | `truncate` writes the full result of a capped `find_files`/`search_text` to a recovery file; `off` disables it. Dir: `VTS_TEE_DIR`. |
 | — | `VTS_USD_PER_MTOK` | `3` | $/Mtok rate for the estimated-value line in `vts savings` / `discover`. Informational only. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts to scan. |
@@ -575,6 +582,27 @@ generated automatically. The badge at the top always points at the latest. Highl
   polls the still-loading index and returns the instant the symbol it's looking for appears (and a genuine
   miss on a fully-loaded index returns immediately). The cap dropped to 60s. On the same project the first
   query came back in ~70s with the symbol resolved.
+- **v0.17.0** — output compaction for the commands the index can't help with. New `vts_git` / `vts_p4`
+  tools run a read-only git/p4 command and hand back its output grouped, deduped, and capped: `git status`
+  by change-type and directory, `git log` one line per commit, `git diff` as a per-file `+/-` diffstat with
+  the hunk bodies dropped, `p4 opened` by action and depot directory. A noisy `git diff` or a 500-file
+  `p4 opened` collapses ~20–130×, and it lands in the same savings ledger. `search_text` also grows a
+  target: `path=<file>` / `glob=<pattern>` search a named file or glob and auto-include whatever extension
+  it is (so a `.md` just works), while `docs=true` widens a project-wide sweep to README/docs/config. The
+  grep-block hook reroutes a read-only `git status|log|diff` / `p4 opened|…` and a file-targeted text grep
+  to these, too.
+- **v0.17.1 – v0.17.4** — hardening, most of it found by critically reviewing and dogfooding that new
+  compaction surface. `vts_git` / `vts_p4` are pinned to a read-only subcommand allowlist — a mutating
+  `git reset` / `p4 submit` is refused, and `p4 reconcile` is forced to preview — and `search_text path=`
+  is confined to the project root so it can't read an arbitrary file. The savings ledger stops over-counting
+  string output and never records a negative run. Plus correctness: `git status` renames show the
+  destination path, a changed binary in `git diff` is marked `(binary)`, `vts_git`/`vts_p4` run in the
+  current directory, and the `document_symbols` outline drops object-literal keys (`COMMANDS::git`,
+  `STATUS::M`) that used to flood it — a real file's outline shrank from 34 symbols to 12.
+- **v0.18.0** — the grep-block / nudge / log-steer messages localize to **Korean** automatically when the
+  OS locale is `ko-*` (or `VTS_LANG` / config `lang` is `ko`; `VTS_LANG=en` forces English). The block copy
+  is also reworded to be reassuring and savings-positive — a red box is the hook saying "hold on," not a
+  failure, and it leads with the tokens you just saved.
 
 ## Contributing
 
