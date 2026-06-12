@@ -748,6 +748,20 @@ const vcsHookOk =
   /cli\.js" text --q "DOC_NEEDLE" --path "README\.md"/.test(hDocsGrep.updatedInput?.command || "") && // docs grep → targeted text
   hVcsOff.status === 0 && !/vts_git/.test(JSON.parse(hVcsOff.out || "{}").hookSpecificOutput?.updatedInput?.command || ""); // disabled → no VCS reroute
 
+// 41) savings-ledger accuracy (dogfood-found): (a) rawTokensOf measures a STRING raw verbatim (vts_git/
+// vts_p4 stdout — NOT via JSON.stringify, which escapes \n→\\n and over-reports savings) while an array/
+// object stays JSON (the forwarded-index baseline); (b) recordSavings floors to break-even so no tool ever
+// records NEGATIVE savings on a tiny result. The isolated ledger (SV) has accumulated every run above.
+const { rawTokensOf } = await import("../server/core.js");
+const strRaw = "line1\nline2\nline3\nline4\nline5";
+const savingsAccurateOk =
+  rawTokensOf(strRaw) === tok(strRaw) &&                       // string measured as-is
+  rawTokensOf(strRaw) < tok(JSON.stringify(strRaw)) &&         // JSON.stringify would have inflated it
+  rawTokensOf([{ name: "X", l: 1 }]) === tok(JSON.stringify([{ name: "X", l: 1 }])); // array → JSON baseline
+const svLedger = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")); } catch { return {}; } })();
+const noNegativeTool = Object.values(svLedger.tools || {}).every((t) => t.rawTok >= t.outTok);
+const savingsLedgerOk = savingsAccurateOk && noNegativeTool && (svLedger.rawTok || 0) >= (svLedger.outTok || 0);
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -797,6 +811,7 @@ const rows = [
   ["compact: git/p4 output grouped+deduped+capped (pure)", compactPureOk, "true", compactPureOk],
   ["vts_git live wrapper + search_text docs sweep", vcsToolsOk, "true", vcsToolsOk],
   ["hook: git/p4 reroute to vts wrapper (git grep stays code)", vcsHookOk, "true", vcsHookOk],
+  ["savings: string-raw not inflated + no negative tool (dogfood)", savingsLedgerOk, "true", savingsLedgerOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
