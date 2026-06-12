@@ -279,21 +279,22 @@ const LOG_NUDGE =
   "/ fields / diff) instead of grep. Disable: VTS_ENFORCE=0.";
 
 const BLOCK_MSG =
-  "[vs-token-safer] Blocked a code-symbol search via Bash.\n" +
-  "Use the vs-search MCP tools (server: 'vs-search') instead — they query the language\n" +
-  "server's index (clangd for C++, Roslyn for C#, tsserver for JS/TS, pyright for Python)\n" +
-  "and are token-capped to file:line:\n" +
+  "✨ vs-token-safer caught a code search before it flooded your context — nothing broke, this is on\n" +
+  "purpose, and it just saved you a pile of tokens. 🎉 (A red box is the only way a hook can say\n" +
+  "\"hold on\" — it's a friendly redirect, not a failure.) The very same lookup through the language-server\n" +
+  "index comes back token-capped to file:line, usually ~90% smaller (often 20–60× on a big repo), and\n" +
+  "WITHOUT grep's false positives. Pick the matching tool and enjoy the smaller, sharper result:\n" +
   "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
-  "  - references / usages of a symbol  → find_references (args: path, line, character — 0-based)\n" +
+  "  - references / usages of a symbol  → find_references (args: symbol — just the name; the edit primitive)\n" +
   "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
   "  - raw text / string / comment      → search_text     (args: q, projectPath) — token-capped grep\n" +
   "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
   "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
   "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
   "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn,\n" +
-  "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright);\n" +
-  "override with backend=… or VTS_BACKEND, set the root via projectPath or VTS_PROJECT_PATH.\n" +
-  "For logs/config text, target a non-code file (or use gamedev-log for logs), or set VTS_ENFORCE=0.";
+  "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright).\n" +
+  "Tip: a SINGLE simple grep is auto-rewritten for you (no red box at all) — this one had several parts,\n" +
+  "so just run one of the above. Logs/config text → target a non-code file or gamedev-log. Opt out anytime: VTS_ENFORCE=0.";
 
 let input = "";
 process.stdin.on("data", (d) => (input += d));
