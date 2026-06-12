@@ -103,10 +103,21 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - **No proprietary leak.** Never put real paths/symbols/company names in the repo or commits; sanitize;
   scan tree + git log before any push. Eval/docs use synthetic names only.
 - **Security/local-only.** No network calls; nothing transmitted. PRIVACY.md says so.
-- **Release/branch workflow.** Work accumulates on the **`dev`** integration branch; land via a single
-  **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge, then resync `dev` to `main`. Bump on
-  main + tag `v<x>` (`node scripts/bump.mjs <level>`, then commit + `git tag -a`); the `v*` tag publishes a
-  **GitHub Release** (release.yml). **No npm publish from this repo** — the gamedev-log-analyzer npm
+- **Release/branch workflow — gitflow.** Branches: **`main`** = production (tagged releases ONLY, always
+  shippable) · **`dev`** = develop/integration · **`feature/<slug>`** (off `dev`) · **`hotfix/<slug>`** (off
+  `main`) · optional **`release/<x.y>`** (stabilize before a big minor/major). **Bump level is decided by
+  Conventional-Commit type, NOT by batch size** (`node scripts/bump.mjs <major|minor|patch>`):
+  `feat:` → **minor** · `fix:`/`perf:`/`refactor:`/`docs:`/`chore:` → **patch** · `!`/BREAKING → **major**.
+  ONE release = ONE coherent theme — do NOT lump unrelated fixes into a minor.
+  - **Feature flow:** `feature/<slug>` off `dev` → squash-PR into `dev` → accumulate. When a theme is ready,
+    one **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge → on `main` bump **minor** (or major)
+    + `git tag -a v<x>` → push tag (release.yml publishes) → resync `dev` to `main`.
+  - **Hotfix flow (urgent prod fix — keeps minors clean):** `hotfix/<slug>` off **`main`** → PR into `main` →
+    bump **patch** + tag IMMEDIATELY (do NOT wait for / bundle into the next minor) → merge `main` back into
+    `dev`. A standalone non-urgent fix is still its OWN `fix:` patch PR, not a passenger on a feature minor.
+  - Every PR is green on CI (eval/lint/validate, Ubuntu+Windows) before merge; resyncing `dev` to `main` after
+    a squash needs `git push origin main:dev --force-with-lease` (ask before force-pushing the shared branch).
+  **No npm publish from this repo** — the gamedev-log-analyzer npm
   package is maintained in `../rider-mcp-enforcer`; the bundled copy here is a static mirror. To refresh it
   run **`node scripts/sync-gamedev.mjs`** — it mirrors the source AND bumps the `.claude-plugin/marketplace.json`
   gamedev entry to match (never hand-copy: `claude plugin validate . --strict` / CI `validate` fails if
