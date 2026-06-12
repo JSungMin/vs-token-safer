@@ -252,7 +252,7 @@ const rwOut = hCodeJson.hookSpecificOutput || {};
 const hookOk =
   hCode.status === 0 && rwOut.permissionDecision === "allow" &&
   /cli\.js" symbol --q "Foo"/.test(rwOut.updatedInput?.command || "") && // identifier → semantic vts symbol (synergy A)
-  hCodeBlock.status === 2 && /Blocked/.test(hCodeBlock.err) &&         // VTS_REWRITE=0 → block fallback
+  hCodeBlock.status === 2 && /caught a code search/.test(hCodeBlock.err) && // VTS_REWRITE=0 → block fallback
   hLog.status === 0 && /gamedev-log/.test(hLog.out) &&
   hGrep.status === 0 && /Grep tool/.test(hGrep.out) &&
   hGrepLog.status === 0 && /gamedev-log/.test(hGrepLog.out);
@@ -278,9 +278,9 @@ const rewriteOk =
   /cli\.js" text --q "Foo\.Bar"/.test(hDotted.updatedInput?.command || "") &&        // dotted literal → text
   /cli\.js" text --q "FooA\|FooB"/.test(hAlt.updatedInput?.command || "") &&         // quoted alternation → text (regex)
   /cli\.js" text --q "\^#include"/.test(hAnchor.updatedInput?.command || "") &&      // quoted anchor → text (regex)
-  hComplex.status === 2 && /Blocked/.test(hComplex.err) &&
+  hComplex.status === 2 && /caught a code search/.test(hComplex.err) &&
   hPipe.status === 2 &&
-  hExcluded.status === 0 && !/Blocked/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
+  hExcluded.status === 0 && !/caught a code search/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
 
 // 18) search_text covers JS/TS/Py (scanTextUnder ext set, not just C/C++/C#), and search_symbol on a
 // typescript/pyright backend falls back to a literal text search when the index returns nothing (a
