@@ -55,9 +55,15 @@ process.stdin.on("data", (d) => {
             { name: "realInner", kind: 12, range: rng, selectionRange: sel },
           ] },
           { name: "localTmp", kind: 13, range: rng, selectionRange: sel },
+          // object-literal property key (kind 7) under a FUNCTION → data, hidden by default.
+          { name: "noiseKey", kind: 7, range: rng, selectionRange: sel },
         ] },
         // a top-level symbol literally named "callback" — a real declaration, must be KEPT (depth-0).
         { name: "callback", kind: 12, range: rng, selectionRange: sel },
+        // a CLASS whose property (kind 7) IS structure → must be KEPT (parent is class-like).
+        { name: "Cls", kind: 5, range: rng, selectionRange: sel, children: [
+          { name: "keepProp", kind: 7, range: rng, selectionRange: sel },
+        ] },
       ] });
     } else if (msg.method === "textDocument/rename") {
       const uri = msg.params.textDocument.uri, p = msg.params.position;
