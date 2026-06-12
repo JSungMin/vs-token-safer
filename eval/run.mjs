@@ -666,6 +666,22 @@ const indexSeen = hasPersistedIndex(piDir);
 const persistedIndexOk = noIndexSeen === false && indexSeen === true;
 try { fs.rmSync(piDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 37) return-when-found: with a persisted index still loading, symbolReady RE-issues the query (backoff)
+// and returns the INSTANT the symbol's shard loads — not at a fixed deadline. A fake client returns empty
+// for the first 2 calls (still loading) then the symbol; the poll must catch it. persisted=false → one
+// call (no poll). Once indexLoaded flips, an empty result stops the poll immediately (genuine miss).
+const { symbolReady } = await import("../server/core.js");
+const mkClient = (results) => { let i = 0; return { indexLoaded: false, async symbol() { return results[Math.min(i++, results.length - 1)]; } }; };
+const found = await symbolReady(mkClient([[], [], [{ name: "Late" }]]), "Late", true, 20000); // empty,empty,hit
+const noPollRes = await symbolReady(mkClient([[], [{ name: "X" }]]), "X", false, 20000);       // persisted=false → one call → []
+const tGenuine = Date.now();
+const genuine = await symbolReady({ indexLoaded: true, async symbol() { return []; } }, "Nope", true, 20000);
+const genuineFast = Date.now() - tGenuine < 2000; // indexLoaded → returns at once, doesn't poll to the cap
+const returnWhenFoundOk =
+  found.length === 1 && found[0].name === "Late" &&   // polled until the symbol appeared
+  noPollRes.length === 0 &&                            // non-persisted → no polling
+  genuine.length === 0 && genuineFast;                 // indexLoaded → empty is genuine, returns immediately
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -711,6 +727,7 @@ const rows = [
   ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
   ["gen-compile-db apply: out-of-tree DB+index + inTree guard + perf flags", applyOk, "true", applyOk],
   ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
+  ["perf: return-when-found poll on a loading index", returnWhenFoundOk, "true", returnWhenFoundOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

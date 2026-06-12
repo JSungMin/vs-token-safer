@@ -150,8 +150,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
     **the killer**: afterInit waited for clangd's FULL background-index completion (`$/progress kind:end`,
     up to `VTS_LSP_INDEX_WAIT_MS`) before the first query — but workspace/symbol answers from the loaded
     static shards LONG before the full re-validation finishes. **Measured: 369s (full wait) vs 51s (static
-    index loaded) = 7×.** FIX: when persisted, cap the wait to `VTS_CLANGD_PERSISTED_WAIT_MS` (90s) instead
-    of full INDEX_WAIT; an early/empty return degrades to the literal text fallback (safe). clangd stores
+    index loaded) = 7×.** FIX: when persisted, afterInit no longer blocks — it returns after a short floor
+    (`VTS_CLANGD_PERSISTED_FLOOR_MS`, 3s) and flips `client.indexLoaded` on `$/progress end`; the QUERY then
+    POLLS (`symbolReady` in core.js: re-issue with backoff, capped `VTS_CLANGD_PERSISTED_WAIT_MS` 60s) and
+    returns the INSTANT the sought symbol's shard loads — not at a fixed deadline. Once `indexLoaded`, an
+    empty result is genuine (stop). Cold (no index) still BLOCKS on the build (a poll would just spin). Used
+    by search_symbol + find_references-by-name. clangd stores
     `.cache/clangd` at the **cdbDir** (it honors `--compile-commands-dir` as the index ROOT — live-verified:
     6166 shards under the out-of-tree dir, none in the source tree), so the out-of-tree layout keeps the
     index out of VCS too. Rider is fast because it proxies a RUNNING IDE; our MCP server keeps clangd alive
