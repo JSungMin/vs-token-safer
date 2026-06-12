@@ -385,6 +385,7 @@ Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | clangd warm-up이 첫 쿼리 전 백그라운드 인덱싱 완료를 기다리는 시간. |
 | — | `VTS_CLANGD_OPEN_CAP` | `100` | warm-up이 clangd 인덱스를 데우려 여는 파일 최대 수(persisted 인덱스 없는 cold 상태). |
 | — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | persisted `.cache/clangd` 인덱스가 있을 때 여는 파일 수 — clangd가 인덱스에서 답하므로 재파싱이 거의 불필요. |
+| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `90000` | persisted 인덱스가 있을 때 첫 쿼리 전에 static 샤드 로드를 기다리는 시간(full 백그라운드 재인덱싱 완료를 기다리는 대신 — 실제 UE 프로젝트에서 약 7배 차이). |
 | — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd 백그라운드 인덱싱 스레드 우선순위. 기본 `normal`은 빠르게 구축, `background`는 유휴 CPU만(느리지만 공용 머신에 양보). |
 | — | `VTS_CLANGD_JOBS` | `코어수-1` | clangd async/인덱스 워커 수(`-j`). |
 | — | `VTS_PREWARM` | on (`projectPath` 설정 시) | MCP 서버가 기동 시 인덱스 pre-warm(IDE식); `0`이면 비활성. |

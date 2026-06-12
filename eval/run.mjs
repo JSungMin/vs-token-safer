@@ -620,13 +620,12 @@ const { dbDirFor, resolveCdbDir } = await import("../server/backends/index.js");
 const applied = await runTool("vts_gen_compile_db", { projectPath: ueGame, apply: true });
 const outDir = dbDirFor(ueGame);
 const { hasCompileDb: hasDb2 } = await import("../server/core.js");
-const dbGitignore = (() => { try { return fs.readFileSync(path.join(ueGame, ".gitignore"), "utf8"); } catch { return ""; } })();
 const applyOutOk =
   !applied.isError && /Generated compile_commands\.json/.test(applied.text) &&
   fs.existsSync(path.join(outDir, "compile_commands.json")) &&        // DB landed out of tree
   !fs.existsSync(path.join(ueGame, "compile_commands.json")) &&       // no DB in the source tree
-  /OUTSIDE the source tree/.test(applied.text) &&
-  dbGitignore.includes(".cache/") && !dbGitignore.includes("compile_commands.json") && // .cache/ ignored in-tree; DB not (it's out-of-tree)
+  !fs.existsSync(path.join(ueGame, ".gitignore")) &&                  // clangd's index is out-of-tree too → nothing to ignore in-tree
+  /both live OUTSIDE the source tree/.test(applied.text) &&
   !fs.existsSync(path.join(ueRoot, "compile_commands.json")) &&       // engine-root copy removed
   resolveCdbDir(ueGame) === outDir &&                                  // clangd resolves the out-of-tree home
   (() => { // the eval-global VTS_CLANGD_ARGS (mock) short-circuits args(); clear it for these checks
@@ -710,7 +709,7 @@ const rows = [
   ["self-improve: concrete grep nudge + boot auto-learn", selfImproveOk, "true", selfImproveOk],
   ["round-2: LSP-cap tee + per-tool savings", round2Ok, "true", round2Ok],
   ["VCS guard: compile DB git/p4-ignored (idempotent)", vcsGuardOk, "true", vcsGuardOk],
-  ["gen-compile-db apply: out-of-tree DB + in-tree .cache ignored + perf flags", applyOk, "true", applyOk],
+  ["gen-compile-db apply: out-of-tree DB+index + inTree guard + perf flags", applyOk, "true", applyOk],
   ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);

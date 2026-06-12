@@ -103,11 +103,11 @@ const exists = (root, ...names) => names.some((n) => {
   try { return fs.existsSync(path.join(root, n)); } catch { return false; }
 });
 
-// --- out-of-tree compile-DB home: keep the generated compile_commands.json outside the source tree, so
-// the big generated JSON never shows up for git or `p4 reconcile`. One dir per project root under
-// ~/.vs-token-safer/db/ (VTS_DB_DIR overrides the base); clangd reads it via --compile-commands-dir.
-// (clangd's .cache/clangd index is NOT here — clangd has no flag to relocate it and persists it in-tree;
-// it's VCS-ignored instead, and kept there so warm queries reuse it.) ---
+// --- out-of-tree compile-DB home: keep generated artifacts outside the source tree, so neither the DB
+// nor clangd's index shows up for git or `p4 reconcile`. One dir per project root under ~/.vs-token-safer/db/
+// (VTS_DB_DIR overrides the base); clangd reads the DB via --compile-commands-dir AND writes its
+// `.cache/clangd` index there too — it honors --compile-commands-dir as the index root (live-verified:
+// 6166 shards landed under this dir, none in the source tree), so the whole artifact set stays out. ---
 export function dbDirFor(root) {
   const base = env("VTS_DB_DIR", path.join(os.homedir(), ".vs-token-safer", "db"));
   const norm = path.resolve(root).replace(/\\/g, "/").toLowerCase();
@@ -216,12 +216,19 @@ export const BACKENDS = {
       const open = orderForWarm(root, [...new Set([...files, ...extra])], cap);
       for (const f of open) client.didOpen(f, "cpp");
       if (open.length) {
-        // On a huge tree (e.g. a cold UE-scale index) the dynamic index isn't ready when the first
-        // file's diagnostics fire, so waiting on diagnostics alone races the still-building index and
-        // the first query times out. Prefer clangd's background-index completion ($/progress kind:end),
-        // bounded by VTS_LSP_INDEX_WAIT_MS; fall back to diagnostics if the server emits no work-done
-        // progress (older clangd / a server without that capability).
-        const idxWait = envInt("VTS_LSP_INDEX_WAIT_MS", 120000);
+        // On a COLD tree (no persisted index) the dynamic index isn't ready when the first file's
+        // diagnostics fire, so we wait for clangd's background-index COMPLETION ($/progress kind:end),
+        // bounded by VTS_LSP_INDEX_WAIT_MS — the index must be built before the first query can answer.
+        //
+        // But when a PERSISTED index exists, workspace/symbol answers from the loaded static shards LONG
+        // before the full background RE-validation finishes. Waiting for kind:end then wastes minutes per
+        // spawn (measured on a real 26k-TU UE project: 369s for the full wait vs 51s once the static index
+        // had loaded — a 7× tax). So for the persisted case we cap the wait to VTS_CLANGD_PERSISTED_WAIT_MS
+        // (default 90s) — long enough to load the shards, short enough not to block on the re-index. If the
+        // query still comes back empty (slow box, shards not loaded yet), the search tools degrade to a
+        // literal text fallback, so an early return is safe.
+        const fullWait = envInt("VTS_LSP_INDEX_WAIT_MS", 120000);
+        const idxWait = persisted ? Math.min(fullWait, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 90000)) : fullWait;
         const indexed = await client.waitForNotification("$/progress", idxWait, (p) => p && p.value && p.value.kind === "end");
         // Fallback only for a server that emits no work-done progress (clangd always does). idxWait was
         // already spent above, so this is a short "did the first file parse?" check, not a second full wait.

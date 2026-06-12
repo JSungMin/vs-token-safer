@@ -736,7 +736,7 @@ export async function runTool(name, a = {}) {
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
       if (!apply) {
-        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, compile_commands.json lands OUTSIDE the source tree at ${dbDirFor(root)} (nothing for git/p4 to track) and the engine-root copy is removed. clangd's .cache/ index stays in-tree (clangd has no flag to move it; keeping it there lets warm queries reuse it) — it's VCS-ignored either way. Prefer the classic project-root layout for the DB too? Pass inTree=true.`);
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, compile_commands.json AND clangd's .cache/ index both land OUTSIDE the source tree at ${dbDirFor(root)} (clangd honors --compile-commands-dir as the index root) — nothing for git or p4 to track, and the engine-root copy is removed. Prefer the classic project-root layout? Pass inTree=true (then a VCS-ignore guard protects the in-tree DB + .cache).`);
       }
       if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
       try {
@@ -763,14 +763,19 @@ export async function runTool(name, a = {}) {
         } else if (fs.existsSync(dest)) where = dest;
         let cleanup = "";
         if (where && where !== atEngine && fs.existsSync(atEngine)) { try { fs.rmSync(atEngine); cleanup = " Engine-root copy removed."; } catch { /* leave it */ } }
-        // clangd ALWAYS writes its .cache/clangd background index IN the source tree (no flag relocates
-        // it) — and reusing that index across runs is what makes warm queries fast — so .cache/ is guarded
-        // in BOTH layouts. inTree also keeps compile_commands.json in the tree, so guard that too.
-        const ign = ensureDbIgnored(root, inTree ? DB_IGNORES : [".cache/"]);
-        const guard = ign.length ? ` VCS guard: ${ign.join(" ")}` : "";
-        const ignNote = inTree
-          ? `\ncompile_commands.json is at the project root; clangd's .cache/ index stays in-tree (reused for speed).${guard}${cleanup}`
-          : `\ncompile_commands.json lives OUTSIDE the source tree (${destDir}); clangd's .cache/ index stays in-tree (kept for warm-start speed, VCS-ignored).${guard}${cleanup}`;
+        // clangd stores its .cache/clangd background index next to the compile DB (it honors
+        // --compile-commands-dir as the index root — live-verified: 6166 shards landed under the
+        // out-of-tree dir, none in the source tree). So out-of-tree keeps BOTH the DB and the index out of
+        // the tree — nothing to guard. inTree puts both at the project root, so guard compile_commands.json
+        // + .cache/ there.
+        let ignNote;
+        if (inTree) {
+          const ign = ensureDbIgnored(root, DB_IGNORES);
+          const guard = ign.length ? ` VCS guard: ${ign.join(" ")}` : "";
+          ignNote = `\ncompile_commands.json + clangd's .cache/ index are at the project root.${guard}${cleanup}`;
+        } else {
+          ignNote = `\ncompile_commands.json and clangd's .cache/ index both live OUTSIDE the source tree (${destDir}) — nothing for git or p4 to track.${cleanup}`;
+        }
         return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.${ignNote}`);
       } catch (e) {
         return err(`UBT GenerateClangDatabase failed: ${e.message}\nRun it manually:\n  ${plan.cmdline}`);
