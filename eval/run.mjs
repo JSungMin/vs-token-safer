@@ -748,6 +748,48 @@ const vcsHookOk =
   /cli\.js" text --q "DOC_NEEDLE" --path "README\.md"/.test(hDocsGrep.updatedInput?.command || "") && // docs grep → targeted text
   hVcsOff.status === 0 && !/vts_git/.test(JSON.parse(hVcsOff.out || "{}").hookSpecificOutput?.updatedInput?.command || ""); // disabled → no VCS reroute
 
+// 41) savings-ledger accuracy (dogfood-found): (a) rawTokensOf measures a STRING raw verbatim (vts_git/
+// vts_p4 stdout — NOT via JSON.stringify, which escapes \n→\\n and over-reports savings) while an array/
+// object stays JSON (the forwarded-index baseline); (b) recordSavings floors to break-even so no tool ever
+// records NEGATIVE savings on a tiny result. The isolated ledger (SV) has accumulated every run above.
+const { rawTokensOf } = await import("../server/core.js");
+const strRaw = "line1\nline2\nline3\nline4\nline5";
+const savingsAccurateOk =
+  rawTokensOf(strRaw) === tok(strRaw) &&                       // string measured as-is
+  rawTokensOf(strRaw) < tok(JSON.stringify(strRaw)) &&         // JSON.stringify would have inflated it
+  rawTokensOf([{ name: "X", l: 1 }]) === tok(JSON.stringify([{ name: "X", l: 1 }])); // array → JSON baseline
+const svLedger = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")); } catch { return {}; } })();
+const noNegativeTool = Object.values(svLedger.tools || {}).every((t) => t.rawTok >= t.outTok);
+const savingsLedgerOk = savingsAccurateOk && noNegativeTool && (svLedger.rawTok || 0) >= (svLedger.outTok || 0);
+
+// 42) hardening (critic + live-QA driven): vts_git/vts_p4 read-only allowlist (a mutating subcommand is
+// refused BEFORE it runs), search_text path= confinement (no arbitrary-file read outside the root), and
+// compactor correctness — rename → destination only, shared status listing budget, binary-diff marker,
+// and the 200-char line-truncation marker.
+const gReset = await runTool("vts_git", { argv: ["reset", "--hard"], projectPath: os.tmpdir() }); // never runs git
+const allowlistOk = gReset.isError && /READ-ONLY/.test(gReset.text) && /refused/i.test(gReset.text);
+const gShow = await runTool("vts_git", { argv: ["status"], projectPath: process.cwd() }); // read-only → allowed (runs)
+const allowlistAllowsRO = !gShow.isError && /git status/.test(gShow.text);
+const outsideFile = path.join(os.tmpdir(), `vts-eval-${process.pid}-outside.txt`);
+fs.writeFileSync(outsideFile, "TRAVERSAL_SECRET\n");
+const ptRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-ptroot`); fs.mkdirSync(ptRoot, { recursive: true });
+const trav = await runTool("search_text", { q: "TRAVERSAL_SECRET", path: outsideFile, projectPath: ptRoot });
+const traversalOk = trav.isError && /inside the project root/.test(trav.text); // refused, file NOT read
+try { fs.rmSync(outsideFile, { force: true }); fs.rmSync(ptRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const renameOut = compactGit("status", "R  old/a.cpp -> new/b.cpp\n M src/x.cpp\n", 60);
+const renameParseOk = /renamed: 1/.test(renameOut) && /new\/b\.cpp/.test(renameOut) && !/old\/a\.cpp ->/.test(renameOut);
+const manyStatus = Array.from({ length: 10 }, (_, i) => ` M m/f${i}.cpp`).concat(Array.from({ length: 10 }, (_, i) => `?? u/g${i}.cpp`)).join("\n");
+const budgetOut = compactGit("status", manyStatus, 3);
+const budgetOk = (budgetOut.match(/^ {4}[^…\s]/gm) || []).length <= 3; // shared budget: ≤max path lines TOTAL
+const binOut = compactGit("diff", "diff --git a/img.png b/img.png\nindex 1..2 100644\nBinary files a/img.png and b/img.png differ\n", 60);
+const binaryOk = /img\.png \| \(binary\)/.test(binOut);
+const longDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-longline`); fs.mkdirSync(longDir, { recursive: true });
+fs.writeFileSync(path.join(longDir, "m.js"), "x".repeat(400) + "NEEDLE\n");
+const longRes = await runTool("search_text", { q: "NEEDLE", projectPath: longDir });
+const truncMarkOk = !longRes.isError && /…/.test(longRes.text);
+try { fs.rmSync(longDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const hardeningOk = allowlistOk && allowlistAllowsRO && traversalOk && renameParseOk && budgetOk && binaryOk && truncMarkOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -797,6 +839,8 @@ const rows = [
   ["compact: git/p4 output grouped+deduped+capped (pure)", compactPureOk, "true", compactPureOk],
   ["vts_git live wrapper + search_text docs sweep", vcsToolsOk, "true", vcsToolsOk],
   ["hook: git/p4 reroute to vts wrapper (git grep stays code)", vcsHookOk, "true", vcsHookOk],
+  ["savings: string-raw not inflated + no negative tool (dogfood)", savingsLedgerOk, "true", savingsLedgerOk],
+  ["hardening: ro-allowlist + path-confine + rename/binary/budget/trunc", hardeningOk, "true", hardeningOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
