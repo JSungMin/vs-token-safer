@@ -32,10 +32,11 @@ Commands:
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
                  --docs (no path/glob) widens the project sweep to README/docs/config text.
-  git            Run a git command and COMPACT its output (status/log/diff grouped+deduped+capped).
-                 Pass-through: 'vts git status -s', 'vts git log --oneline', 'vts git diff'.
-  p4             Run a Perforce command and COMPACT its output (opened/status/changes/reconcile).
-                 Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'.
+  git            Run a READ-ONLY git command and COMPACT its output (status/log/diff grouped+deduped+capped).
+                 Pass-through: 'vts git status -s', 'vts git log --oneline', 'vts git diff [--projectPath DIR]'.
+                 Mutating subcommands (commit/reset/checkout/push…) are refused — run git directly.
+  p4             Run a READ-ONLY Perforce command and COMPACT its output (opened/status/changes/reconcile -n).
+                 Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'. reconcile is forced to preview (-n).
   warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
   config         Show effective settings.
@@ -81,9 +82,21 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { co
 const name = COMMANDS[rawCmd] || (rawCmd.startsWith("vts_") || rawCmd.includes("_") ? rawCmd : null);
 if (!name) { console.error(`Unknown command: ${rawCmd}\n`); console.log(HELP); process.exit(2); }
 
-// git/p4 are pass-throughs: the entire tail is the VCS subcommand + flags (NOT vts --flags), so forward it
-// verbatim as argv. projectPath/maxResults come from env/config for these (the command runs in cwd).
-const args = (name === "vts_git" || name === "vts_p4") ? { argv: rest } : parseArgs(rest);
+// git/p4 are pass-throughs: the tail is the VCS subcommand + flags (NOT vts --flags), forwarded verbatim as
+// argv. The TWO vts flags `--projectPath`/`--maxResults` are lifted out first (so `vts git status
+// --projectPath X` targets X instead of handing git an unknown option); everything else goes to the command.
+let args;
+if (name === "vts_git" || name === "vts_p4") {
+  const argv = []; const extra = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--projectPath") { extra.projectPath = rest[++i]; continue; }
+    if (rest[i] === "--maxResults") { extra.maxResults = rest[++i]; continue; }
+    argv.push(rest[i]);
+  }
+  args = { argv, ...extra };
+} else {
+  args = parseArgs(rest);
+}
 try {
   const { text, isError } = await runTool(name, args);
   (isError ? process.stderr : process.stdout).write(text + "\n");
