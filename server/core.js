@@ -468,28 +468,31 @@ export function genCompileDbPlan(root, a = {}) {
   const q = (s) => (/\s/.test(s) ? `"${s}"` : s);
   return { uproject: upr, engineRoot, runUbt, args, cmdline: `"${runUbt}" ${args.map(q).join(" ")}` };
 }
-// --- VCS-ignore guard: a generated compile_commands.json (and clangd's .cache/ index dir) must never
-// reach git or Perforce. ensureDbIgnored(root) makes that true where it safely can, and says exactly
-// what to do where it can't. Exported for the eval. ---
+// --- VCS-ignore guard: generated clangd artifacts must never reach git or Perforce. clangd ALWAYS writes
+// its `.cache/clangd` background index IN the source tree (no flag relocates it), so `.cache/` is guarded
+// in BOTH layouts; compile_commands.json is only in-tree when inTree=true, so it's guarded only then.
+// ensureDbIgnored(root, patterns) appends where it safely can and says exactly what to do where it can't.
+// Exported for the eval. ---
 const DB_IGNORES = ["compile_commands.json", ".cache/"];
-export function ensureDbIgnored(root) {
+export function ensureDbIgnored(root, patterns = DB_IGNORES) {
   const notes = [];
-  // git: inside a work tree and the DB not ignored → append to the project-root .gitignore.
+  const probe = (patterns[0] || ".cache/").replace(/\/$/, ""); // a representative entry for check-ignore
+  // git: inside a work tree and the artifact not ignored → append to the project-root .gitignore.
   try {
     execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore", timeout: 5000 });
     let ignored = true;
-    try { execFileSync("git", ["-C", root, "check-ignore", "-q", "compile_commands.json"], { stdio: "ignore", timeout: 5000 }); }
+    try { execFileSync("git", ["-C", root, "check-ignore", "-q", probe], { stdio: "ignore", timeout: 5000 }); }
     catch { ignored = false; }
-    if (ignored) notes.push("git: compile_commands.json already ignored.");
+    if (ignored) notes.push(`git: ${probe} already ignored.`);
     else {
       const gi = path.join(root, ".gitignore");
       try {
         const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
         const have = cur.split(/\r?\n/).map((l) => l.trim());
-        const add = DB_IGNORES.filter((l) => !have.includes(l));
+        const add = patterns.filter((l) => !have.includes(l));
         if (add.length) fs.appendFileSync(gi, (cur && !cur.endsWith("\n") ? "\n" : "") + "# clangd compile DB + index (generated; never commit)\n" + add.join("\n") + "\n");
         notes.push(`git: added ${add.join(", ") || "(nothing — entries present)"} to ${gi}.`);
-      } catch (e) { notes.push(`git: could NOT update .gitignore (${e.code || e.message}) — add ${DB_IGNORES.join(" + ")} yourself.`); }
+      } catch (e) { notes.push(`git: could NOT update .gitignore (${e.code || e.message}) — add ${patterns.join(" + ")} yourself.`); }
     }
   } catch { /* not a git work tree */ }
   // Perforce: P4IGNORE names the ignore file(s); else the usual candidates. Only APPEND to an EXISTING
@@ -517,12 +520,12 @@ export function ensureDbIgnored(root) {
     try {
       const cur = fs.readFileSync(p4File, "utf8");
       const have = cur.split(/\r?\n/).map((l) => l.trim());
-      const add = DB_IGNORES.filter((l) => !have.includes(l) && !have.includes(l.replace(/\/$/, "")));
+      const add = patterns.filter((l) => !have.includes(l) && !have.includes(l.replace(/\/$/, "")));
       if (add.length) { fs.appendFileSync(p4File, (cur.endsWith("\n") || !cur ? "" : "\n") + add.join("\n") + "\n"); notes.push(`p4: added ${add.join(", ")} to ${p4File}.`); }
-      else notes.push(`p4: ${path.basename(p4File)} already covers the DB.`);
-    } catch (e) { notes.push(`p4: ${p4File} exists but isn't writable (${e.code || e.message}; versioned? \`p4 edit\` it first) — add ${DB_IGNORES.join(" + ")} yourself.`); }
+      else notes.push(`p4: ${path.basename(p4File)} already covers it.`);
+    } catch (e) { notes.push(`p4: ${p4File} exists but isn't writable (${e.code || e.message}; versioned? \`p4 edit\` it first) — add ${patterns.join(" + ")} yourself.`); }
   } else if (looksP4) {
-    notes.push(`p4: no ignore file found. p4 won't auto-add untracked files, but \`p4 reconcile\` WOULD pick the DB up — set P4IGNORE (e.g. a .p4ignore listing: ${DB_IGNORES.join(", ")}).`);
+    notes.push(`p4: no ignore file found. p4 won't auto-add untracked files, but \`p4 reconcile\` WOULD pick it up — set P4IGNORE (e.g. a .p4ignore listing: ${patterns.join(", ")}).`);
   }
   return notes;
 }
@@ -733,7 +736,7 @@ export async function runTool(name, a = {}) {
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
       if (!apply) {
-        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, the DB (and clangd's .cache/ index next to it) lands OUTSIDE the source tree at ${dbDirFor(root)} — nothing for git or p4 to track — and the engine-root copy is removed. Prefer the classic project-root layout? Pass inTree=true; the VCS-ignore guard (.gitignore / P4IGNORE append-or-instruct) then protects it.`);
+        return out(`compile_commands.json generation — DRY RUN (pass apply=true to run; takes minutes, needs the UE build env):\n  ${plan.cmdline}\n\nRun it here (apply=true) or in a terminal. On success clangd gains full semantic search_symbol/find_references/goto/hover; until then vts stays in no-DB text-fallback mode. Override via target/platform/config/compiler/engineRoot args or VTS_UE_ROOT.\nOn apply, compile_commands.json AND clangd's .cache/ index both land OUTSIDE the source tree at ${dbDirFor(root)} (clangd honors --compile-commands-dir as the index root) — nothing for git or p4 to track, and the engine-root copy is removed. Prefer the classic project-root layout? Pass inTree=true (then a VCS-ignore guard protects the in-tree DB + .cache).`);
       }
       if (!fs.existsSync(plan.runUbt)) return err(`RunUBT not found at ${plan.runUbt}. Check engineRoot / VTS_UE_ROOT.`);
       try {
@@ -760,12 +763,18 @@ export async function runTool(name, a = {}) {
         } else if (fs.existsSync(dest)) where = dest;
         let cleanup = "";
         if (where && where !== atEngine && fs.existsSync(atEngine)) { try { fs.rmSync(atEngine); cleanup = " Engine-root copy removed."; } catch { /* leave it */ } }
+        // clangd stores its .cache/clangd background index next to the compile DB (it honors
+        // --compile-commands-dir as the index root — live-verified: 6166 shards landed under the
+        // out-of-tree dir, none in the source tree). So out-of-tree keeps BOTH the DB and the index out of
+        // the tree — nothing to guard. inTree puts both at the project root, so guard compile_commands.json
+        // + .cache/ there.
         let ignNote;
         if (inTree) {
-          const ign = ensureDbIgnored(root);
-          ignNote = ign.length ? `\nVCS guard: ${ign.join(" ")}${cleanup}` : cleanup ? `\nVCS guard:${cleanup}` : "";
+          const ign = ensureDbIgnored(root, DB_IGNORES);
+          const guard = ign.length ? ` VCS guard: ${ign.join(" ")}` : "";
+          ignNote = `\ncompile_commands.json + clangd's .cache/ index are at the project root.${guard}${cleanup}`;
         } else {
-          ignNote = `\nArtifacts live OUTSIDE the source tree (${destDir}) — compile_commands.json and clangd's .cache/ index never touch git or p4.${cleanup}`;
+          ignNote = `\ncompile_commands.json and clangd's .cache/ index both live OUTSIDE the source tree (${destDir}) — nothing for git or p4 to track.${cleanup}`;
         }
         return out(`Generated compile_commands.json in ${Math.round((Date.now() - t0) / 1000)}s${where ? ` → ${where}` : " (locate compile_commands.json under the engine/project root)"}. clangd now has a full index — restart the MCP server (or re-run the query) so it's picked up.${ignNote}`);
       } catch (e) {
@@ -840,13 +849,46 @@ export async function runTool(name, a = {}) {
       return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {
-      if (!a.path || a.line == null || a.character == null) return err("find_references needs path, line, character (0-based position of the symbol).");
       const c = await getClient(root, backendName);
-      const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
+      // The code-modification primitive: when modifying a symbol you need every call site, but you start
+      // from a NAME, not a 0-based position. Accept `symbol` and resolve the declaration position via the
+      // index first (search_symbol → best match → its location), then find references there — so
+      // "where is FooBar used" is ONE call, not the locate→position→refs dance that pushes the model to grep.
+      let pos = null, originLabel = "";
+      if (a.symbol) {
+        const syms = (await c.symbol(String(a.symbol))) || [];
+        const want = String(a.symbol);
+        const wantPath = a.path ? String(a.path).replace(/\\/g, "/").toLowerCase() : null;
+        // exact-name matches first; if a path is given, prefer a match in that file (disambiguates overloads).
+        const ranked = syms.slice().sort((x, y) => {
+          const xe = x.name === want ? 0 : 1, ye = y.name === want ? 0 : 1;
+          if (xe !== ye) return xe - ye;
+          // endsWith (not includes) so a `path` of "Foo.cpp" doesn't match "BarFoo.cpp"
+          if (wantPath) { const xp = fromUri(x.location.uri).replace(/\\/g, "/").toLowerCase().endsWith(wantPath) ? 0 : 1, yp = fromUri(y.location.uri).replace(/\\/g, "/").toLowerCase().endsWith(wantPath) ? 0 : 1; if (xp !== yp) return xp - yp; }
+          return 0;
+        });
+        const pick = ranked[0];
+        if (!pick) {
+          // no indexed decl (ts/py open-files miss, clangd no-DB) → fall back to a literal usage scan so a
+          // code-modder still gets every textual hit, clearly labeled as text not semantic.
+          const hits = scanTextUnder(root, want, max);
+          if (hits.length) return finishOut(hits, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — literal usage matches instead (file:line of the name, not semantic references):\n` + hits.join("\n"));
+          return finishOut([], backendAdvisory(backendName, root) + `No declaration found for "${want}" (backend: ${backendName}).` + EMPTY_HINT);
+        }
+        const pp = fromUri(pick.location.uri);
+        pos = { path: pp, line: pick.location.range.start.line, character: pick.location.range.start.character };
+        c.didOpen(pp, langIdForPath(pp, backendName)); // ensure the resolved TU is open for the references query
+        originLabel = `"${want}" (${SYMBOL_KIND[pick.kind] || "sym"} @ ${locLine(pick.location.uri, pick.location.range)})`;
+      } else {
+        if (!a.path || a.line == null || a.character == null) return err("find_references needs `symbol` (a name — resolved via the index), or a `path` + `line` + `character` position (0-based). `path` may also accompany `symbol` to disambiguate an overload.");
+        pos = { path: a.path, line: Number(a.line), character: Number(a.character) };
+        originLabel = `${a.path}:${Number(a.line) + 1}`;
+      }
+      const locs = (await c.references(pos.path, pos.line, pos.character, a.includeDeclaration === true)) || [];
       const locList = (Array.isArray(locs) ? locs : [locs]).filter(Boolean);
       try { recordQueryResults(root, locList.map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      const refTee = teeOverflow("find_references", `${path.basename(String(a.path))}:${Number(a.line) + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
+      const refTee = teeOverflow("find_references", a.symbol ? String(a.symbol) : `${path.basename(String(pos.path))}:${pos.line + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");

@@ -132,6 +132,10 @@ instead of grep:
   symbol. `rename` is a semantic, project-wide rename: preview by default, `apply=true` to write the edits.
   `vts_discover` finds code searches that bypassed the index (missed savings; `learn=true` feeds their
   result files into the warm-up set).
+- **Editing a symbol?** `find_references` takes the symbol NAME directly — `find_references symbol="FooBar"`
+  returns every call site, no line/column needed. It's the one to reach for when you change a function or
+  type and have to touch every use; grepping the name gives you comments and substrings, this gives you the
+  semantic references. (A `path`+`line`+`character` position still works to pin an exact overload.)
 - CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`,
   `warmup`, `setup`, `config`, `savings` (`--graph`/`--daily`/`--history`), `savings-reset`, `discover`
   (`--since N`/`--all`/`--learn`).
@@ -393,7 +397,11 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | Max files the JS/TS / Python warm-up opens to prime the server. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large (e.g. UE) index. |
 | — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | How long the clangd warm-up waits for background-index completion before the first query. |
-| — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index. |
+| — | `VTS_CLANGD_OPEN_CAP` | `100` | Max files the warm-up opens to prime clangd's index (cold, no persisted index). |
+| — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | Open cap when a persisted `.cache/clangd` index exists — clangd answers from the index, so few files need re-parsing. |
+| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `90000` | With a persisted index, how long to let the static shards load before the first query (instead of waiting for the full background re-index — the difference was ~7× on a real UE project). |
+| — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd background-index thread priority. Default `normal` builds it fast; `background` is idle-CPU-only (slower, but a better citizen on a shared box). |
+| — | `VTS_CLANGD_JOBS` | `cores-1` | clangd async/index workers (`-j`). |
 | — | `VTS_PREWARM` | on (if `projectPath` set) | MCP server pre-warms the index at boot (IDE-style); set `0` to disable. |
 | — | `VTS_PREWARM_HOOK` | `0` | SessionStart hook also pre-warms via a detached `vts warmup` (opt-in; mainly CLI/non-MCP). |
 | — | `VTS_PREWARM_BACKENDS` | auto | Which backends to pre-warm. `auto` = the single detected/dominant one; `all` = every language present in the repo (each warmed in proportion to its file count); or a comma list like `clangd,typescript`. |
@@ -430,7 +438,7 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `/vs-token-safer:setup` not in autocomplete | Plugin not installed (only marketplace added), or stale | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. Check version with `/plugin`. |
-| First clangd query is very slow or times out | Cold UE-scale index; clangd is indexing engine headers | Pre-warm (`VTS_PREWARM` on, or run `vts warmup`); raise `VTS_LSP_TIMEOUT_MS` / `VTS_LSP_INDEX_WAIT_MS`. Keep the MCP server running so the index stays warm. |
+| First clangd query is very slow | Per-spawn clangd cost on a UE-scale tree: building the index cold, or (with a persisted index) waiting for clangd to re-validate it | Fixed the worst of it: the index builds at `normal` priority and persists next to the DB; with a persisted index the first query no longer waits for the FULL background re-index (it answers from the loaded shards — measured ~7× faster). The real fix for repeated use is to keep the **MCP server** running so clangd is spawned once and stays warm (the one-shot `vts` CLI re-pays the spawn cost each call). Tune `VTS_CLANGD_PERSISTED_WAIT_MS` / `VTS_LSP_INDEX_WAIT_MS` if the first query returns empty. |
 | clangd query never returns (hangs) on a real UE project | The clangd 19.1.x bundled with Visual Studio **deadlocks** on UE TUs | Install **clangd ≥ 22** and point `VTS_CLANGD_CMD` at it. vts prints a version advisory when it detects an old clangd. |
 | `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl; UBT validates a Clang toolchain | Add **`-Compiler=VisualCpp`** to the UBT command; the MSVC database still resolves the include graph. |
 | clangd resolves only header-free symbols | Compile DB has no include dirs → system/3rd-party headers don't resolve | Use a UBT-generated DB (it includes the paths); a hand-rolled `compile_commands.json` must list the include dirs. |
@@ -542,6 +550,14 @@ generated automatically. The badge at the top always points at the latest. Highl
   read 97.4%, not 90.8%). Multi-project installs also stop bleeding into each other: `projectPath`
   scopes the count to entries that ran under that root, harvested relative paths resolve against the
   entry's own cwd, and learn/auto-learn attribute only files that live under the target root.
+- **v0.16.0** — two things, both aimed at how you actually use this while editing. `find_references` now
+  takes a symbol NAME (`find_references symbol="FooBar"`) and resolves the declaration for you, so finding
+  every call site no longer needs a line/column — the step that used to push you back to grep. And clangd
+  is much faster to first answer on a big tree: it indexes at `normal` priority, skips re-opening 100 files
+  when a built index is already on disk, and — the big one — stops waiting for clangd's full background
+  re-index before the first query when a persisted index exists (it answers from the loaded shards). On a
+  real 26k-TU Unreal project the first semantic query dropped from ~369s to ~99s; keep the MCP server
+  running and the rest are warm.
 
 ## Contributing
 

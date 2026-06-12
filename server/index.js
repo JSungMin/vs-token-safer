@@ -38,13 +38,16 @@ const TOOLS = [
   {
     name: "find_references",
     description:
-      "Find references/usages of the symbol at a 0-based position (semantic, via the language server) — " +
-      "NOT a text grep. Returns a token-capped `file:line` list, no bodies. Use for refactors/renames " +
-      "where you must touch every call site.",
+      "Find every call site / usage of a symbol (semantic, via the language server) — NOT a text grep. " +
+      "THE tool to reach for when MODIFYING code: pass `symbol` (just the name, e.g. \"SpawnActor\") and it " +
+      "resolves the declaration and returns all references in one call — no need to know a line/column. " +
+      "(A 0-based path+line+character position also works, to disambiguate an overload.) Returns a " +
+      "token-capped `file:line` list, no bodies. Prefer this over grepping a name to find its uses.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Source file containing the symbol." },
+        symbol: { type: "string", description: "Symbol NAME to find references of — resolved via the index (no position needed). The usual way to find call sites when editing." },
+        path: { type: "string", description: "Source file containing the symbol (with line/character for an exact position; or alongside `symbol` to disambiguate an overload)." },
         line: { type: "number", description: "0-based line of the symbol position." },
         character: { type: "number", description: "0-based character/column of the symbol position." },
         includeDeclaration: { type: "boolean", description: "Include the declaration in the results." },
@@ -52,7 +55,6 @@ const TOOLS = [
         backend: { type: "string" },
         maxResults: { type: "number" },
       },
-      required: ["path", "line", "character"],
     },
   },
   {
