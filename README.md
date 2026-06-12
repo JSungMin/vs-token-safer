@@ -132,6 +132,10 @@ instead of grep:
   symbol. `rename` is a semantic, project-wide rename: preview by default, `apply=true` to write the edits.
   `vts_discover` finds code searches that bypassed the index (missed savings; `learn=true` feeds their
   result files into the warm-up set).
+- **Editing a symbol?** `find_references` takes the symbol NAME directly — `find_references symbol="FooBar"`
+  returns every call site, no line/column needed. It's the one to reach for when you change a function or
+  type and have to touch every use; grepping the name gives you comments and substrings, this gives you the
+  semantic references. (A `path`+`line`+`character` position still works to pin an exact overload.)
 - CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`,
   `warmup`, `setup`, `config`, `savings` (`--graph`/`--daily`/`--history`), `savings-reset`, `discover`
   (`--since N`/`--all`/`--learn`).

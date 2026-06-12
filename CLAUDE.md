@@ -38,8 +38,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
   shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.
 - `server/core.js` — `runTool()` dispatch, token-cap formatters, savings ledger. Tools: `search_symbol`,
-  `find_references`, `goto_definition`, `hover`, `document_symbols`, `rename` (LSP; rename = preview by
-  default, `apply=true` writes — the only mutating tool); `find_files`, `search_text`
+  `find_references` (accepts EITHER a 0-based `path`+`line`+`character` position OR a `symbol` NAME — the
+  code-modification primitive: by-name resolves the decl via `c.symbol` [exact-name-then-`path`-endsWith
+  ranking], `didOpen`s it, queries references at `location.range.start`; no indexed decl → `scanTextUnder`
+  literal-usage fallback. Discover showed name-driven usage hunts = the top bypass; this collapses the
+  locate→position→refs dance that pushed the model to grep), `goto_definition`, `hover`, `document_symbols`,
+  `rename` (LSP; rename = preview by default, `apply=true` writes — the only mutating tool); `find_files`,
+  `search_text`
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that

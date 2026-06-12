@@ -211,8 +211,14 @@ function grepNudgeFor(ti) {
   const pat = String(ti.pattern || "");
   let concrete = "";
   if (pat && pat.length <= 120 && !/[\r\n"]/.test(pat)) {
-    const tool = /^[A-Za-z_][A-Za-z0-9_]*$/.test(pat) ? "search_symbol" : "search_text";
-    concrete = ` Equivalent token-capped call: ${tool} q="${pat}"${tool === "search_symbol" ? " (semantic decls; search_text for every textual hit)" : ""}.`;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(pat)) {
+      // A bare identifier grepped while working code almost always means "where is this USED" (call
+      // sites for an edit) or "where is it DECLARED". Hand the model BOTH ready-to-use calls — the
+      // usage one is find_references by NAME (no position needed), the code-modification primitive.
+      concrete = ` Equivalent token-capped calls: find_references symbol="${pat}" (every call site — what you want when editing it), or search_symbol q="${pat}" (its declaration).`;
+    } else {
+      concrete = ` Equivalent token-capped call: search_text q="${pat}".`;
+    }
   }
   return (
     "[vs-token-safer] Code search via the Grep tool. For symbol / references / definition on ESTABLISHED " +

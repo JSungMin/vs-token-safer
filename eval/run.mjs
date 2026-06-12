@@ -44,9 +44,15 @@ const rawTok = tok(rawBig), outTok = tok(big.text);
 const capReduction = 1 - outTok / rawTok;
 const capped = /… 940 more/.test(big.text);
 
-// 4) references wiring.
+// 4) references wiring — by position AND by NAME. find_references({symbol}) resolves the declaration via
+// workspace/symbol (mock: "Spawn" → SpawnHandler @ Foo.cpp:42) then queries references there, so a
+// code-modder gets call sites from a NAME with no line/column. Omitting both errors.
 const r2 = await runTool("find_references", { path: "src/Foo.cpp", line: 41, character: 6, projectPath: process.cwd(), backend: "clangd" });
-const refOk = !r2.isError && /reference\(s\)/.test(r2.text);
+const r2name = await runTool("find_references", { symbol: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+const r2none = await runTool("find_references", { projectPath: process.cwd(), backend: "clangd" });
+const refOk = !r2.isError && /reference\(s\)/.test(r2.text) &&
+  !r2name.isError && /references of "Spawn"/.test(r2name.text) && /Foo\.cpp:42/.test(r2name.text) && /reference\(s\)/.test(r2name.text) &&
+  r2none.isError && /symbol/.test(r2none.text) && /path/.test(r2none.text); // "needs symbol … or path …"
 
 // 5) MCP=CLI parity: both go through runTool; the dispatch is the shared layer (smoke).
 const dispatchOk = lspOk && fmtOk && refOk;
@@ -534,7 +540,7 @@ const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOut
 const nIdent = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }));
 const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
 const nudgeOk =
-  /search_symbol q="Foo"/.test(nIdent) &&   // identifier → semantic suggestion
+  /find_references symbol="Foo"/.test(nIdent) && /search_symbol q="Foo"/.test(nIdent) && // identifier → usages + decl
   /search_text q="FooA\|FooB"/.test(nRegex); // regex → text suggestion
 const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
 fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });

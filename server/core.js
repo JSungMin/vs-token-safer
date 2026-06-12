@@ -840,13 +840,46 @@ export async function runTool(name, a = {}) {
       return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max));
     }
     if (name === "find_references") {
-      if (!a.path || a.line == null || a.character == null) return err("find_references needs path, line, character (0-based position of the symbol).");
       const c = await getClient(root, backendName);
-      const locs = (await c.references(a.path, Number(a.line), Number(a.character), a.includeDeclaration === true)) || [];
+      // The code-modification primitive: when modifying a symbol you need every call site, but you start
+      // from a NAME, not a 0-based position. Accept `symbol` and resolve the declaration position via the
+      // index first (search_symbol → best match → its location), then find references there — so
+      // "where is FooBar used" is ONE call, not the locate→position→refs dance that pushes the model to grep.
+      let pos = null, originLabel = "";
+      if (a.symbol) {
+        const syms = (await c.symbol(String(a.symbol))) || [];
+        const want = String(a.symbol);
+        const wantPath = a.path ? String(a.path).replace(/\\/g, "/").toLowerCase() : null;
+        // exact-name matches first; if a path is given, prefer a match in that file (disambiguates overloads).
+        const ranked = syms.slice().sort((x, y) => {
+          const xe = x.name === want ? 0 : 1, ye = y.name === want ? 0 : 1;
+          if (xe !== ye) return xe - ye;
+          // endsWith (not includes) so a `path` of "Foo.cpp" doesn't match "BarFoo.cpp"
+          if (wantPath) { const xp = fromUri(x.location.uri).replace(/\\/g, "/").toLowerCase().endsWith(wantPath) ? 0 : 1, yp = fromUri(y.location.uri).replace(/\\/g, "/").toLowerCase().endsWith(wantPath) ? 0 : 1; if (xp !== yp) return xp - yp; }
+          return 0;
+        });
+        const pick = ranked[0];
+        if (!pick) {
+          // no indexed decl (ts/py open-files miss, clangd no-DB) → fall back to a literal usage scan so a
+          // code-modder still gets every textual hit, clearly labeled as text not semantic.
+          const hits = scanTextUnder(root, want, max);
+          if (hits.length) return finishOut(hits, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — literal usage matches instead (file:line of the name, not semantic references):\n` + hits.join("\n"));
+          return finishOut([], backendAdvisory(backendName, root) + `No declaration found for "${want}" (backend: ${backendName}).` + EMPTY_HINT);
+        }
+        const pp = fromUri(pick.location.uri);
+        pos = { path: pp, line: pick.location.range.start.line, character: pick.location.range.start.character };
+        c.didOpen(pp, langIdForPath(pp, backendName)); // ensure the resolved TU is open for the references query
+        originLabel = `"${want}" (${SYMBOL_KIND[pick.kind] || "sym"} @ ${locLine(pick.location.uri, pick.location.range)})`;
+      } else {
+        if (!a.path || a.line == null || a.character == null) return err("find_references needs `symbol` (a name — resolved via the index), or a `path` + `line` + `character` position (0-based). `path` may also accompany `symbol` to disambiguate an overload.");
+        pos = { path: a.path, line: Number(a.line), character: Number(a.character) };
+        originLabel = `${a.path}:${Number(a.line) + 1}`;
+      }
+      const locs = (await c.references(pos.path, pos.line, pos.character, a.includeDeclaration === true)) || [];
       const locList = (Array.isArray(locs) ? locs : [locs]).filter(Boolean);
       try { recordQueryResults(root, locList.map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      const refTee = teeOverflow("find_references", `${path.basename(String(a.path))}:${Number(a.line) + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${a.path}:${Number(a.line) + 1} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
+      const refTee = teeOverflow("find_references", a.symbol ? String(a.symbol) : `${path.basename(String(pos.path))}:${pos.line + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
