@@ -6,7 +6,7 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 (`vts`). npm package + plugin name: `vs-token-safer`.
 
 ## First, orient (every session)
-1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (38/38) before you change anything.
+1. Read this file, then `node eval/run.mjs` — must print `EVAL PASSED` (41/41) before you change anything.
 2. Resume context lives in: this file · the wiki (`wiki_query "vs-token-safer"`, pages under
    `.omc/wiki/`) · memory anchor `project-vs-token-safer`. The wiki **Status and TODO** page is the
    live checklist.
@@ -45,7 +45,17 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   locate→position→refs dance that pushed the model to grep), `goto_definition`, `hover`, `document_symbols`,
   `rename` (LSP; rename = preview by default, `apply=true` writes — the only mutating tool); `find_files`,
   `search_text`
-  (filesystem — sanctioned `find`/`grep` replacements, no backend needed); `vts_warmup`, `vts_setup`,
+  (filesystem — sanctioned `find`/`grep` replacements, no backend needed; `search_text` TARGETING: `path=<file>`
+  searches one named file / `glob=<pat>` matching files — naming it AUTO-INCLUDES that extension (a `.md` etc),
+  no docs flag; `docs=true` (no path/glob) widens the project-wide sweep to README/docs/config exts — default
+  stays code-only. The grep-block hook reroutes a file-targeted text grep [`grep X README.md`] → `vts text
+  --path README.md` via `buildDocsGrepRewrite`, rewrite-only never blocks); `vts_git`,
+  `vts_p4` (OUTPUT COMPACTION, not index — run the real `git`/`p4` and group/dedup/cap the result via
+  `server/compact.js`: git status→by change-type+dir, log→one line/commit, diff→per-file +/- diffstat;
+  p4 opened/status/reconcile→by action+depot-dir, changes→terse. The rtk slice under our roof + ledger;
+  the grep-block hook reroutes a single read-only `git status|log|diff` / `p4 opened|status|changes|reconcile`
+  here via `buildVcsRewrite` — never blocks, `VTS_COMPACT_VCS=0` disables. `git grep` stays a CODE search.
+  CLI `vts git/p4` are full arg passthrough → run in cwd, no `--projectPath`); `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set).
@@ -57,6 +67,8 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   with discover) harvests bypassed-search result files into query-history — the self-improvement loop runs
   unattended every server start.
 - `agents/code-locator.md` — context-isolated locator subagent (delegates a lookup, returns only file:line).
+- `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`/`compactGrepLines`, string→string,
+  no spawn) for the `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic).
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
 - `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > working-now [`git status` /

@@ -14,6 +14,7 @@ import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
+import { compactGit, compactP4 } from "./compact.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -650,9 +651,15 @@ function findFilesUnder(root, q, max) {
 }
 // Bounded, token-capped raw-text search (no LSP) — the sanctioned alternative to grep for strings/comments
 // /config keys the symbol index can't answer. Returns file:line: trimmed-line, capped in count and time.
-function scanTextUnder(root, q, max) {
+// Doc/text extensions — the non-code text a grep over README/docs/config hits. Off by default (search_text
+// stays code-only per its contract); `docs=true` widens the sweep so a docs-grep can be compacted too.
+const DOC_EXTS = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|md|markdown|txt|json|ya?ml|toml|ini|cfg|conf|xml|html?|csv|rst|tex)$/i;
+function scanTextUnder(root, q, max, accept) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
-  const exts = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
+  // `accept` decides which files to read: a RegExp tested against the filename (the ext set — code by
+  // default, DOC_EXTS when docs=true), or a predicate function (a glob target). Default = code exts.
+  const CODE_EXTS = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
+  const ok = typeof accept === "function" ? accept : (name) => (accept || CODE_EXTS).test(name);
   // Collect up to max+1 (so "exactly max" isn't misreported as truncated); track whether the 4s time-box
   // actually aborted work (checked per directory and per file — the costly steps).
   const out = []; const stack = [root]; const t0 = Date.now(); let timedOut = false;
@@ -663,7 +670,7 @@ function scanTextUnder(root, q, max) {
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); continue; }
-      if (!exts.test(e.name)) continue;
+      if (!ok(e.name)) continue;
       if (Date.now() - t0 >= 4000) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
       if (!re.test(txt)) continue;
@@ -675,6 +682,22 @@ function scanTextUnder(root, q, max) {
   }
   if (out.length > max) { out.length = max; out.truncated = "cap"; }
   else if (timedOut) out.truncated = "time";
+  return out;
+}
+// Filename glob (* ?) → a predicate over basenames, for a TARGETED text search (`search_text glob=*.md`).
+// Naming the glob IS the opt-in to whatever extension it covers — no separate docs flag needed.
+function globAccept(glob) {
+  const re = new RegExp("^" + String(glob).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+  return (name) => re.test(name);
+}
+// Search ONE named file (any extension — the user named it, so its type is implied). file:line, capped.
+function scanTextFile(absPath, q, max) {
+  let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
+  const out = [];
+  let txt; try { txt = fs.readFileSync(absPath, "utf8"); } catch { return out; }
+  const lines = txt.split(/\r?\n/);
+  for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${absPath.replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+  if (out.length > max) { out.length = max; out.truncated = "cap"; }
   return out;
 }
 // A LSP WorkspaceEdit comes back as `changes: {uri: TextEdit[]}` and/or `documentChanges: [{textDocument,edits}]`.
@@ -696,6 +719,35 @@ function applyEditsToText(text, edits) {
   let out = text;
   for (const e of sorted) out = out.slice(0, off(e.range.start)) + e.newText + out.slice(off(e.range.end));
   return out;
+}
+
+// Run an external command (git / p4), capturing stdout even on a non-zero exit (git diff/status return
+// non-zero in some states but still print useful output). Pure best-effort: never throws — a missing
+// binary or a timeout comes back as { out:"", err, code }. The wrapper tools compact `out` before it
+// reaches the model; this is the only place vts_git/vts_p4 touch the shell.
+function runExternal(bin, argv, root) {
+  try {
+    const out = execFileSync(bin, argv, {
+      cwd: root, encoding: "utf8",
+      timeout: envInt("VTS_EXTERNAL_TIMEOUT_MS", 20000),
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    return { out: out || "", err: "", code: 0 };
+  } catch (e) {
+    return { out: e.stdout ? String(e.stdout) : "", err: e.stderr ? String(e.stderr) : String(e.message || e), code: e.status == null ? 1 : e.status };
+  }
+}
+// Normalize a wrapper tool's args into an argv array. Accepts an array (`argv`), a pre-split CLI tail, or a
+// single string (`args`) split on whitespace (quote-aware split is the hook's job; here a plain split is fine
+// because the hook hands us already-tokenized argv).
+function toArgv(a) {
+  if (Array.isArray(a.argv)) return a.argv.map(String);
+  if (Array.isArray(a.args)) return a.args.map(String);
+  if (typeof a.args === "string" && a.args.trim()) return a.args.trim().split(/\s+/);
+  if (typeof a.sub === "string" && a.sub.trim()) return a.sub.trim().split(/\s+/);
+  return [];
 }
 
 // ---- single dispatcher (async) ----
@@ -818,11 +870,54 @@ export async function runTool(name, a = {}) {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
       const root = a.projectPath || PROJECT_PATH || process.cwd();
       const max = Number(a.maxResults) || MAX_RESULTS;
-      const hits = scanTextUnder(root, String(a.q), max);
-      if (!hits.length) return finishOut([], `No text matches for "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
+      // Target selection — naming a file/glob auto-includes WHATEVER extension it is (no docs flag needed):
+      //   path=README.md  → search that one file (any ext)
+      //   glob=*.md       → search files matching the glob (any ext)
+      //   neither         → project-wide ext set: code-only by default, +docs/config when docs=true
+      const docs = a.docs === true || a.docs === "true";
+      let runScan, scopeLabel;
+      if (a.path) {
+        const abs = path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path));
+        runScan = (n) => scanTextFile(abs, String(a.q), n);
+        scopeLabel = `in ${String(a.path)}`;
+      } else if (a.glob) {
+        const acc = globAccept(String(a.glob));
+        runScan = (n) => scanTextUnder(root, String(a.q), n, acc);
+        scopeLabel = `glob ${String(a.glob)}`;
+      } else {
+        const ext = docs ? DOC_EXTS : undefined;
+        runScan = (n) => scanTextUnder(root, String(a.q), n, ext);
+        scopeLabel = docs ? "text+docs" : "text; for symbols prefer search_symbol";
+      }
+      const hits = runScan(max);
+      if (!hits.length) return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}.` + LOG_EMPTY_HINT);
       let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
-      if (hits.truncated) tt += teeNote("search_text", a.q, root, (n) => scanTextUnder(root, String(a.q), n));
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (text search; for symbols prefer search_symbol)${tt}:\n` + hits.join("\n"));
+      if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + hits.join("\n"));
+    }
+    // vts_git / vts_p4 — run the real VCS command and COMPACT its output before it reaches the model. The
+    // language-server index can't help here (status/log/diff/opened aren't source symbols), but the raw dump
+    // is verbose + repetitive — group/dedup/cap reclaims the tokens. The grep-block hook reroutes a plain
+    // `git status` / `p4 opened` here transparently; the savings ledger aggregates them per tool.
+    if (name === "vts_git" || name === "vts_p4") {
+      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const max = Number(a.maxResults) || MAX_RESULTS;
+      const bin = name === "vts_git" ? "git" : "p4";
+      const argv = toArgv(a);
+      if (!argv.length) return err(`${bin} needs a subcommand (e.g. argv:["status"] or args:"status -s").`);
+      const sub = String(argv[0]).toLowerCase();
+      // `git status` long-format is prose; compactGitStatus parses the porcelain `XY path` shape. Force it
+      // (idempotent — leave an explicit -s/--short/--porcelain alone) so a plain `git status` compacts too.
+      if (bin === "git" && sub === "status" && !argv.some((t) => /^(-s|--short|--porcelain)/.test(t))) argv.push("--porcelain");
+      const { out: stdout, err: stderr, code } = runExternal(bin, argv, root);
+      const raw = stdout || stderr || "";
+      if (!stdout && (code !== 0 || stderr)) {
+        // command failed (binary missing, not a repo/workspace, bad args) — surface stderr verbatim, no cap.
+        return err(`${bin} ${argv.join(" ")} failed (exit ${code}):\n${(stderr || "no output").slice(0, 1500)}`);
+      }
+      const compactFn = name === "vts_git" ? compactGit : compactP4;
+      const body = compactFn(sub, raw, max);
+      return finishOut(raw, `${bin} ${argv.join(" ")} (compacted):\n${body}`);
     }
 
     const root = a.projectPath || PROJECT_PATH || process.cwd();
