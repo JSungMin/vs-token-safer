@@ -34,6 +34,11 @@ export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", "
 const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok"];
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
+// The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
+// what the model would otherwise read, so measure it as-is; an ARRAY/OBJECT (an LSP index response that
+// would be forwarded as JSON) is measured as JSON. Measuring a string via JSON.stringify would inflate it
+// (every \n → \\n, plus quotes) and OVER-report savings — a dogfood-found ledger bug for the git/p4 wrappers.
+export const rawTokensOf = (rawObj) => tok(typeof rawObj === "string" ? rawObj : JSON.stringify(rawObj));
 // LSP SymbolKind → short label (kept terse for the token cap). Covers the full enum so JS/TS/Python
 // symbols (constants, properties, fields, enum members…) render with a name instead of a raw `kN`.
 const SYMBOL_KIND = {
@@ -92,6 +97,10 @@ const dayKey = (d = new Date()) => d.toISOString().slice(0, 10); // YYYY-MM-DD (
 // the model never has to ingest) — override with VTS_USD_PER_MTOK; purely informational.
 const USD_PER_MTOK = parseFloat(cfg("VTS_USD_PER_MTOK", "usdPerMtok", "3")) || 3;
 function recordSavings(rawTok, outTok, tool) {
+  // vts output is never genuinely larger than the raw alternative for the SAME query; a computed negative is
+  // an artifact of the JSON-of-already-capped-data baseline on tiny results. Floor to break-even so the
+  // ledger never shows a tool "costing" tokens (dogfood-found: search_text/find_files went slightly negative).
+  if (outTok > rawTok) outTok = rawTok;
   const s = readSavings();
   s.runs = (s.runs || 0) + 1;
   s.rawTok = (s.rawTok || 0) + rawTok;
@@ -755,7 +764,7 @@ export async function runTool(name, a = {}) {
   const out = (text) => ({ text, isError: false });
   const err = (text) => ({ text, isError: true });
   const finishOut = (rawObj, body) => {
-    const rawTok = tok(JSON.stringify(rawObj)), outTok = tok(body);
+    const rawTok = rawTokensOf(rawObj), outTok = tok(body);
     try { recordSavings(rawTok, outTok, name); } catch { /* best-effort */ }
     // One-time setup nudge if never configured; additive log steer if this call targets a log. Neither blocks.
     let pre = "";
