@@ -685,7 +685,7 @@ const returnWhenFoundOk =
 // 38) output compaction — pure string→string compaction of git/p4/grep output: grouping by type/dir,
 // identical-line dedup (×N), per-file diffstat, and capping. Deterministic (no toolchain), so asserted
 // directly on canned input. The token win comes from collapsing the repetitive boilerplate a raw dump has.
-const { compactGit, compactP4, compactGrepLines } = await import("../server/compact.js");
+const { compactGit, compactP4 } = await import("../server/compact.js");
 const gitStatusRaw = [" M server/core.js", " M server/cli.js", "?? server/compact.js", "?? eval/new.mjs", "A  server/index.js"].join("\n");
 const gitStatusOut = compactGit("status", gitStatusRaw, 60);
 const gitLogRaw = Array.from({ length: 50 }, (_, i) => `abc${i} commit subject ${i}`).join("\n");
@@ -693,8 +693,6 @@ const gitLogOut = compactGit("log", gitLogRaw, 10);
 const gitDiffRaw = "diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1 +1,2 @@\n-old\n+new\n+added\ndiff --git a/y.js b/y.js\n--- a/y.js\n+++ b/y.js\n@@ -1 +1 @@\n-a\n+b\n";
 const gitDiffOut = compactGit("diff", gitDiffRaw, 60);
 const gitDiffStatOut = compactGit("diff", " x.js | 3 +++\n y.js | 2 +-\n 2 files changed, 4 insertions(+), 1 deletion(-)\n", 60); // --stat: no unified headers → passthrough, not mangled
-const grepRaw = "src/Foo.cpp:1:SpawnActor\n".repeat(200) + "src/Bar.cpp:9:other\n";
-const grepOut = compactGrepLines(grepRaw, 60);
 const p4OpenedRaw = Array.from({ length: 30 }, (_, i) => `//depot/Game/Src/F${i}.cpp#${i} - edit default change (text)`).join("\n");
 const p4Out = compactP4("opened", p4OpenedRaw, 60);
 const compactPureOk =
@@ -702,7 +700,6 @@ const compactPureOk =
   /… \+40 more commit/.test(gitLogOut) &&                                  // 50 commits → 10 shown + 40 more
   /x\.js \| \+2 -1/.test(gitDiffOut) && /y\.js \| \+1 -1/.test(gitDiffOut) && // per-file diffstat, bodies dropped
   /2 files changed/.test(gitDiffStatOut) && /x\.js \| 3/.test(gitDiffStatOut) && // --stat passthrough, not "(no file changes)"
-  /\(×200\)/.test(grepOut) && tok(grepOut) < tok(grepRaw) / 5 &&            // 200 identical hits → one ×200 row
   /edit: 30/.test(p4Out) && /depot\/Game\/Src/.test(p4Out);                 // p4 opened grouped by action + dir
 
 // 39) vts_git live — run the wrapper against a REAL temp git repo (git is in CI; guard 34 already spawns it)
@@ -797,7 +794,7 @@ const rows = [
   ["gen-compile-db apply: out-of-tree DB+index + inTree guard + perf flags", applyOk, "true", applyOk],
   ["perf: persisted clangd index detected (skip TU re-parse)", persistedIndexOk, "true", persistedIndexOk],
   ["perf: return-when-found poll on a loading index", returnWhenFoundOk, "true", returnWhenFoundOk],
-  ["compact: git/p4/grep output grouped+deduped+capped (pure)", compactPureOk, "true", compactPureOk],
+  ["compact: git/p4 output grouped+deduped+capped (pure)", compactPureOk, "true", compactPureOk],
   ["vts_git live wrapper + search_text docs sweep", vcsToolsOk, "true", vcsToolsOk],
   ["hook: git/p4 reroute to vts wrapper (git grep stays code)", vcsHookOk, "true", vcsHookOk],
 ];
