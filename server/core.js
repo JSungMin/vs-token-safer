@@ -925,7 +925,9 @@ export async function runTool(name, a = {}) {
     // is verbose + repetitive — group/dedup/cap reclaims the tokens. The grep-block hook reroutes a plain
     // `git status` / `p4 opened` here transparently; the savings ledger aggregates them per tool.
     if (name === "vts_git" || name === "vts_p4") {
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      // git/p4 are cwd-relative — run where the user/agent IS, not the configured PROJECT_PATH (which would
+      // surprise: `vts git status` in repo B showing the configured repo A). Explicit projectPath still wins.
+      const root = a.projectPath || process.cwd();
       const max = Number(a.maxResults) || MAX_RESULTS;
       const bin = name === "vts_git" ? "git" : "p4";
       const argv = toArgv(a);
@@ -945,8 +947,10 @@ export async function runTool(name, a = {}) {
       const { out: stdout, err: stderr, code } = runExternal(bin, argv, root);
       const raw = stdout || stderr || "";
       if (!stdout && (code !== 0 || stderr)) {
-        // command failed (binary missing, not a repo/workspace, bad args) — surface stderr verbatim, no cap.
-        return err(`${bin} ${argv.join(" ")} failed (exit ${code}):\n${(stderr || "no output").slice(0, 1500)}`);
+        // command failed (binary missing, not a repo/workspace, bad args) — surface stderr, capped with a
+        // marker so a huge error isn't silently cut.
+        const e = stderr || "no output";
+        return err(`${bin} ${argv.join(" ")} failed (exit ${code}):\n${e.length > 1500 ? e.slice(0, 1500) + "\n…(stderr truncated)" : e}`);
       }
       const compactFn = name === "vts_git" ? compactGit : compactP4;
       const body = compactFn(sub, raw, max);
