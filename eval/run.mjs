@@ -22,6 +22,7 @@ const SV = path.join(os.tmpdir(), `vts-eval-sv-${process.pid}.json`); // isolate
 process.env.VTS_SAVINGS_FILE = SV;
 const TEE = path.join(os.tmpdir(), `vts-eval-tee-${process.pid}`); // isolate the tee dir
 process.env.VTS_TEE_DIR = TEE;
+process.env.VTS_LANG = "en"; // force English UI so message-marker assertions are deterministic regardless of OS locale
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -819,6 +820,16 @@ const benignOk = isBenignEmpty("File(s) not opened on this client.") && isBenign
   !isBenignEmpty("fatal: not a git repository") && !isBenignEmpty("");
 const polishOk = gitCwdOk && p4ChangesOk && dedupWordOk && benignOk;
 
+// 44) i18n: VTS_LANG=ko renders the block + Grep nudge in Korean; en stays English (forced en above keeps
+// every other assertion deterministic). A Korean user (ko-KR locale) auto-gets Korean.
+const hKoBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "ko" });
+const hKoNudge = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }, { VTS_LANG: "ko" }));
+const hEnBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "en" });
+const i18nOk =
+  hKoBlock.status === 2 && /코드 검색을 가로챘어요/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
+  /Grep 툴로 코드 검색/.test(hKoNudge) &&
+  hEnBlock.status === 2 && /caught a code search/.test(hEnBlock.err); // en explicit still English
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -871,6 +882,7 @@ const rows = [
   ["savings: string-raw not inflated + no negative tool (dogfood)", savingsLedgerOk, "true", savingsLedgerOk],
   ["hardening: ro-allowlist + path-confine + rename/binary/budget/trunc", hardeningOk, "true", hardeningOk],
   ["polish: git/p4 run in cwd + p4-changes parse + dedup wording", polishOk, "true", polishOk],
+  ["i18n: VTS_LANG=ko Korean block+nudge / en English", i18nOk, "true", i18nOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
