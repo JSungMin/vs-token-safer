@@ -319,7 +319,9 @@ when you need references and definitions resolved across the engine include grap
 Verify the `vs-search` MCP server and its tools appear, and that a `grep src/**/*.cpp` is blocked with a
 nudge toward the indexed tools (or runs freely under `VTS_ENFORCE=0`). The MCP server's one dependency
 (`@modelcontextprotocol/sdk`) installs automatically on the first session, into the plugin's data
-directory.
+directory. **Already had Claude Code open when you installed? Restart the session** — the MCP server only
+starts (and later, only picks up a new version) on a fresh session, not on `/reload-plugins` alone (see
+[Updating](#updating-to-a-new-version)).
 
 ### As a standalone CLI (no IDE, no Claude Code)
 
@@ -366,9 +368,19 @@ version of this plugin:
 /plugin update vs-token-safer
 #   fallback: /plugin uninstall vs-token-safer  then  /plugin install vs-token-safer@vs-token-safer
 
-# 3) Reload so the new hook/command/MCP server take effect (deps auto-reinstall on session start)
-/reload-plugins        # or restart Claude Code
+# 3) Reload the hooks/commands/skills
+/reload-plugins
+
+# 4) RESTART the Claude Code session — this step is REQUIRED, not optional.
+#    `/reload-plugins` reloads hooks/commands/skills, but the vs-search MCP server is a child process
+#    spawned ONCE at session start. It keeps running the OLD code until you restart, so the new
+#    plugin version's tools (search_symbol, find_references, …) won't actually change until you do.
 ```
+
+> ⚠️ **A new plugin version only takes full effect after a session restart.** `/reload-plugins` is not
+> enough on its own — the running `vs-search` MCP server process is not restarted by it, so it serves the
+> previous version's tool code until you quit and reopen Claude Code. Hooks/commands/skills update on
+> reload; the MCP server (and therefore every `search_*` / `find_*` tool) updates only on restart.
 
 Check what's installed with `/plugin` (it lists each plugin's version). If a command like
 `/vs-token-safer:setup` is missing, your installed copy predates it, so update as above.
