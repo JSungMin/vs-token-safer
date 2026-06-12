@@ -1,10 +1,11 @@
 /*
- * vs-token-safer — output compaction for commands the language-server index can't help with: a raw
- * `git`/`p4`/grep dump is verbose, repetitive, and mostly boilerplate. These PURE string→string functions
- * group, deduplicate, and cap that output before it reaches the model — the same token-first principle as
- * the symbol/reference formatters, applied to VCS + text-search output (the slice rtk covers, kept under
- * our roof, our cap, our savings ledger). No spawning here — the wrapper in core.js runs the command and
- * feeds the raw stdout in; eval exercises these directly with canned strings (deterministic, no toolchain).
+ * vs-token-safer — output compaction for VCS commands the language-server index can't help with: a raw
+ * `git`/`p4` dump is verbose, repetitive, and mostly boilerplate. These PURE string→string functions group,
+ * deduplicate, and cap that output before it reaches the model — the same token-first principle as the
+ * symbol/reference formatters, applied to VCS output (the slice rtk covers, kept under our roof, our cap,
+ * our savings ledger). No spawning here — the wrapper in core.js runs the command and feeds the raw stdout
+ * in; eval exercises these directly with canned strings (deterministic, no toolchain). (Text search is
+ * NOT here: grep reroutes to search_text, which scans + token-caps itself — no raw grep output to compact.)
  */
 
 const splitLines = (raw) => String(raw == null ? "" : raw).split(/\r?\n/);
@@ -27,42 +28,6 @@ const topDir = (p) => {
   const i = s.indexOf("/");
   return i === -1 ? "(root)" : s.slice(0, i);
 };
-
-// ---- grep / text-search output ----
-// Raw grep output (`path:line:content`, possibly with many identical hits) → grouped by file, identical
-// lines collapsed, capped. The biggest win is a pattern that matches the same boilerplate hundreds of times.
-export function compactGrepLines(raw, max = 60) {
-  const lines = nonEmpty(raw);
-  if (!lines.length) return "(no matches)";
-  // Group by the leading `path:` token. Within a file, collapse identical lines to one `(×N)` row; cap the
-  // number of UNIQUE rows shown (the `… +K more unique` summary only fires on a genuine cap, never for the
-  // dedup itself — a `(×200)` row hides nothing).
-  const byFile = new Map();
-  for (const l of lines) {
-    const m = l.match(/^([^:]+):/);
-    const file = m ? m[1] : "(stdin)";
-    if (!byFile.has(file)) byFile.set(file, []);
-    byFile.get(file).push(l);
-  }
-  const parts = [];
-  let shownUnique = 0, totalUnique = 0, capped = false;
-  for (const [file, fl] of byFile) {
-    const counts = new Map();
-    for (const l of fl) counts.set(l, (counts.get(l) || 0) + 1);
-    totalUnique += counts.size;
-    if (capped) continue;
-    const rows = [];
-    for (const [l, n] of counts) {
-      if (shownUnique >= max) { capped = true; break; }
-      rows.push("  " + (n > 1 ? `${l}  (×${n})` : l));
-      shownUnique++;
-    }
-    parts.push(`${file} (${fl.length})\n` + rows.join("\n"));
-  }
-  let body = parts.join("\n");
-  if (capped || shownUnique < totalUnique) body += `\n… +${totalUnique - shownUnique} more unique match-line(s) across ${byFile.size} file(s) — narrow the pattern or raise maxResults.`;
-  return body;
-}
 
 // ---- git ----
 // `git status --porcelain`/`-s`: `XY path`. Group by status code (counts) and untracked files by top dir.
