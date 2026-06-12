@@ -35,6 +35,14 @@ import { splitSegments } from "../server/shell-split.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
+// UI language for the human-facing nudges/blocks: VTS_LANG > config `lang` > OS locale (Intl) > "en".
+// A Korean user (ko-KR locale) gets Korean automatically; force with VTS_LANG=ko|en.
+function uiLang() {
+  const v = String(process.env.VTS_LANG || readConfig().lang || "").toLowerCase();
+  if (v) return v.startsWith("ko") ? "ko" : "en";
+  try { return /^ko/i.test(Intl.DateTimeFormat().resolvedOptions().locale) ? "ko" : "en"; } catch { return "en"; }
+}
+const KO = uiLang() === "ko";
 const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
 const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
 
@@ -256,45 +264,66 @@ function grepNudgeFor(ti) {
   const pat = String(ti.pattern || "");
   let concrete = "";
   if (pat && pat.length <= 120 && !/[\r\n"]/.test(pat)) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(pat)) {
-      // A bare identifier grepped while working code almost always means "where is this USED" (call
-      // sites for an edit) or "where is it DECLARED". Hand the model BOTH ready-to-use calls — the
-      // usage one is find_references by NAME (no position needed), the code-modification primitive.
-      concrete = ` Equivalent token-capped calls: find_references symbol="${pat}" (every call site — what you want when editing it), or search_symbol q="${pat}" (its declaration).`;
+    const ident = /^[A-Za-z_][A-Za-z0-9_]*$/.test(pat);
+    if (KO) {
+      concrete = ident
+        ? ` 바로 쓸 수 있는 토큰캡 호출: find_references symbol="${pat}" (모든 사용처 — 수정할 때 필요한 것), 또는 search_symbol q="${pat}" (선언).`
+        : ` 바로 쓸 수 있는 토큰캡 호출: search_text q="${pat}".`;
     } else {
-      concrete = ` Equivalent token-capped call: search_text q="${pat}".`;
+      concrete = ident
+        ? ` Equivalent token-capped calls: find_references symbol="${pat}" (every call site — what you want when editing it), or search_symbol q="${pat}" (its declaration).`
+        : ` Equivalent token-capped call: search_text q="${pat}".`;
     }
   }
-  return (
-    "[vs-token-safer] Code search via the Grep tool. For symbol / references / definition on ESTABLISHED " +
-    "code, prefer the vs-search MCP tools (search_symbol / find_references / goto_definition) — semantic " +
-    "(language-server index) and token-capped to file:line — or search_text / find_files, or the " +
-    "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
-    "Grep is fine — carry on. Disable: VTS_ENFORCE=0."
-  );
+  return KO
+    ? "[vs-token-safer] Grep 툴로 코드 검색 중이에요. 이미 존재하는 코드의 심볼/참조/정의는 vs-search MCP 도구" +
+      "(search_symbol / find_references / goto_definition)를 권장합니다 — 시맨틱(언어 서버 인덱스)이고 file:line으로 " +
+      "토큰캡됩니다 — 또는 search_text / find_files, code-locator 서브에이전트도 좋아요." + concrete +
+      " 방금 수정했거나 미인덱스 파일, 빠른 텍스트 확인이면 Grep 그대로 OK. 끄기: VTS_ENFORCE=0."
+    : "[vs-token-safer] Code search via the Grep tool. For symbol / references / definition on ESTABLISHED " +
+      "code, prefer the vs-search MCP tools (search_symbol / find_references / goto_definition) — semantic " +
+      "(language-server index) and token-capped to file:line — or search_text / find_files, or the " +
+      "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
+      "Grep is fine — carry on. Disable: VTS_ENFORCE=0.";
 }
-const LOG_NUDGE =
-  "[vs-token-safer] This search targets a LOG. The language-server index only covers source code — for log " +
-  "analysis use gamedev-log (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate " +
-  "/ fields / diff) instead of grep. Disable: VTS_ENFORCE=0.";
+const LOG_NUDGE = KO
+  ? "[vs-token-safer] 이 검색은 LOG가 대상입니다. 언어 서버 인덱스는 소스 코드만 다뤄요 — 로그 분석은 grep 대신 " +
+    "gamedev-log를 쓰세요 (/gamedev-log-analyzer:logs, 또는 gamedev-log CLI: summary / search / locate / fields / diff). 끄기: VTS_ENFORCE=0."
+  : "[vs-token-safer] This search targets a LOG. The language-server index only covers source code — for log " +
+    "analysis use gamedev-log (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate " +
+    "/ fields / diff) instead of grep. Disable: VTS_ENFORCE=0.";
 
-const BLOCK_MSG =
-  "✨ vs-token-safer caught a code search before it flooded your context — nothing broke, this is on\n" +
-  "purpose, and it just saved you a pile of tokens. 🎉 (A red box is the only way a hook can say\n" +
-  "\"hold on\" — it's a friendly redirect, not a failure.) The very same lookup through the language-server\n" +
-  "index comes back token-capped to file:line, usually ~90% smaller (often 20–60× on a big repo), and\n" +
-  "WITHOUT grep's false positives. Pick the matching tool and enjoy the smaller, sharper result:\n" +
-  "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
-  "  - references / usages of a symbol  → find_references (args: symbol — just the name; the edit primitive)\n" +
-  "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
-  "  - raw text / string / comment      → search_text     (args: q, projectPath) — token-capped grep\n" +
-  "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
-  "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
-  "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
-  "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn,\n" +
-  "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright).\n" +
-  "Tip: a SINGLE simple grep is auto-rewritten for you (no red box at all) — this one had several parts,\n" +
-  "so just run one of the above. Logs/config text → target a non-code file or gamedev-log. Opt out anytime: VTS_ENFORCE=0.";
+const BLOCK_MSG = KO
+  ? "✨ vs-token-safer가 코드 검색을 가로챘어요 — 고장난 게 아니라 의도된 동작이고, 토큰을 왕창 아꼈습니다. 🎉\n" +
+    "(빨간 박스는 훅이 \"잠깐\"이라고 말하는 유일한 방법이에요 — 실패가 아니라 친절한 안내입니다.)\n" +
+    "같은 검색을 언어 서버 인덱스로 하면 file:line으로 토큰캡되어 보통 ~90% 작고(큰 repo면 20~60배),\n" +
+    "grep의 거짓 양성(주석·문자열·유사명)도 없습니다. 맞는 도구를 골라 더 작고 정확한 결과를 누리세요:\n" +
+    "  - 심볼 / 클래스 / 함수 / 타입   → search_symbol   (q, projectPath, backend, maxResults)\n" +
+    "  - 참조 / 사용처                 → find_references (symbol — 이름만; 코드수정 primitive)\n" +
+    "  - 정의로 이동                   → goto_definition (path, line, character — 0-based)\n" +
+    "  - 원시 텍스트 / 문자열 / 주석   → search_text     (q, projectPath) — 토큰캡 grep\n" +
+    "  - 파일명 검색                   → find_files      (q, projectPath) — glob 또는 부분일치\n" +
+    "또는 컨텍스트 격리 `code-locator` 서브에이전트에 통째로 위임하세요.\n" +
+    "CLI(비-MCP): `vts symbol --q <이름> --projectPath <루트>` (vts text / files / hover 도).\n" +
+    "백엔드는 루트에서 자동 감지(compile_commands.json→clangd, .sln/.csproj→roslyn, tsconfig/package.json→typescript, pyproject/*.py→pyright).\n" +
+    "팁: 단순한 grep 하나는 자동 변환됩니다(빨간 박스 없음) — 이번 건 여러 부분이라 차단됐으니 위 중 하나를 실행하세요. " +
+    "로그/설정 텍스트는 비코드 파일이나 gamedev-log로. 끄기: VTS_ENFORCE=0."
+  : "✨ vs-token-safer caught a code search before it flooded your context — nothing broke, this is on\n" +
+    "purpose, and it just saved you a pile of tokens. 🎉 (A red box is the only way a hook can say\n" +
+    "\"hold on\" — it's a friendly redirect, not a failure.) The very same lookup through the language-server\n" +
+    "index comes back token-capped to file:line, usually ~90% smaller (often 20–60× on a big repo), and\n" +
+    "WITHOUT grep's false positives. Pick the matching tool and enjoy the smaller, sharper result:\n" +
+    "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
+    "  - references / usages of a symbol  → find_references (args: symbol — just the name; the edit primitive)\n" +
+    "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
+    "  - raw text / string / comment      → search_text     (args: q, projectPath) — token-capped grep\n" +
+    "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
+    "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
+    "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
+    "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn,\n" +
+    "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright).\n" +
+    "Tip: a SINGLE simple grep is auto-rewritten for you (no red box at all) — this one had several parts,\n" +
+    "so just run one of the above. Logs/config text → target a non-code file or gamedev-log. Opt out anytime: VTS_ENFORCE=0.";
 
 let input = "";
 process.stdin.on("data", (d) => (input += d));
