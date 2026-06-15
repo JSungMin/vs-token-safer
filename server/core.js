@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { compactGit, compactP4 } from "./compact.js";
@@ -32,6 +32,45 @@ export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn"
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
 const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok"];
+
+// ---- per-call project root resolution ----
+// The MCP server is ONE long-lived process serving every repo a session touches, so a single configured
+// projectPath can't be right for all of them. Resolve the root PER CALL instead, preferring the most
+// specific signal available. MCP_ROOTS is the workspace folder(s) the client (Claude Code) advertises via
+// the `roots` capability — set by the index.js handshake; empty when the client doesn't support roots, in
+// which case behavior collapses to exactly the old `PROJECT_PATH || cwd`.
+let MCP_ROOTS = [];
+export function setMcpRoots(paths) { MCP_ROOTS = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === "string" && p); }
+export function getMcpRoots() { return MCP_ROOTS.slice(); }
+function isInside(root, target) {
+  try {
+    const rel = path.relative(path.resolve(root), path.resolve(target));
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  } catch { return false; }
+}
+// Root for an LSP/filesystem query. Precedence: (1) explicit a.projectPath; (2) the enclosing project of a
+// `path` argument — but only walk UP to a NEW root when the path falls OUTSIDE every known root (config pin
+// + MCP roots); a path INSIDE a known root keeps that root so clangd's compile-DB rooting is preserved;
+// (3) an MCP workspace root (current project) over the stale config pin; (4) PROJECT_PATH; (5) cwd.
+export function resolveRoot(a = {}) {
+  if (a.projectPath) return a.projectPath;
+  const known = [PROJECT_PATH, ...MCP_ROOTS].filter(Boolean);
+  const p = a.path || (Array.isArray(a.paths) ? a.paths.find((x) => typeof x === "string") : null);
+  if (p) {
+    const abs = path.isAbsolute(p) ? p : path.resolve(MCP_ROOTS[0] || PROJECT_PATH || process.cwd(), p);
+    const enclosing = known.find((r) => isInside(r, abs));
+    if (enclosing) return enclosing;                 // inside a known root → keep it (preserve rooting)
+    const found = findProjectRoot(abs);
+    if (found) return found;                          // outside all known roots → its real project
+  }
+  if (MCP_ROOTS.length) {
+    return MCP_ROOTS.find((r) => isInside(r, process.cwd())) || MCP_ROOTS[0];
+  }
+  return PROJECT_PATH || process.cwd();
+}
+// Root for a CWD-relative external command (git/p4): never the config pin (the user/agent runs these where
+// they ARE), but an MCP workspace root beats the long-lived server's own process.cwd().
+export function resolveCwdRoot(a = {}) { return a.projectPath || MCP_ROOTS[0] || process.cwd(); }
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
@@ -344,7 +383,7 @@ function discoverReport(a = {}) {
   const { missed, rawTokTotal, learned, filesCount: fc, all, since } = r;
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
-  const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
+  const learnRoot = resolveRoot(a);
   const scope = (all ? "all time" : `last ${since} day(s)`) + (a.projectPath ? `, scoped to ${a.projectPath}` : "");
   // Synergy B: feed the files those bypassed searches actually hit into the warm-set's query-history, so
   // prewarm front-loads them next time — vts learns from the greps it didn't run.
@@ -373,28 +412,119 @@ function discoverReport(a = {}) {
     `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${learnLine}`;
 }
 
-// ---- LSP client cache (one per root+backend; reused across calls in a process) ----
-// key -> Promise<LspClient>. We cache the PROMISE (not the resolved client) so a boot-time pre-warm
-// racing the first real query share ONE clangd instead of spawning two (the warmup is expensive).
+// ---- LSP client pool (one per root+backend; reused across calls in a process) ----
+// key -> { p: Promise<LspClient>, client: LspClient|null, lastUsed: ms }. We cache the PROMISE (not just
+// the resolved client) so a boot-time pre-warm racing the first real query share ONE clangd instead of
+// spawning two (the warmup is expensive).
+//
+// BACKEND POOL LIFECYCLE (memory guard). The MCP server is long-lived, and once the root is resolved
+// PER-CALL (a path's enclosing project / the MCP workspace root) a session that touches several repos
+// would otherwise spawn a PERSISTENT language server per root and never reap them — N repos × a UE-sized
+// clangd index = memory blow-up. So the pool is BOUNDED two ways: at most `maxBackends()` live clients
+// (the least-recently-used idle one is shut down past the cap), and any client idle past `idleMs()` is
+// reaped by a background sweep. Steady state ≈ 1 warm backend; bouncing between two repos keeps both warm
+// (no re-index); a third evicts the LRU. An evicted clangd reloads fast from its persisted on-disk index
+// (symbolReady polls the shards back in), so reaping is cheap. A client with an in-flight request is
+// NEVER evicted (pending.size guards it) — eviction/idle only ever touch settled, quiescent clients.
 const clients = new Map();
+// Master registry of EVERY spawned client, independent of the `clients` map. The map can lose a reference
+// via several paths (evict, idle sweep, failed-warmup catch, key overwrite); this set is the single source
+// of truth for teardown, so disposeClients can guarantee NO orphaned child survives (a live child holds
+// the event loop open — it hung the eval after PASS and the CI test step never exited). killClient is the
+// one place a client is torn down: drop it from both the registry and shut it down (idempotent).
+const allClients = new Set();
+function killClient(c) { if (!c) return undefined; allClients.delete(c); try { return c.shutdown(); } catch { return undefined; } }
+const nowMs = () => Date.now();
+const maxBackends = () => Math.max(1, envInt("VTS_MAX_BACKENDS", 2));
+const idleMs = () => { const v = parseInt(process.env.VTS_BACKEND_IDLE_MS, 10); return Number.isFinite(v) && v >= 0 ? v : 300000; }; // 5 min; 0 disables idle reaping
+
+// Settled clients with no in-flight request, oldest-used first — the only ones safe to reap.
+function evictableEntries() {
+  return [...clients.entries()]
+    .filter(([, e]) => e.client && e.client.pending && e.client.pending.size === 0)
+    .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+}
+// Make room for one new backend: at/over the cap, shut down the least-recently-used idle client. If every
+// client is busy or still warming, allow a transient over-cap rather than block a live query.
+function evictLRU() {
+  if (clients.size < maxBackends()) return null;
+  const ev = evictableEntries();
+  if (!ev.length) return null;
+  const [key, e] = ev[0];
+  clients.delete(key);
+  killClient(e.client);
+  return key;
+}
+// Background reaper: shut down any client idle past idleMs (in-flight requests protected).
+function sweepIdle(now = nowMs()) {
+  const ttl = idleMs();
+  if (!ttl) return [];
+  const cut = now - ttl;
+  const reaped = [];
+  for (const [key, e] of clients) {
+    if (e.client && e.client.pending && e.client.pending.size === 0 && e.lastUsed < cut) {
+      clients.delete(key);
+      reaped.push(key);
+      killClient(e.client);
+    }
+  }
+  return reaped;
+}
+let _sweeper = null;
+function ensureSweeper() {
+  if (_sweeper || !idleMs()) return;
+  // unref'd so the timer never keeps the process (or the eval) alive.
+  _sweeper = setInterval(() => sweepIdle(), Math.min(idleMs(), 60000));
+  _sweeper.unref?.();
+}
 function getClient(root, backendName) {
   const key = `${backendName}|${root}`;
-  if (clients.has(key)) return clients.get(key);
+  const hit = clients.get(key);
+  if (hit) { hit.lastUsed = nowMs(); return hit.p; }
+  evictLRU();      // bound the pool BEFORE adding another backend
+  ensureSweeper();
   const b = BACKENDS[backendName];
-  const p = (async () => {
+  const entry = { p: null, client: null, lastUsed: nowMs() };
+  // `spawned` captures the client the INSTANT it's constructed (its child is alive from initialize on), so
+  // a warmup that throws can still tear the child down. entry.client is set only on SUCCESS, so a
+  // still-warming client is never treated as evictable (no mid-warmup eviction). Without the failure-path
+  // shutdown a failed warmup deleted the cache entry but ORPHANED its child — a killed=false zombie that
+  // held the event loop open (the eval hung after PASS / the CI test step never exited).
+  let spawned = null;
+  entry.p = (async () => {
     const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell });
+    spawned = c;
+    allClients.add(c); // register the INSTANT it's constructed (child alive from initialize on) → never orphanable
     await c.initialize(root);
     if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
+    entry.client = c;
+    entry.lastUsed = nowMs();
     return c;
   })();
-  clients.set(key, p);
-  p.catch(() => clients.delete(key)); // a failed warmup shouldn't poison the cache — allow a retry
-  return p;
+  clients.set(key, entry);
+  entry.p.catch(() => { clients.delete(key); killClient(spawned); }); // failed warmup: drop the cache entry AND kill the spawned child
+  return entry.p;
 }
 export async function disposeClients() {
-  for (const p of clients.values()) { try { (await p).shutdown(); } catch { /* ignore */ } }
   clients.clear();
+  if (_sweeper) { clearInterval(_sweeper); _sweeper = null; }
+  // Tear down EVERY spawned client from the master registry (not just the map's current entries) so no
+  // child — evicted, swept, mid-warmup, or key-overwritten — is ever left running. shutdown is synchronous
+  // + idempotent, so a client already torn down is a harmless no-op.
+  for (const c of [...allClients]) { try { c.shutdown(); } catch { /* ignore */ } }
+  allClients.clear();
 }
+// Test surface for the eval — deterministic pool checks (LRU eviction, idle sweep, pending protection)
+// without spawning a real language server.
+export const __pool = {
+  clients,
+  evictLRU,
+  sweepIdle,
+  maxBackends,
+  idleMs,
+  seed(key, client, lastUsed) { clients.set(key, { p: Promise.resolve(client), client, lastUsed }); },
+  clear() { clients.clear(); },
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Return-when-found query for clangd with a PERSISTED index that's still loading: afterInit no longer
 // blocks on the full re-index, so the first workspace/symbol can land while shards are still loading and
@@ -581,13 +711,51 @@ function fmtSymbols(syms, max) {
   const more = syms.length - shown.length;
   return body + (more > 0 ? `\n… ${more} more (raise maxResults or narrow the query).` : "");
 }
+// Output-cap v2 (caveman "collapse repetition"): a refs-heavy result repeats the same long path on every
+// line. Collapse it — one line per FILE with all its line numbers joined, then factor a common DIRECTORY
+// prefix so a deep shared tree is printed ONCE. Every location is preserved and recoverable (full path =
+// prefix + "/" + tail; lines are the comma list). Biggest win on find_references (the code-mod primitive)
+// and any multi-location result. VTS_COMPACT_RESULTS=0 restores the classic one-location-per-line shape.
+const compactResults = () => { const v = process.env.VTS_COMPACT_RESULTS; return v === undefined || v === "" ? true : !/^(0|false|off|no)$/i.test(v); };
+function splitPathLine(s) { const i = s.lastIndexOf(":"); return i > 1 ? { p: s.slice(0, i), ln: s.slice(i + 1) } : { p: s, ln: "" }; }
+// Longest common DIRECTORY prefix across paths (the filename segment never counts), or "" if <2 paths /
+// no shared dir. Returns a slash-joined prefix with no trailing slash.
+function commonDirPrefix(paths) {
+  if (paths.length < 2) return "";
+  const split = paths.map((p) => p.split("/"));
+  const minLen = Math.min(...split.map((s) => s.length));
+  let i = 0;
+  while (i < minLen - 1 && split.every((s) => s[i] === split[0][i])) i++;
+  return i > 0 ? split[0].slice(0, i).join("/") : "";
+}
+// items: "path:line" strings (path uses "/"). → grouped, deduped, prefix-factored block.
+function compactLocationLines(items) {
+  const byFile = new Map();
+  for (const it of items) {
+    const { p, ln } = splitPathLine(it);
+    if (!byFile.has(p)) byFile.set(p, []);
+    if (ln) byFile.get(p).push(ln);
+  }
+  const files = [...byFile.keys()];
+  const linesOf = (p) => [...new Set(byFile.get(p))].sort((a, b) => Number(a) - Number(b)).join(",");
+  const suffix = (p) => (linesOf(p) ? `:${linesOf(p)}` : "");
+  const prefix = commonDirPrefix(files);
+  if (prefix && files.length > 1) {
+    return `  under ${prefix}/\n` + files.map((p) => `    ${p.slice(prefix.length + 1)}${suffix(p)}`).join("\n");
+  }
+  return files.map((p) => `  ${p}${suffix(p)}`).join("\n");
+}
 function fmtLocations(locs, max, label) {
   const arr = Array.isArray(locs) ? locs : locs ? [locs] : [];
   const shown = arr.slice(0, max);
-  const body = shown.map((l) => `  @ ${locLine(l.uri, l.range)}`).join("\n");
   const more = arr.length - shown.length;
-  return `${arr.length} ${label}:\n${body}${more > 0 ? `\n… ${more} more.` : ""}`;
+  const tail = more > 0 ? `\n… ${more} more.` : "";
+  const body = compactResults()
+    ? compactLocationLines(shown.map((l) => locLine(l.uri, l.range)))
+    : shown.map((l) => `  @ ${locLine(l.uri, l.range)}`).join("\n");
+  return `${arr.length} ${label}:\n${body}${tail}`;
 }
+export { compactLocationLines, commonDirPrefix };
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 function fmtHover(h) {
   if (!h || !h.contents) return "(no hover info)";
@@ -825,7 +993,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_savings_reset") { try { fs.writeFileSync(SAVINGS_FILE, "{}"); } catch { /* ignore */ } return out("Savings ledger cleared."); }
     if (name === "vts_discover") return out(discoverReport(a));
     if (name === "vts_warmup") {
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const backendName = a.backend || BACKEND || pickBackend(root);
       if (!backendName) return err(`No backend to warm. Pass backend=clangd|roslyn or ensure ${root} has compile_commands.json / a .sln.`);
       const t0 = Date.now();
@@ -835,7 +1003,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
       // no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (minutes).
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const plan = genCompileDbPlan(root, a);
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
@@ -889,7 +1057,7 @@ export async function runTool(name, a = {}) {
     // is set, and are the sanctioned, token-capped replacements for `find -name` / `grep`.
     if (name === "find_files") {
       if (!a.q) return err("find_files needs q (a filename substring or glob like *Manager.cpp).");
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
       if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
@@ -899,7 +1067,7 @@ export async function runTool(name, a = {}) {
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       // Target selection — naming a file/glob auto-includes WHATEVER extension it is (no docs flag needed):
       //   path=README.md  → search that one file (any ext)
@@ -937,7 +1105,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_git" || name === "vts_p4") {
       // git/p4 are cwd-relative — run where the user/agent IS, not the configured PROJECT_PATH (which would
       // surprise: `vts git status` in repo B showing the configured repo A). Explicit projectPath still wins.
-      const root = a.projectPath || process.cwd();
+      const root = resolveCwdRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       const bin = name === "vts_git" ? "git" : "p4";
       const argv = toArgv(a);
@@ -970,7 +1138,7 @@ export async function runTool(name, a = {}) {
       return finishOut(raw, `${bin} ${argv.join(" ")} (compacted):\n${body}`);
     }
 
-    const root = a.projectPath || PROJECT_PATH || process.cwd();
+    const root = resolveRoot(a);
     const backendName = a.backend || BACKEND || pickBackend(root);
     // search_symbol degrades gracefully when NO backend resolves (text fallback) instead of hard-erroring —
     // so the grep-rewrite hook can always route an identifier to `vts symbol` (semantic when a backend

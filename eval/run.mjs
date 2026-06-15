@@ -830,7 +830,107 @@ const i18nOk =
   /Grep 툴로 코드 검색/.test(hKoNudge) &&
   hEnBlock.status === 2 && /caught a code search/.test(hEnBlock.err); // en explicit still English
 
+// 45) backend pool lifecycle (memory guard): the live language-server pool is BOUNDED so a session that
+// touches many repos can't spawn an unbounded number of persistent clangd/Roslyn processes. evictLRU shuts
+// down the least-recently-used SETTLED+idle client at the cap; an in-flight request (pending.size>0)
+// protects its client from both eviction and the idle sweep; sweepIdle reaps clients idle past the TTL;
+// idleMs=0 disables reaping. Seeded with FAKE clients (no real LSP spawn) so the checks are deterministic.
+const { __pool } = await import("../server/core.js");
+const shut = [];
+const mk = (k, pending = 0) => ({ _k: k, pending: new Map(Array.from({ length: pending }, (_, i) => [i, 1])), async shutdown() { shut.push(this._k); } });
+process.env.VTS_MAX_BACKENDS = "2"; // cap = 2
+__pool.clear();
+__pool.seed("clangd|A", mk("A"), 100); __pool.seed("clangd|B", mk("B"), 200); __pool.seed("clangd|C", mk("C"), 300);
+const evicted = __pool.evictLRU(); // over cap → drop the oldest (smallest lastUsed)
+await new Promise((r) => setTimeout(r, 0)); // flush the async shutdown microtask
+const lruEvictOk = evicted === "clangd|A" && shut.includes("A") && !__pool.clients.has("clangd|A") && __pool.clients.size === 2;
+shut.length = 0; __pool.clear();
+__pool.seed("clangd|busy", mk("busy", 1), 50); __pool.seed("clangd|idle", mk("idle"), 150); __pool.seed("clangd|warm", mk("warm"), 250);
+const evicted2 = __pool.evictLRU(); // oldest is BUSY → skipped, next-oldest idle dropped
+const busyProtectedOk = evicted2 === "clangd|idle" && __pool.clients.has("clangd|busy");
+__pool.clear(); __pool.seed("clangd|solo", mk("solo"), 100);
+const noEvictOk = __pool.evictLRU() === null && __pool.clients.size === 1; // under cap → no eviction
+shut.length = 0; process.env.VTS_BACKEND_IDLE_MS = "1000"; __pool.clear();
+const T = 1_000_000;
+__pool.seed("clangd|old", mk("old"), T - 5000);        // idle 5s > 1s TTL → reaped
+__pool.seed("clangd|fresh", mk("fresh"), T - 100);     // idle 0.1s < TTL → kept
+__pool.seed("clangd|oldbusy", mk("oldbusy", 1), T - 9000); // old but busy → kept
+const reaped = __pool.sweepIdle(T);
+await new Promise((r) => setTimeout(r, 0));
+const idleSweepOk = reaped.length === 1 && reaped[0] === "clangd|old" && shut.includes("old") &&
+  __pool.clients.has("clangd|fresh") && __pool.clients.has("clangd|oldbusy");
+process.env.VTS_BACKEND_IDLE_MS = "0";
+const sweepDisabledOk = __pool.sweepIdle(T).length === 0; // TTL 0 → reaping disabled
+delete process.env.VTS_MAX_BACKENDS; delete process.env.VTS_BACKEND_IDLE_MS; __pool.clear();
+const poolLifecycleOk = lruEvictOk && busyProtectedOk && noEvictOk && idleSweepOk && sweepDisabledOk;
+
+// 46) per-call root resolution (A1/A2): findProjectRoot walks UP to the nearest project marker so a `path`
+// argument pins the correct repo; resolveRoot precedence = explicit projectPath > a path's enclosing
+// project (only when OUTSIDE every known root, so an inside-path keeps its root and clangd rooting is
+// preserved) > an MCP workspace root (over the stale config pin) > PROJECT_PATH > cwd. setMcpRoots holds
+// the client-advertised workspace folders. (Config is empty in the eval, so PROJECT_PATH === "".)
+const { resolveRoot, setMcpRoots, getMcpRoots } = await import("../server/core.js");
+const { findProjectRoot } = await import("../server/backends/index.js");
+const rootBase = path.join(os.tmpdir(), `vts-eval-${process.pid}-roots`);
+const repoCC = path.join(rootBase, "withcc"); const deepCC = path.join(repoCC, "a", "b");
+fs.mkdirSync(deepCC, { recursive: true });
+fs.writeFileSync(path.join(repoCC, "compile_commands.json"), "[]"); fs.writeFileSync(path.join(deepCC, "x.cpp"), "int x;\n");
+const repoGit = path.join(rootBase, "withgit"); const deepGit = path.join(repoGit, "src");
+fs.mkdirSync(path.join(repoGit, ".git"), { recursive: true }); fs.mkdirSync(deepGit, { recursive: true });
+fs.writeFileSync(path.join(deepGit, "y.cpp"), "int y;\n");
+const rl = (p) => path.resolve(p);
+const findRootOk =
+  rl(findProjectRoot(path.join(deepCC, "x.cpp"))) === rl(repoCC) &&    // climbs to the compile_commands dir
+  rl(findProjectRoot(path.join(deepGit, "y.cpp"))) === rl(repoGit) &&  // stops at the .git repo boundary
+  rl(findProjectRoot(repoCC)) === rl(repoCC);                          // a directory arg resolves to itself
+setMcpRoots([]);
+const rrExplicit = rl(resolveRoot({ projectPath: repoGit, path: path.join(deepCC, "x.cpp") })) === rl(repoGit); // explicit wins over path
+setMcpRoots([repoCC]);                                                 // repoCC is now a "known" workspace root
+const rrInsideKept = rl(resolveRoot({ path: path.join(deepCC, "x.cpp") })) === rl(repoCC); // inside known → keep root
+const rrOutside = rl(resolveRoot({ path: path.join(deepGit, "y.cpp") })) === rl(repoGit);  // outside known → its real project
+const rrNoPathRoot = rl(resolveRoot({})) === rl(repoCC);              // no path → the MCP workspace root
+setMcpRoots([]);
+const rrFallback = rl(resolveRoot({})) === rl(process.cwd());         // no roots + empty PROJECT_PATH → cwd
+const rootsRoundtripOk = (() => { setMcpRoots([repoCC, repoGit]); const g = getMcpRoots(); setMcpRoots([]); return g.length === 2 && rl(g[0]) === rl(repoCC); })();
+try { fs.rmSync(rootBase, { recursive: true, force: true }); } catch { /* ignore */ }
+const rootResolveOk = findRootOk && rrExplicit && rrInsideKept && rrOutside && rrNoPathRoot && rrFallback && rootsRoundtripOk;
+
+// 47) output cap v2 (caveman "collapse repetition"): a refs-heavy result collapses to one line per FILE
+// (all line numbers joined, deduped, sorted) with a common DIRECTORY prefix factored out once — every
+// location preserved + recoverable. VTS_COMPACT_RESULTS=0 restores the classic "  @ path:line" shape.
+const { compactLocationLines, commonDirPrefix } = await import("../server/core.js");
+const cl = compactLocationLines([
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:120",
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:42",
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:42",   // dup → deduped
+  "G:/proj/Source/Game/Private/AI/Enemy.cpp:55",
+]);
+const capV2Ok =
+  commonDirPrefix(["a/b/c/x.cpp", "a/b/d/y.cpp"]) === "a/b" &&      // dir prefix, filename segment excluded
+  commonDirPrefix(["a/x.cpp"]) === "" &&                            // single path → no prefix
+  /under G:\/proj\/Source\/Game\/Private\//.test(cl) &&             // common prefix factored once
+  /Combat\/Damage\.cpp:42,120/.test(cl) &&                          // same-file lines coalesced, deduped, sorted
+  /AI\/Enemy\.cpp:55/.test(cl) &&
+  (cl.match(/Damage\.cpp/g) || []).length === 1;                    // path printed once, not per location
+const clSingle = compactLocationLines(["G:/proj/only/A.cpp:9", "G:/proj/only/A.cpp:3"]); // one file → no prefix header
+const capSingleOk = !/under /.test(clSingle) && /A\.cpp:3,9/.test(clSingle);
+process.env.VTS_COMPACT_RESULTS = "0";
+const rOff = await runTool("find_references", { symbol: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+delete process.env.VTS_COMPACT_RESULTS;
+const capToggleOk = !rOff.isError && /@ .*Foo\.cpp:42/.test(rOff.text); // classic "  @ path:line" restored
+const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
+
 await disposeClients();
+// 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
+// child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
+// holds the event loop open (the process hangs after PASS → the CI test step never exits). Assert no mock
+// LSP child handle is still alive shortly after teardown. (process._getActiveHandles is internal but
+// stable across the CI Node versions; the guard is the regression net for the orphan that caused this.)
+await new Promise((r) => setTimeout(r, 300)); // let killed children reap (Windows TerminateProcess + 'exit')
+const liveChildren = (process._getActiveHandles?.() || [])
+  .filter((h) => h && h.constructor && h.constructor.name === "ChildProcess" && (h.spawnargs || []).some((a) => /_mock-lsp/.test(String(a)))).length;
+const teardownOk = liveChildren === 0;
+
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
@@ -883,6 +983,10 @@ const rows = [
   ["hardening: ro-allowlist + path-confine + rename/binary/budget/trunc", hardeningOk, "true", hardeningOk],
   ["polish: git/p4 run in cwd + p4-changes parse + dedup wording", polishOk, "true", polishOk],
   ["i18n: VTS_LANG=ko Korean block+nudge / en English", i18nOk, "true", i18nOk],
+  ["backend pool: LRU evict + idle reap + in-flight protect", poolLifecycleOk, "true", poolLifecycleOk],
+  ["per-call root: findProjectRoot walk-up + resolveRoot precedence + MCP roots", rootResolveOk, "true", rootResolveOk],
+  ["output cap v2: refs collapse per-file + common-prefix factor (toggle)", capResultsOk, "true", capResultsOk],
+  ["clean teardown: no orphaned LSP child after disposeClients", teardownOk, "true", teardownOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

@@ -281,7 +281,16 @@ export class LspClient {
     });
   }
   async shutdown() {
-    try { await this.request("shutdown", null, 3000); this.notify("exit", null); } catch { /* ignore */ }
+    // Teardown must RELIABLY release the child + all its handles — the backend-pool memory guard depends
+    // on an evicted client actually freeing its process (else the LRU/idle reap leaves zombies and memory
+    // never drops). A graceful LSP shutdown round-trip is skipped on purpose: it queued a WriteWrap to a
+    // child that may have stopped reading and a 3s pending request, both of which kept the event loop
+    // alive after teardown (eval hung post-PASS; CI never exited the test step). Kill decisively, reject
+    // any pending requests so their timeout timers clear, and destroy the stdio pipes so no queued write
+    // lingers. clangd/roslyn handle SIGTERM/TerminateProcess fine (shards are written atomically).
     try { this.proc && this.proc.kill(); } catch { /* ignore */ }
+    try { this._failAll(new Error("client shut down")); } catch { /* ignore */ }
+    try { this.proc?.stdin?.destroy(); this.proc?.stdout?.destroy(); this.proc?.stderr?.destroy(); } catch { /* ignore */ }
+    this.proc = null;
   }
 }

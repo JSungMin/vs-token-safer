@@ -9,9 +9,10 @@
  * async); the handler awaits it. Each LSP backend is spawned lazily and cached for the process — we
  * dispose clients on shutdown so no language-server child is left running.
  */
-import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from "./sdk.js";
-import { runTool, disposeClients, prewarm, autoLearn, PROJECT_PATH, BACKEND, PREWARM_BACKENDS } from "./core.js";
+import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema, RootsListChangedNotificationSchema } from "./sdk.js";
+import { runTool, disposeClients, prewarm, autoLearn, setMcpRoots, getMcpRoots, PROJECT_PATH, BACKEND, PREWARM_BACKENDS } from "./core.js";
 import { pickBackend } from "./backends/index.js";
+import { fromUri } from "./lsp.js";
 import { prewarmBackends } from "./warmset.js";
 
 const log = (...a) => console.error("[vs-token-safer]", ...a);
@@ -257,35 +258,58 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, async () => { try { await disposeClients(); } catch { /* ignore */ } process.exit(0); });
 }
 
+// MCP roots handshake: the client (Claude Code) advertises its workspace folder(s) via the `roots`
+// capability. Used to resolve a per-call project root, so ONE globally-installed server serves every repo
+// a session touches instead of being pinned to a single configured projectPath (resolveRoot in core.js).
+// Degrades silently to "no roots" (→ PROJECT_PATH || cwd, the old behavior) when the client doesn't
+// advertise roots. Re-fetched on roots/list_changed so switching the workspace updates the resolution.
+async function refreshRoots() {
+  try {
+    const caps = server.getClientCapabilities?.();
+    if (!caps || !caps.roots) return;
+    const res = await server.listRoots();
+    const paths = (res?.roots || []).map((r) => { try { return fromUri(r.uri); } catch { return null; } }).filter(Boolean);
+    setMcpRoots(paths);
+    if (paths.length) log(`workspace roots: ${paths.join(", ")}`);
+  } catch (e) { log(`roots query failed: ${e.message}`); }
+}
+if (RootsListChangedNotificationSchema) {
+  try { server.setNotificationHandler(RootsListChangedNotificationSchema, () => refreshRoots()); } catch { /* client/SDK without roots — ignore */ }
+}
+
 await server.connect(new StdioServerTransport());
 log("ready on stdio.");
+await refreshRoots(); // populate MCP_ROOTS before prewarm so a config-less install warms the current workspace
 
-// IDE-style background pre-warm: when a project root is configured, spawn + index the backend now so
-// the user's first search reuses an already-warming/warm client instead of paying cold warmup inline.
-// Default on when projectPath is set; disable with VTS_PREWARM=0 (fire-and-forget — never blocks boot).
-if (PROJECT_PATH && envBool("VTS_PREWARM", true)) {
+// IDE-style background pre-warm: spawn + index the backend now so the user's first search reuses an
+// already-warming/warm client instead of paying cold warmup inline. The warm root is the configured
+// projectPath, or — for a config-less global install — the first MCP workspace root. Only ONE root is
+// prewarmed (never every advertised root — that would defeat the backend-pool memory guard). Default on;
+// disable with VTS_PREWARM=0 (fire-and-forget — never blocks boot).
+const warmRoot = PROJECT_PATH || getMcpRoots()[0] || "";
+if (warmRoot && envBool("VTS_PREWARM", true)) {
   // Single dominant backend by default; VTS_PREWARM_BACKENDS=all (or a comma list) warms every detected
   // language, each with its language-proportional adaptive cap (warmCap). Fire-and-forget — never blocks boot.
-  const picked = BACKEND || pickBackend(PROJECT_PATH);
-  const backends = prewarmBackends(PROJECT_PATH, picked, process.env.VTS_PREWARM_BACKENDS || PREWARM_BACKENDS);
+  const picked = BACKEND || pickBackend(warmRoot);
+  const backends = prewarmBackends(warmRoot, picked, process.env.VTS_PREWARM_BACKENDS || PREWARM_BACKENDS);
   for (const backend of backends) {
-    log(`pre-warming ${backend} index for ${PROJECT_PATH} …`);
-    prewarm(PROJECT_PATH, backend).then(
+    log(`pre-warming ${backend} index for ${warmRoot} …`);
+    prewarm(warmRoot, backend).then(
       (c) => { if (c) log(`index warm (${backend}).`); },
       (e) => log(`pre-warm failed (${backend}): ${e.message}`),
     );
   }
 }
 
-// Boot-time self-improvement (VTS_AUTO_LEARN, default on when projectPath is set): harvest the files
+// Boot-time self-improvement (VTS_AUTO_LEARN, default on when a warm root exists): harvest the files
 // that recent BYPASSED code searches actually hit (local transcript scan, bounded, read-only) into the
 // warm-set query-history — the same write `vts discover --learn` does, with no human in the loop. The
 // next warm-up front-loads what past sessions really searched for. Deferred so boot/prewarm goes first.
-if (PROJECT_PATH && envBool("VTS_AUTO_LEARN", true)) {
+if (warmRoot && envBool("VTS_AUTO_LEARN", true)) {
   setTimeout(() => {
     try {
-      const n = autoLearn(PROJECT_PATH, 7);
-      if (n) log(`auto-learn: ${n} file(s) from recent bypassed searches → warm-set for ${PROJECT_PATH}.`);
+      const n = autoLearn(warmRoot, 7);
+      if (n) log(`auto-learn: ${n} file(s) from recent bypassed searches → warm-set for ${warmRoot}.`);
     } catch { /* best-effort — never disturb the server */ }
   }, 3000).unref?.();
 }
