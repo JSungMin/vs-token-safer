@@ -115,11 +115,17 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   (UE type/symbol enumeration). KEPT as warn (false-positive-safe): freeform single tokens, AND keyword
   alternations (`TODO|FIXME`/`GET|POST` — ALL-CAPS, no lower→upper transition, so no CamelCase signal). The
   reroute is search_text (same regex, token-capped) → no wrong/missing results, just friction. `VTS_GREP_BLOCK=0`
-  reverts all of it to warn-only. Measured: v2 block ~172k tok/30d; v2.1 adds ~319k (CamelCase alternation). GLOB/Search TOOL (filename search): warn-only
-  nudge → `find_files` (a different tool, can't updatedInput-rewrite), source-signal-gated (`isCodeGlobTool`);
-  the built-in Glob has no cap + times out on a giant UE tree. find_files/search_text are walk-BOUNDED:
-  shared `SKIP_DIRS` (node_modules/Intermediate/Binaries/Saved/build/… ) + a 4s time box so a huge tree can't
-  hang them. `vts discover` now also counts the Glob tool as a find_files bypass. `VTS_REWRITE=0` → block
+  reverts all of it to warn-only. Measured: v2 block ~172k tok/30d; v2.1 adds ~319k (CamelCase alternation).
+  GLOB/Search TOOL (filename search) **v2.2**: a CONCRETE code-file glob (`*.cpp` / `Foo.h` / `**/Bar.*` per
+  `isBlockableGlob`) is BLOCKED → `find_files` (which is a DIFFERENT tool — can't updatedInput-rewrite a Glob —
+  so it's a block with a ready-to-use `find_files q=… projectPath=<dir hint from the glob/path>`); a bare
+  `*`/`**/*` or code-DIR glob stays a warn. The warn alone was IGNORED — the model kept Glob-ing a giant UE tree
+  and narrowing the path instead of switching (live dogfood). find_files/search_text are walk-BOUNDED: shared
+  `SKIP_DIRS` (node_modules/Intermediate/Binaries/Saved/build/… ) + a 4s time box so a huge tree can't hang them.
+  FIND-DIR FIX (v2.2): a Bash `find <dir> -name X` rewrite now HONORS `<dir>` as the find_files root
+  (`extractFindDir`) — it was dropped, so `find /abs/UE/path -name X` searched the configured vts repo and falsely
+  reported "No files" (a live correctness bug on a UE worktree). `vts discover` also counts the Glob tool as a
+  find_files bypass. `VTS_REWRITE=0` → block
   instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out; escape hatch
   `VTS_ENFORCE=0`. Messages i18n'd (`uiLang()`: Korean when `VTS_LANG`/config `lang`=`ko` OR OS locale `ko-*`,
   else English; `VTS_LANG=en|ko` forces). Copy is AGENT-DIRECTED — the actionable part instructs the assistant
