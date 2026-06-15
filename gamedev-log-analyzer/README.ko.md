@@ -31,7 +31,7 @@
 
 - 각 줄을 `{severity, category, file:line, message}`로 **파싱** — 여러 엔진 지원(아래 지원 매트릭스),
   미인식 줄은 범용 severity-키워드 폴백.
-- **템플릿 dedup:** 숫자/주소/GUID/경로/인스턴스ID 정규화 → 반복 스팸을 `×count` 한 그룹으로.
+- **템플릿 dedup:** 숫자/주소/GUID/경로/인스턴스ID **및 따옴표 리터럴**(`'/Game/Maps/Foo'` 같은 에셋/오브젝트 이름) 정규화 → 반복 스팸을 `×count` 한 그룹으로 (에셋별 스트리밍 실패 스팸이 이름마다 쪼개지지 않고 한 그룹으로 dedup).
 - **검색/필터:** `severityMin`·`category`·`file`·`query`; `groupBy:"callsite"`는 `file:line`별 롤업
   (로그를 뭐가 도배하는지 파악에 최적), `groupBy:"code"`는 진단 코드(`C4996`·`LNK2019`·`CS1002` …)별 롤업
   — warning 수백 개짜리 빌드를 코드당 한 줄(`C4996: … (×37)`)로 접어 grep 대신 즉시 triage.

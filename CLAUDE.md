@@ -47,8 +47,15 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   ranking], `didOpen`s it, queries references at `location.range.start`; no indexed decl → `scanTextUnder`
   literal-usage fallback. Discover showed name-driven usage hunts = the top bypass; this collapses the
   locate→position→refs dance that pushed the model to grep), `goto_definition`, `hover`, `document_symbols`,
-  `rename` (LSP; rename = preview by default, `apply=true` writes — the only mutating tool); `find_files`,
-  `search_text`
+  `rename` (LSP; preview by default, `apply=true` writes); SYMBOL-LEVEL EDITING (Serena-parity, the mutating
+  set — all preview-by-default, `apply=true` writes): `replace_symbol_body` / `insert_after_symbol` /
+  `insert_before_symbol` / `safe_delete` — `resolveSymbolForEdit` (core.js) resolves a declaration by NAME via
+  the LSP outline (`documentSymbol`'s `.range` = whole body, `.selectionRange` = name; `path` pins the file
+  else the index resolves it, optional `line` disambiguates), then splices text at the span via
+  `applyEditsToText` (`symbolEditResult` shared preview/apply, reuses the rename read-only/Perforce note).
+  `safe_delete` refuses while the symbol is still referenced (refs at the name) unless `force=true`. Token win:
+  edit by naming a symbol instead of Read-ing the whole file + line-counting for an exact-match Edit. Eval guard
+  52; `find_files`, `search_text`
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed; `search_text` TARGETING: `path=<file>`
   searches one named file / `glob=<pat>` matching files — naming it AUTO-INCLUDES that extension (a `.md` etc),
   no docs flag; `docs=true` (no path/glob) widens the project-wide sweep to README/docs/config exts — default

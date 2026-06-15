@@ -28,6 +28,14 @@ Commands:
   symbols        Outline a file (its classes/functions as file:line). [--path <file>]
   rename         Semantic rename across the project. Preview by default; --apply to write.
                  [--path <file> --line N --character N --newName <name> [--apply]]
+  replace-symbol Replace a whole declaration by NAME (outline supplies the span). Preview; --apply to write.
+                 [--symbol <name> --body <text> [--path <file> --line N --apply]]
+  insert-after   Insert text on a new line after a named declaration. Preview; --apply to write.
+                 [--symbol <name> --text <text> [--path <file> --line N --apply]]
+  insert-before  Insert text on a line before a named declaration. Preview; --apply to write.
+                 [--symbol <name> --text <text> [--path <file> --line N --apply]]
+  safe-delete    Delete a named declaration; refuses while referenced unless --force. Preview; --apply.
+                 [--symbol <name> [--path <file> --line N --force --apply]]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
@@ -59,7 +67,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force"]);
 
 function parseArgs(argv) {
   const a = {};
@@ -75,7 +83,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", rename: "rename", "replace-symbol": "replace_symbol_body", "insert-after": "insert_after_symbol", "insert-before": "insert_before_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
