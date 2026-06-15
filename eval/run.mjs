@@ -987,9 +987,15 @@ const hFindDir = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'fi
 const findDirOk = /files --q "FooThing\.h" --projectPath "\/abs\/widget\/src\/lib"/.test(hFindDir.updatedInput?.command || ""); // dir honored, not the configured root
 const hGlobBlk = runHook({ tool_name: "Glob", tool_input: { pattern: "src/lib/**/FooThing.cpp", path: "/abs/widget" } });
 const globBlkOk = hGlobBlk.status === 2 && /find_files q="FooThing\.cpp" projectPath="\/abs\/widget"/.test(hGlobBlk.err); // block + path hint
-const hGlobConcrete = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } });   // concrete extension → block
+const hGlobConcrete = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } });   // concrete code extension → block
+const hGlobWild = runHook({ tool_name: "Glob", tool_input: { pattern: "**/FooThing.*" } });  // specific source, wildcard ext → block
 const hGlobBare = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*" } });            // no extension → allowed
-const v22Ok = findDirOk && globBlkOk && hGlobConcrete.status === 2 && hGlobBare.status === 0;
+// asset/binary filename searches are NOT code search → never blocked, even as a SPECIFIC file (only CODE_EXT_RE
+// decides concrete extensions; the earlier `Name.<any-ext>` clause wrongly blocked Foo.png / Bar.uasset).
+const hGlobAsset = runHook({ tool_name: "Glob", tool_input: { pattern: "Texture.png" } });
+const hGlobUasset = runHook({ tool_name: "Glob", tool_input: { pattern: "Mesh.uasset" } });
+const v22Ok = findDirOk && globBlkOk && hGlobConcrete.status === 2 && hGlobWild.status === 2 &&
+  hGlobBare.status === 0 && hGlobAsset.status === 0 && hGlobUasset.status === 0;
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server

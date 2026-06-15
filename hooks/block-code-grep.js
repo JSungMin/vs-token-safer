@@ -349,8 +349,10 @@ function isCodeGlobTool(ti) {
   const p = String(ti.path || "").replace(/\\/g, "/").toLowerCase();
   if (LOG_TARGET_RE.test(String(ti.pattern || "")) || LOG_TARGET_RE.test(p)) return false; // log → not here
   if (TEXT_TARGET_RE.test(base)) return false;                                              // *.md/*.json → skip
-  // a code extension in the glob, a code dir in the path, or a specific source filename (Name.* / Name.ext)
-  return CODE_EXT_RE.test(base) || CODE_DIR_RE.test(p) || /[a-z0-9_]\.[*a-z0-9]+$/.test(base);
+  // a CODE extension in the glob, a code dir in the path, or a specific source file with a WILDCARD ext
+  // (`Foo.*` — the "find the .h/.cpp pair" form). A concrete NON-code ext (`Foo.png`, `Bar.uasset`) is left
+  // alone — only CODE_EXT_RE decides concrete extensions, so asset/binary filename searches aren't intercepted.
+  return CODE_EXT_RE.test(base) || CODE_DIR_RE.test(p) || /[a-z0-9_]\.\*$/.test(base);
 }
 function globNudgeFor(ti) {
   const base = globBasename(ti.pattern);
@@ -372,7 +374,7 @@ function globNudgeFor(ti) {
 function isBlockableGlob(ti) {
   if (!isCodeGlobTool(ti)) return false;
   const base = globBasename(ti.pattern).toLowerCase();
-  return CODE_EXT_RE.test(base) || /[a-z0-9_]\.[a-z0-9*]+$/.test(base); // concrete extension or Name.* — not a bare *
+  return CODE_EXT_RE.test(base) || /[a-z0-9_]\.\*$/.test(base); // a CODE extension, or `Name.*` — never a concrete non-code ext (Foo.png) or a bare *
 }
 // Root hint for the reroute: the explicit `path`, else the literal directory prefix of the glob (everything
 // before the first wildcard, minus the trailing filename) — so the model narrows the giant tree.
