@@ -99,7 +99,7 @@ function isGitGrepSegment(segment) {
 
 function isSearchSegment(segment) {
   const exec = execOf(segment);
-  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
+  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-i?name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
 }
 
 function isCodeSearchSegment(segment) {
@@ -147,7 +147,7 @@ function extractGrepPattern(segment, isGit) {
   return null;
 }
 function extractFindName(segment) {
-  const m = segment.match(/\s-name\s+("([^"]+)"|'([^']+)'|(\S+))/);
+  const m = segment.match(/\s-i?name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
@@ -179,6 +179,10 @@ function buildRewrite(segment) {
   const root = rewriteRoot();
   if (/["\r\n]/.test(root)) return null; // a root with a quote/newline would break shell quoting → block instead
   if (exec === "find") {
+    // Multiple `-name` / an OR (`-o`) can't be expressed as one find_files call — rewriting to the FIRST
+    // -name would SILENTLY DROP the rest (a wrong/partial result, e.g. `-name *.h -o -name *.cpp` → only *.h).
+    // Bail → block, so the model runs a proper search instead of trusting an incomplete rewrite.
+    if ((segment.match(/\s-i?name\s/g) || []).length > 1 || /\s-or?\s/.test(segment)) return null;
     const glob = extractFindName(segment);
     if (!glob || !SAFE_GLOB.test(glob)) return null;
     const dir = extractFindDir(segment); // honor `find <dir>` — else find_files searches the wrong tree (configured root)
@@ -349,8 +353,10 @@ function isCodeGlobTool(ti) {
   const p = String(ti.path || "").replace(/\\/g, "/").toLowerCase();
   if (LOG_TARGET_RE.test(String(ti.pattern || "")) || LOG_TARGET_RE.test(p)) return false; // log → not here
   if (TEXT_TARGET_RE.test(base)) return false;                                              // *.md/*.json → skip
-  // a code extension in the glob, a code dir in the path, or a specific source filename (Name.* / Name.ext)
-  return CODE_EXT_RE.test(base) || CODE_DIR_RE.test(p) || /[a-z0-9_]\.[*a-z0-9]+$/.test(base);
+  // a CODE extension in the glob, a code dir in the path, or a specific source file with a WILDCARD ext
+  // (`Foo.*` — the "find the .h/.cpp pair" form). A concrete NON-code ext (`Foo.png`, `Bar.uasset`) is left
+  // alone — only CODE_EXT_RE decides concrete extensions, so asset/binary filename searches aren't intercepted.
+  return CODE_EXT_RE.test(base) || CODE_DIR_RE.test(p) || /[a-z0-9_]\.\*$/.test(base);
 }
 function globNudgeFor(ti) {
   const base = globBasename(ti.pattern);
@@ -372,7 +378,7 @@ function globNudgeFor(ti) {
 function isBlockableGlob(ti) {
   if (!isCodeGlobTool(ti)) return false;
   const base = globBasename(ti.pattern).toLowerCase();
-  return CODE_EXT_RE.test(base) || /[a-z0-9_]\.[a-z0-9*]+$/.test(base); // concrete extension or Name.* — not a bare *
+  return CODE_EXT_RE.test(base) || /[a-z0-9_]\.\*$/.test(base); // a CODE extension, or `Name.*` — never a concrete non-code ext (Foo.png) or a bare *
 }
 // Root hint for the reroute: the explicit `path`, else the literal directory prefix of the glob (everything
 // before the first wildcard, minus the trailing filename) — so the model narrows the giant tree.
