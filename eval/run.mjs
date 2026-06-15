@@ -920,6 +920,29 @@ delete process.env.VTS_COMPACT_RESULTS;
 const capToggleOk = !rOff.isError && /@ .*Foo\.cpp:42/.test(rOff.text); // classic "  @ path:line" restored
 const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
 
+// 49) Glob-tool nudge + find_files walk bound: the built-in Glob/Search tool (filename search) now gets a
+// warn-only nudge toward find_files (token-capped + walk-bounded), with a ready-to-use call; a doc/asset
+// glob is NOT nudged. And find_files SKIPS heavy build/dep dirs (node_modules/Intermediate/Binaries/…) so a
+// giant UE tree can't time it out like the built-in Glob did.
+const hGlobCode = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } }));
+const hGlobFile = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/TSCheatManager.*" } }));
+const hGlobDoc = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.md" } });
+const globNudgeOk =
+  /find_files q="\*\.cpp"/.test(hGlobCode) && /Glob/.test(hGlobCode) &&            // code glob → find_files nudge
+  /find_files q="TSCheatManager\.\*"/.test(hGlobFile) &&                           // specific source file → nudged
+  hGlobDoc.status === 0 && !/find_files/.test(nudgeCtx(hGlobDoc));                 // doc glob → no nudge
+const skipRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-skip`);
+fs.mkdirSync(path.join(skipRoot, "src"), { recursive: true });
+fs.mkdirSync(path.join(skipRoot, "Intermediate"), { recursive: true });
+fs.mkdirSync(path.join(skipRoot, "node_modules"), { recursive: true });
+fs.writeFileSync(path.join(skipRoot, "src", "Real.cpp"), "");
+fs.writeFileSync(path.join(skipRoot, "Intermediate", "Gen.cpp"), "");  // generated → in a skipped dir
+fs.writeFileSync(path.join(skipRoot, "node_modules", "Dep.cpp"), "");  // dependency → in a skipped dir
+const ffSkip = await runTool("find_files", { q: "*.cpp", projectPath: skipRoot });
+const skipOk = !ffSkip.isError && /Real\.cpp/.test(ffSkip.text) && !/Gen\.cpp/.test(ffSkip.text) && !/Dep\.cpp/.test(ffSkip.text);
+try { fs.rmSync(skipRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const globAndWalkOk = globNudgeOk && skipOk;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -987,6 +1010,7 @@ const rows = [
   ["per-call root: findProjectRoot walk-up + resolveRoot precedence + MCP roots", rootResolveOk, "true", rootResolveOk],
   ["output cap v2: refs collapse per-file + common-prefix factor (toggle)", capResultsOk, "true", capResultsOk],
   ["clean teardown: no orphaned LSP child after disposeClients", teardownOk, "true", teardownOk],
+  ["Glob-tool nudge → find_files + find_files skips heavy dirs", globAndWalkOk, "true", globAndWalkOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
