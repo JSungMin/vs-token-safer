@@ -106,13 +106,23 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `server/shell-split.js`, SHARED with `vts discover` so enforcement and measurement agree): a `|` inside
   quotes is pattern, not pipeline — so `grep "FooA|FooB"` / `grep "^#include"` (the top bypass shapes per
   `vts discover`) rewrite to `vts text` (regex); inside double quotes `\"` is an escaped literal; SAFE_TEXT
-  allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). The Grep TOOL stays warn-only but `grepNudgeFor` embeds a
-  READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in the nudge. `VTS_REWRITE=0`
-  → block instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out;
-  escape hatch `VTS_ENFORCE=0`. The human-facing block/nudge/log messages are i18n'd: `uiLang()` picks
-  Korean when `VTS_LANG`/config `lang` is `ko` OR the OS locale (Intl) is `ko-*`, else English — and the
-  block copy is deliberately REASSURING (a red box is just the hook saying "hold on", not a failure) + leads
-  with the token-savings win. `VTS_LANG=en|ko` forces it.
+  allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). `grepNudgeFor` embeds a
+  READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in every Grep nudge/block.
+  GREP-TOOL enforcement v2 (A+): a clear SYMBOL HUNT — a bare identifier OR a regex with a code-structural
+  cue (`::` / a literal `(` / `void·class·struct·enum·template`) per `isSymbolHuntGrep` — is BLOCKED (exit 2)
+  and routed to search_symbol/search_text; freeform text AND bare identifier-alternation (`TODO|FIXME`) stay
+  WARN (no false-positive block). `VTS_GREP_BLOCK=0` reverts the escalation to warn-only. Measured: symbol
+  hunts ≈ 64% of Grep-tool result tokens; freeform left alone. GLOB/Search TOOL (filename search): warn-only
+  nudge → `find_files` (a different tool, can't updatedInput-rewrite), source-signal-gated (`isCodeGlobTool`);
+  the built-in Glob has no cap + times out on a giant UE tree. find_files/search_text are walk-BOUNDED:
+  shared `SKIP_DIRS` (node_modules/Intermediate/Binaries/Saved/build/… ) + a 4s time box so a huge tree can't
+  hang them. `vts discover` now also counts the Glob tool as a find_files bypass. `VTS_REWRITE=0` → block
+  instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out; escape hatch
+  `VTS_ENFORCE=0`. Messages i18n'd (`uiLang()`: Korean when `VTS_LANG`/config `lang`=`ko` OR OS locale `ko-*`,
+  else English; `VTS_LANG=en|ko` forces). Copy is AGENT-DIRECTED — the actionable part instructs the assistant
+  ("re-run with the vts tool matching the intent" + the concrete call), with a brief human-facing reassurance
+  that the red box is a redirect ("hold on"), not a failure — the hook output is consumed by the MODEL, which
+  is the one that re-runs, not a human picking from a menu.
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
 - Config dir `~/.vs-token-safer`, env prefix `VTS_`. MCP server name `vs-search`.

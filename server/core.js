@@ -291,6 +291,18 @@ function matchBypass(name, input) {
       return { tool: "Grep", q: cleanQ(String(input.pattern || "")) };
     }
   }
+  if (name === "Glob") {
+    // The built-in Glob/Search tool is a FILENAME search — a bypass of find_files (token-capped + walk-
+    // bounded). Count it when it targets source (code-ext glob, code dir, or a specific Name.* form); a
+    // doc/asset/log glob is skipped (find_files isn't the better tool there).
+    const pat = String(input.pattern || "");
+    const base = (pat.replace(/\\/g, "/").split("/").pop() || "").toLowerCase();
+    const p = String(input.path || "").replace(/\\/g, "/").toLowerCase();
+    if (DISCOVER_TEXT_TGT.test(base) || DISCOVER_TEXT_TGT.test(p)) return null;
+    if (DISCOVER_CODE_EXT.test(base) || DISCOVER_CODE_DIR.test(p) || /[a-z0-9_]\.[*a-z0-9]+$/.test(base)) {
+      return { tool: "Glob", q: cleanQ(pat) };
+    }
+  }
   return null;
 }
 // Shared transcript scan: find bypassed code searches and (always, cheaply) harvest the source-file
