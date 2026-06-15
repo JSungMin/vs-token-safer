@@ -286,20 +286,24 @@ function grepNudgeFor(ti) {
       "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
       "Grep is fine — carry on. Disable: VTS_ENFORCE=0.";
 }
-// enforcement v2 (A+): a Grep-TOOL pattern HUNTING A NAMED SYMBOL is escalated from warn to BLOCK — a
-// semantic tool is strictly better there (smaller, exact, no regex false positives — `void.*Foo\(` also
-// matches `SetActiveFoo`). A symbol hunt that we BLOCK = a bare identifier, OR a regex carrying a ≥4-char
-// identifier AND a code-structural cue (:: , a literal `(` call, or a C++/decl keyword). Those cues don't
-// occur in prose or keyword greps, so the block is false-positive-safe. NOT blocked (stays warn): freeform
-// text (message fragments) AND bare identifier-alternation — `TODO|FIXME` / `ERROR|WARN` look like symbol
-// alternations but are legit keyword greps, so alternation alone never blocks (the model can still take the
-// warn's search_text). A `::Foo\b|void.*Foo\(` pattern carries `::` + `(` → blocked; a `TODO|FIXME` doesn't.
+// enforcement v2 (A+) + v2.1: a Grep-TOOL pattern HUNTING A NAMED SYMBOL is escalated from warn to BLOCK —
+// a semantic tool is strictly better (smaller, exact, no regex false positives — `void.*Foo\(` also matches
+// `SetActiveFoo`), and the reroute is search_text/search_symbol (same regex, token-capped → no wrong/missing
+// results, just friction). A symbol hunt that we BLOCK = (1) a bare identifier; (2) a regex with a ≥4-char
+// identifier AND a code-structural cue (`::`, a literal `(`, a C++/decl keyword); or (3) v2.1 — an ALTERNATION
+// (`A|B|C`) carrying a CamelCase or snake_case identifier (`MaxWalkSpeed|MaxExcessSpeed`, `get_value|set_value`).
+// (3) is the top measured bypass (UE type/symbol enumeration). KEPT as warn (false-positive-safe): freeform
+// single-token text, AND keyword alternations — `TODO|FIXME` / `ERROR|WARN` / `GET|POST` are ALL-CAPS with no
+// lower→upper transition, so they carry no CamelCase/snake signal and never match (3). A `TODO|FIXME` doesn't
+// block; a `MaxWalkSpeed|MaxExcessSpeed` does. VTS_GREP_BLOCK=0 reverts all of this to warn-only.
 function isSymbolHuntGrep(ti) {
   const pat = String(ti.pattern || "");
   if (!pat || pat.length > 200) return false;
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(pat)) return true;                       // bare identifier → search_symbol
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(pat)) return true;                       // (1) bare identifier → search_symbol
   if (!/[A-Za-z_][A-Za-z0-9_]{3,}/.test(pat)) return false;                    // no real identifier token → not a symbol hunt
-  return /::|\\\(|\bvoid\b|\bclass\b|\bstruct\b|\benum\b|\btemplate\b/.test(pat); // code-structural cue only (no alternation)
+  if (/::|\\\(|\bvoid\b|\bclass\b|\bstruct\b|\benum\b|\btemplate\b/.test(pat)) return true; // (2) code-structural cue
+  if (pat.includes("|") && /[a-z][A-Z]|[a-z][a-z0-9]*_[a-z]/.test(pat)) return true;        // (3) CamelCase/snake alternation
+  return false;
 }
 // Don't block a search explicitly aimed at non-code (a doc/asset glob or path) even if the pattern looks
 // symbol-ish — the symbol may legitimately be referenced in a .md/.json.
