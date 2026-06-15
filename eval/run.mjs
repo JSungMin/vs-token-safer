@@ -1008,6 +1008,37 @@ const findEdgeOk = hFindMulti.status === 2 &&                                   
 const v22Ok = findDirOk && globBlkOk && hGlobConcrete.status === 2 && hGlobWild.status === 2 &&
   hGlobBare.status === 0 && hGlobAsset.status === 0 && hGlobUasset.status === 0 && findEdgeOk;
 
+// 52) symbolic editing (Serena-style): edit a declaration by NAMING it — the LSP outline (documentSymbol)
+// supplies the body span, so no whole-file Read + line-counting for an exact-match Edit. replace_symbol_body
+// replaces the span; insert_before/after splice at its edges; safe_delete refuses while referenced (the mock
+// returns a referrer at the symbol's name line) unless force=true. Preview by default; apply=true writes.
+const seDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-symedit`);
+fs.mkdirSync(seDir, { recursive: true });
+const seFile = path.join(seDir, "Ed.cpp");
+const SEBODY = "L0\nL1\nL2\nL3\n0123456789 rest\n"; // mock documentSymbol puts "Foo" at line 4, chars 0-10
+const seW = () => fs.writeFileSync(seFile, SEBODY);
+const seR = () => fs.readFileSync(seFile, "utf8");
+seW();
+const sePrev = await runTool("replace_symbol_body", { symbol: "Foo", path: seFile, body: "X", backend: "clangd" });
+const sePrevOk = !sePrev.isError && /PREVIEW/.test(sePrev.text) && /Ed\.cpp:5/.test(sePrev.text) && seR() === SEBODY; // preview → not written
+const seRepl = await runTool("replace_symbol_body", { symbol: "Foo", path: seFile, body: "ZZZ", backend: "clangd", apply: true });
+const seReplOk = !seRepl.isError && /APPLIED/.test(seRepl.text) && seR() === "L0\nL1\nL2\nL3\nZZZ rest\n";
+seW();
+const seBefore = await runTool("insert_before_symbol", { symbol: "Foo", path: seFile, text: "PRE", backend: "clangd", apply: true });
+const seBeforeOk = !seBefore.isError && seR() === "L0\nL1\nL2\nL3\nPRE\n0123456789 rest\n";
+seW();
+const seAfter = await runTool("insert_after_symbol", { symbol: "Foo", path: seFile, text: "POST", backend: "clangd", apply: true });
+const seAfterOk = !seAfter.isError && seR() === "L0\nL1\nL2\nL3\n0123456789\nPOST rest\n";
+seW();
+const seMiss = await runTool("replace_symbol_body", { symbol: "Nope", path: seFile, body: "x", backend: "clangd" });
+const seMissOk = seMiss.isError && /no symbol named "Nope"/.test(seMiss.text);
+const seRefuse = await runTool("safe_delete", { symbol: "Foo", path: seFile, backend: "clangd", apply: true });
+const seRefuseOk = !seRefuse.isError && /REFUSED/.test(seRefuse.text) && /reference/.test(seRefuse.text) && seR() === SEBODY; // referenced → not deleted
+const seForce = await runTool("safe_delete", { symbol: "Foo", path: seFile, force: true, backend: "clangd", apply: true });
+const seForceOk = !seForce.isError && /force/.test(seForce.text) && seR() === "L0\nL1\nL2\nL3\n rest\n";
+try { fs.rmSync(seDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const symEditOk = sePrevOk && seReplOk && seBeforeOk && seAfterOk && seMissOk && seRefuseOk && seForceOk;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1078,6 +1109,7 @@ const rows = [
   ["Glob-tool nudge → find_files + find_files skips heavy dirs", globAndWalkOk, "true", globAndWalkOk],
   ["enforce v2: symbol-hunt Grep blocks, freeform warns + discover counts Glob", enforceAndDiscoverOk, "true", enforceAndDiscoverOk],
   ["v2.2: find <dir> honored in rewrite + concrete-code Glob blocks → find_files", v22Ok, "true", v22Ok],
+  ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

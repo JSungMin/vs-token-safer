@@ -937,6 +937,46 @@ function applyEditsToText(text, edits) {
   return out;
 }
 
+// ─── Symbolic editing (Serena-style) ─────────────────────────────────────────
+// Edit a declaration by NAMING it instead of Read-ing the whole file into context + counting lines for an
+// exact-match Edit. The LSP outline (textDocument/documentSymbol) gives `.range` = the WHOLE declaration
+// (signature + body) and `.selectionRange` = just the name; the engine supplies the coordinates, we only
+// splice text. Same model as the rest of vts: official index does the analysis, we glue + token-cap. All
+// callers preview by default (apply=true writes), mirroring rename — the only other mutating tool.
+function flattenDocSyms(syms, out) {
+  out = out || [];
+  for (const s of syms || []) { out.push(s); if (s.children) flattenDocSyms(s.children, out); }
+  return out;
+}
+// Resolve a symbol NAME to the DocumentSymbol whose `.range` bounds its body. `path` (when given) pins the
+// file and goes straight to its outline; otherwise the declaration's file is found via the index (same
+// exact-name ranking as find_references-by-name). An optional 0-based `line` disambiguates same-named
+// symbols. Returns { file, ds, ambiguous } or { error }.
+async function resolveSymbolForEdit(c, root, backendName, a) {
+  const want = String(a.symbol || "");
+  if (!want) return { error: "needs `symbol` (the declaration name to edit)." };
+  let file = a.path ? String(a.path) : null;
+  if (!file) {
+    const persisted = backendName === "clangd" && hasPersistedIndex(root);
+    const syms = await symbolReady(c, want, persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
+    const pick = syms.slice().sort((x, y) => (x.name === want ? 0 : 1) - (y.name === want ? 0 : 1))[0];
+    if (!pick) return { error: `no indexed declaration for "${want}" — pass path=<file> (the outline is read per-file), or run search_symbol first.` };
+    file = fromUri(pick.location.uri);
+  }
+  c.didOpen(file, langIdForPath(file, backendName));
+  const flat = flattenDocSyms(await c.documentSymbol(file));
+  let matches = flat.filter((s) => s.name === want);
+  if (matches.length > 1 && a.line != null) {
+    const ln = Number(a.line);
+    const near = matches.filter((s) => ((s.selectionRange || s.range) || {}).start && (s.selectionRange || s.range).start.line === ln);
+    if (near.length) matches = near;
+  }
+  if (!matches.length) return { error: `no symbol named "${want}" in ${file.replace(/\\/g, "/")} — the match is exact-name; check spelling or run document_symbols on the file.` };
+  const ds = matches[0];
+  if (!ds.range) return { error: `backend "${backendName}" returned no body range for "${want}" (flat SymbolInformation, not a hierarchical outline) — can't bound the body to edit safely.` };
+  return { file, ds, ambiguous: matches.length };
+}
+
 // Run an external command (git / p4), capturing stdout even on a non-zero exit (git diff/status return
 // non-zero in some states but still print useful output). Pure best-effort: never throws — a missing
 // binary or a timeout comes back as { out:"", err, code }. The wrapper tools compact `out` before it
@@ -991,6 +1031,17 @@ export async function runTool(name, a = {}) {
     let pre = "";
     if (!_setupNudged && needsSetup()) { _setupNudged = true; pre = SETUP_NUDGE; }
     return out(pre + body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok));
+  };
+  // Shared preview/apply writer for the symbolic-edit tools. Preview by default (file:line span only —
+  // token-light); apply=true splices the one edit and writes, reusing the rename read-only/Perforce note.
+  const symbolEditResult = (file, edit, apply, headline, rawObj) => {
+    const fp = file.replace(/\\/g, "/");
+    const r = edit.range;
+    const span = r.start.line === r.end.line ? `${fp}:${r.start.line + 1}` : `${fp}:${r.start.line + 1}-${r.end.line + 1}`;
+    if (!apply) return finishOut(rawObj, `${headline} — PREVIEW at ${span}. Pass apply=true to write.`);
+    try { fs.writeFileSync(file, applyEditsToText(fs.readFileSync(file, "utf8"), [edit])); }
+    catch (e) { return finishOut(rawObj, `${headline} — FAILED to write ${span} (${e.code || e.message}). Read-only? Check out of Perforce first.`); }
+    return finishOut(rawObj, `${headline} — APPLIED at ${span}.`);
   };
   try {
     if (name === "vts_setup") {
@@ -1299,6 +1350,37 @@ export async function runTool(name, a = {}) {
       }
       const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first): ${failed.slice(0, 5).join("; ")}` : "";
       return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${note}\n${shown}`);
+    }
+    if (name === "replace_symbol_body" || name === "insert_after_symbol" || name === "insert_before_symbol" || name === "safe_delete") {
+      const c = await getClient(root, backendName);
+      const r = await resolveSymbolForEdit(c, root, backendName, a);
+      if (r.error) return err(`${name}: ${r.error}`);
+      const apply = a.apply === true || a.apply === "true";
+      const rng = r.ds.range;
+      const ambl = r.ambiguous > 1 ? ` (⚠ ${r.ambiguous} symbols named "${a.symbol}"; editing the first — pass line=<0-based> to disambiguate)` : "";
+      if (name === "replace_symbol_body") {
+        if (a.body == null) return err("replace_symbol_body needs `body` (the new full text for the declaration — signature + body).");
+        return symbolEditResult(r.file, { range: rng, newText: String(a.body) }, apply, `replace_symbol_body "${a.symbol}"${ambl}`, r.ds);
+      }
+      if (name === "insert_after_symbol") {
+        if (a.text == null) return err("insert_after_symbol needs `text` (inserted on a new line after the declaration).");
+        return symbolEditResult(r.file, { range: { start: rng.end, end: rng.end }, newText: "\n" + String(a.text) }, apply, `insert_after_symbol "${a.symbol}"${ambl}`, r.ds);
+      }
+      if (name === "insert_before_symbol") {
+        if (a.text == null) return err("insert_before_symbol needs `text` (inserted on a line before the declaration).");
+        return symbolEditResult(r.file, { range: { start: rng.start, end: rng.start }, newText: String(a.text) + "\n" }, apply, `insert_before_symbol "${a.symbol}"${ambl}`, r.ds);
+      }
+      // safe_delete — refuse while the symbol is still referenced (unless force=true), so a delete can't
+      // silently orphan call sites. References resolve at the NAME (selectionRange), not the whole body.
+      const sel = (r.ds.selectionRange || rng).start;
+      const refs = ((await c.references(r.file, sel.line, sel.character, false)) || []).filter(Boolean);
+      const force = a.force === true || a.force === "true";
+      if (refs.length && !force) {
+        const where = refs.slice(0, max).map((l) => locLine(l.uri, l.range)).join("\n");
+        return finishOut(refs, `safe_delete "${a.symbol}" REFUSED — ${refs.length} reference(s) still point here. Remove them first, or pass force=true. References:\n${where}`);
+      }
+      const fl = refs.length ? ` (force: ${refs.length} ref(s) ignored)` : "";
+      return symbolEditResult(r.file, { range: rng, newText: "" }, apply, `safe_delete "${a.symbol}"${fl}${ambl}`, refs);
     }
     return err(`Unknown tool: ${name}`);
   } catch (e) {
