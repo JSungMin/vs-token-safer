@@ -1,6 +1,6 @@
 {
   "name": "vs-token-safer",
-  "version": "0.20.2",
+  "version": "0.20.3",
   "type": "module",
   "description": "Force code search through an official language server's index (clangd for C++, Roslyn for C#) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
   "keywords": ["clangd", "roslyn", "lsp", "code-search", "cpp", "csharp", "unreal", "visual-studio", "mcp", "claude", "claude-code", "grep", "token-efficiency"],
