@@ -101,11 +101,11 @@ instead of grep:
 
 | Layer | File | Effect |
 | --- | --- | --- |
-| **Rewrite/enforcement hook** | `hooks/block-code-grep.js` | Intercepts Bash `grep`/`rg`/`ack`/`ag`/`findstr`/`git grep` and `find -name` over source files (`.c/.cc/.cpp/.h/.hpp/.cs/.ts/.py`…, or `src/`, `source/`, `engine/`, `plugins/`) and — when the command is a single safe segment — **rewrites it to the equivalent `vts` query in place** (an identifier goes to semantic `search_symbol`, a literal to `search_text`, a `find -name` to `find_files`). The model's flow is unbroken and the output is always token-capped. Anything ambiguous (a pipeline, a non-literal pattern) falls back to a hard block. It's surgical: it only fires when a search tool is the actual executable of a segment, and lets raw-text searches (logs, `.md`, `.json`, config, build dirs) through untouched. `VTS_REWRITE=0` → block instead of rewrite; `excludeCommands` opts a command out; `VTS_ENFORCE=0` disables it. |
+| **Rewrite/enforcement hook** | `hooks/block-code-grep.js` | Covers three surfaces. **Bash** `grep`/`rg`/`ack`/`ag`/`findstr`/`git grep`/`find -name` over source — when it's a single safe segment — is **rewritten to the equivalent `vts` query in place** (an identifier → semantic `search_symbol`, a literal → `search_text`, a `find <dir> -name` → `find_files` rooted at `<dir>`); anything ambiguous (a pipeline, a non-literal pattern, a multi-`-name`/`-o` find that can't be one call) falls back to a block. The built-in **Grep tool**: a clear *symbol hunt* — a bare identifier, a `::`/`(`/`void·class`-style regex, or a CamelCase alternation like `FooBar|BazQux` — is **blocked** with a ready-to-use `search_symbol`/`search_text` call; freeform text and keyword alternations (`TODO|FIXME`) stay a warn. The built-in **Glob tool**: a concrete code-file pattern (`*.cpp`, `Foo.h`, `**/Bar.*`) is **blocked** toward `find_files` (which is walk-bounded, so it won't time out on a giant tree); asset/bare globs (`Foo.png`, `**/*`) are left alone. Messages are agent-directed (they tell the assistant the exact tool to re-run) and i18n'd (EN/KO). Raw-text searches (logs, `.md`/`.json`, config, build dirs) pass through untouched. `VTS_REWRITE=0` → block instead of rewrite; `VTS_GREP_BLOCK=0` → the Grep/Glob escalation reverts to warn-only; `excludeCommands` opts a command out; `VTS_ENFORCE=0` disables all of it. |
 | **Routing skill** | `skills/vs-search/SKILL.md` | Rules that bias Claude toward the indexed tools first: symbol/reference/definition lookups go to `search_symbol` / `find_references` / `goto_definition`, and grep is a last resort. |
-| **Token-capping core** | `server/core.js` | `runTool()` shared by both adapters: turns LSP results into `kind name (in container) @ file:line`, caps at `maxResults`, appends a `… N more` footer. Never ranges, kinds, or source bodies. A truncated `find_files`/`search_text` writes the full set to a recovery (tee) file so nothing is silently dropped. |
+| **Token-capping core** | `server/core.js` | `runTool()` shared by both adapters: turns LSP results into `kind name (in container) @ file:line`, caps at `maxResults`, appends a `… N more` footer. Never ranges, kinds, or source bodies. A refs-heavy result is collapsed further — `find_references` coalesces one row per file (`Foo.cpp:42,88,120`) and factors out a shared directory prefix once, so a deep tree of call sites stays small (every location preserved; `VTS_COMPACT_RESULTS=0` restores one-per-line). A truncated `find_files`/`search_text` writes the full set to a recovery (tee) file so nothing is silently dropped. |
 | **Savings + discover** | `server/core.js` | A local ledger records every search's tokens-saved (with a 30-day graph, daily/history, and an estimated value via `vts savings`). `vts discover` scans your recent Claude sessions for code searches that *bypassed* the index and reports the tokens they cost — so you can see the catch-rate, not just the wins. |
-| **Headless LSP client** | `server/lsp.js` + `server/backends/index.js` | A minimal, fully-owned LSP client (JSON-RPC 2.0, `Content-Length` framing) that spawns the official engine over stdio, plus the spawn configs, `pickBackend(root)` autodetect, and the IDE-style pre-warm (`afterInit`). |
+| **Headless LSP client** | `server/lsp.js` + `server/backends/index.js` | A minimal, fully-owned LSP client (JSON-RPC 2.0, `Content-Length` framing) that spawns the official engine over stdio, plus the spawn configs, `pickBackend(root)` autodetect, and the IDE-style pre-warm (`afterInit`). The project root is resolved **per call** — an explicit `projectPath`, else the enclosing project of the file in the query, else the MCP workspace root — so one globally-installed server answers for **every repo a session touches**, not just one configured pin. Live backends are pooled and bounded (`VTS_MAX_BACKENDS`, plus an idle reaper) so touching several repos can't spawn an unbounded number of language servers. |
 | **VCS output compaction** | `server/compact.js` | The index can't help with `git`/`p4` output, but the raw dump is verbose and repetitive. `vts_git` / `vts_p4` run a **read-only** command and group/dedup/cap the result (status by change-type + dir, log one line per commit, diff as a per-file diffstat, `p4 opened` by action + depot dir), recorded in the same savings ledger. Mutating subcommands are refused; the hook reroutes a plain `git status` / `p4 opened` here automatically. |
 
 > **Engine = official, glue = ours.** clangd (LLVM) and Roslyn (Microsoft) do the analysis; this repo
@@ -166,7 +166,7 @@ Bash grep-and-paste vs this plugin. No project source is reproduced, only aggreg
   text so it returns more of them (comments, strings, unrelated identifiers). The plugin returns one
   `file:line` per semantic hit, capped.
 - The mock-LSP eval (`node eval/run.mjs`, no toolchain) gates the response-shaping win on every commit:
-  raw index `~57,308 tok` → capped output `~1,549 tok` = **97.3%** (45/45 checks).
+  raw index `~57,308 tok` → capped output `~1,549 tok` = **97.3%** (52/52 checks).
 
 ### Accuracy difference (and why)
 This is a precision/recall trade-off, not a case of one being more correct than the other:
@@ -239,12 +239,13 @@ by day and by recent run. That's the *caught* side. For the *missed* side, `vts 
 recent Claude sessions for code searches that went around the index and reports what they cost — together
 they give a catch-rate, not just a feel-good total:
 ```
-$ vts discover --since 7
-vs-token-safer discover — missed token savings (local scan, last 7 day(s), 9 transcript(s))
-  314 code search(es) bypassed vts (Grep×261, grep×43, find×9, findstr×1)
-  raw tool output ingested: ~129,052 tok — routed through vts most of this is avoidable
-  catch-rate: ~681,036 tok caught (via vts) vs ~129,052 still bypassing → 84.1% routed through vts
+$ vts discover --since 1
+vs-token-safer discover — missed token savings (local scan, last 1 day(s), 9 transcript(s))
+  86 code search(es) bypassed vts (Grep×48, Glob×18, grep×12, find×8)
+  raw tool output ingested: ~28,692 tok — routed through vts most of this is avoidable
+  catch-rate: ~770,333 tok caught (via vts) vs ~28,692 still bypassing → 96.4% routed through vts
 ```
+(Searches the hook itself blocked don't count as bypasses — only the ones that actually slipped through.)
 > "Saved" here is vs the language server's *raw* index response. Savings vs Bash grep are typically far
 > larger; see [BENCHMARK.md](BENCHMARK.md). `discover` is local and read-only — it reads transcript
 > metadata and tool I/O sizes, never ships any of it anywhere.
@@ -403,6 +404,9 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | `projectPath` | `VTS_PROJECT_PATH` | cwd | Project root (where the compile DB / `.sln` lives). |
 | `backend` | `VTS_BACKEND` | auto | `clangd` \| `roslyn` (auto-detected from the root). |
 | `maxResults` | `VTS_MAX_RESULTS` | `60` | Cap on returned `file:line` locations. |
+| — | `VTS_COMPACT_RESULTS` | `1` | `0` restores one-location-per-line output (disables the `find_references` per-file + common-prefix collapse). |
+| — | `VTS_MAX_BACKENDS` | `2` | Max concurrently-live language servers; the least-recently-used idle one is evicted past the cap (memory guard for multi-repo use). |
+| — | `VTS_BACKEND_IDLE_MS` | `300000` | A language server idle this long is shut down by a background reaper (`0` = off). |
 | — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | Override the clangd executable / args. |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll`. |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto (MS engine) → `csharp-ls` | Override the C# LSP executable / args. |
@@ -427,7 +431,8 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 | — | `VTS_CENTRALITY_MAX` | `20000` | Upper bound on candidates the centrality scan iterates; `0` disables centrality entirely. |
 | — | `VTS_CENTRALITY_BUDGET_MS` | `400` | Per-warm-up budget for *new* include-prefix reads. Centrality is adaptive: each warm-up scans a budget's worth of new/changed files into a persistent include-graph cache (`VTS_INCLUDE_GRAPH`), so coverage grows across warm-ups (`0` = cache only). |
 | — | `VTS_ENFORCE` | `1` | `0`/`false`/`off` lets Bash code-grep through (escape hatch when the language server is unavailable). |
-| — | `VTS_REWRITE` | `1` | `0` makes the hook block a code-grep instead of rewriting it to a `vts` query. |
+| — | `VTS_REWRITE` | `1` | `0` makes the hook block a Bash code-grep instead of rewriting it to a `vts` query. |
+| — | `VTS_GREP_BLOCK` | `1` | `0` reverts the **Grep/Glob tool** symbol-hunt / code-file-glob escalation from block back to warn-only. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt from rewrite/block (e.g. `rg,find`). Also `excludeCommands` in config.json. |
 | — | `VTS_COMPACT_VCS` | `1` | `0` stops the hook from rerouting a read-only `git status/log/diff` / `p4 opened/…` to the compacted `vts_git`/`vts_p4` wrapper. |
 | `lang` | `VTS_LANG` | auto | UI language for the hook's block/nudge/log messages: `ko` or `en`. Auto-detects Korean from the OS locale; `VTS_LANG` (or config `lang`) forces it. |
@@ -441,14 +446,21 @@ Precedence: **environment variable (`VTS_*`) > `~/.vs-token-safer/config.json` >
 
 ## How enforcement works
 
-- The **hook** runs before every Bash call. If the command is a code search (grep/rg/ack/ag/findstr/
-  `git grep` or `find -name` targeting a code extension — `*.c/.cc/.cpp/.h/.hpp/.cs/.ts/.tsx/.js/.jsx/
-  .mjs/.cjs/.py` — or `src|source|engine|plugins/`) and is *not* aimed at a log/md/json/build path, it
-  **rewrites the command to the equivalent `vts` query** (semantic `symbol` for an identifier, `text` for
-  a literal, `files` for `find -name`) so the search still runs, token-capped. If it can't build a safe
-  rewrite (a pipeline, a pattern with shell metacharacters), it falls back to blocking. `VTS_REWRITE=0`
-  forces block-only; `excludeCommands`/`VTS_EXCLUDE_COMMANDS` exempt a command; `VTS_ENFORCE=0` disables
-  it entirely.
+- The **hook** runs before every Bash, Grep, and Glob tool call.
+  - A **Bash** code search (grep/rg/ack/ag/findstr/`git grep` or `find <dir> -name`) over a code extension
+    (`*.c/.cc/.cpp/.h/.hpp/.cs/.ts/.tsx/.js/.jsx/.mjs/.cjs/.py`) or `src|source|engine|plugins/`, not aimed
+    at a log/md/json/build path, is **rewritten to the equivalent `vts` query** (semantic `symbol` for an
+    identifier, `text` for a literal, `files` for `find` — rooted at the directory the `find` named). If it
+    can't build a safe, complete rewrite (a pipeline, shell metacharacters, a multi-`-name`/`-o` find), it
+    blocks instead.
+  - The built-in **Grep tool**, when the pattern is a clear symbol hunt (a bare identifier, a code-structural
+    regex, or a CamelCase alternation), is **blocked** toward `search_symbol`/`search_text`; freeform text and
+    ALL-CAPS keyword alternations stay a warn.
+  - The built-in **Glob tool**, when it names a concrete code file (`*.cpp`, `Foo.h`, `**/Bar.*`), is
+    **blocked** toward `find_files` (walk-bounded, so a giant tree can't time it out); asset and bare globs
+    pass.
+  - Knobs: `VTS_REWRITE=0` forces Bash block-only; `VTS_GREP_BLOCK=0` reverts the Grep/Glob escalation to
+    warn-only; `excludeCommands`/`VTS_EXCLUDE_COMMANDS` exempt a Bash command; `VTS_ENFORCE=0` disables it all.
 - The **skill** biases Claude toward the indexed tools proactively.
 - The **core** guarantees the token cap no matter how Claude calls the tool, and tees the full result of a
   truncated `find_files`/`search_text` so nothing is silently dropped.
