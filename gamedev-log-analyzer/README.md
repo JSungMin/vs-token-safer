@@ -31,8 +31,10 @@ just the scalar columns that actually decide the answer.
 
 - **Parses** each line into `{severity, category, file:line, message}` across several engines (see the
   support matrix below), with a generic severity-keyword fallback for anything unrecognized.
-- **Template dedup:** numbers/addresses/GUIDs/paths/instance-ids are normalized so repeated spam
-  collapses into one group with a `×count` and representative locations.
+- **Template dedup:** numbers/addresses/GUIDs/paths/instance-ids **and quoted literals** (asset/object
+  names like `'/Game/Maps/Foo'`) are normalized so repeated spam collapses into one group with a `×count`
+  and representative locations — per-asset streaming-failure spam dedups instead of splitting one group
+  per name.
 - **Search/filter:** by `severityMin`, `category`, `file`, `query`; `groupBy: "callsite"` rolls
   everything up by `file:line` (best for "what's flooding my log"), and `groupBy: "code"` rolls up by
   diagnostic code (`C4996`, `LNK2019`, `CS1002` …) — a noisy build with hundreds of warnings collapses

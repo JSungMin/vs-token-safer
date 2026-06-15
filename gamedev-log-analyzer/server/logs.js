@@ -205,6 +205,11 @@ function templateOf(msg) {
   return msg
     .replace(/0x[0-9a-fA-F]+/g, "<addr>")
     .replace(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g, "<guid>")
+    // Quoted literals (asset / object / class names: `Failed to load '/Game/Maps/Foo'`) vary per name —
+    // collapse them so per-asset spam dedups into one group instead of splitting N ways. Exact rule (not
+    // fuzzy): only messages identical APART FROM the quoted content merge. Mirrors the learnings-ledger
+    // `"<q>"` normalizer. Runs before <path>/<n> so a quoted path also collapses.
+    .replace(/'[^']*'|"[^"]*"/g, "<str>")
     .replace(/[A-Za-z]:[\\/][^\s'"]+/g, "<path>")
     .replace(/-?\d+(?:\.\d+)?/g, "<n>")
     .trim();
