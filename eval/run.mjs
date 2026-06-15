@@ -543,10 +543,10 @@ const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOut
 // A bare identifier is now BLOCKED (enforcement v2 A+), so its concrete nudge lands in the block stderr;
 // a non-symbol-hunt alternation still WARNS (additionalContext). Read each from where it now lives.
 const nIdent = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }).err;
-const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
+const nRegex = runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }).err; // CamelCase alternation → blocked (v2.1); nudge in the block stderr
 const nudgeOk =
   /find_references symbol="Foo"/.test(nIdent) && /search_symbol q="Foo"/.test(nIdent) && // identifier → usages + decl (in the block msg)
-  /search_text q="FooA\|FooB"/.test(nRegex); // regex (no structural cue) → warn with a text suggestion
+  /search_text q="FooA\|FooB"/.test(nRegex); // CamelCase alternation → block, with the search_text call embedded
 const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
 fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
 fs.writeFileSync(path.join(alRoot, "P--x", "s.jsonl"), [
@@ -945,20 +945,23 @@ const skipOk = !ffSkip.isError && /Real\.cpp/.test(ffSkip.text) && !/Gen\.cpp/.t
 try { fs.rmSync(skipRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 const globAndWalkOk = globNudgeOk && skipOk;
 
-// 50) enforcement v2 (A+): a SYMBOL-HUNT Grep is BLOCKED (exit 2 → search_symbol/search_text); a bare
-// identifier blocks; freeform text (TODO|FIXME) and bare identifier-alternation (FooBar|BazQux) stay WARN
-// (no false-positive block); VTS_GREP_BLOCK=0 reverts to warn; a doc-target (*.md) isn't blocked. Plus
-// discover now counts the built-in Glob/Search tool as a find_files bypass.
+// 50) enforcement v2 (A+ / v2.1): a SYMBOL-HUNT Grep is BLOCKED (exit 2 → search_symbol/search_text) — a
+// bare identifier, a structural-cue regex, OR a CamelCase/snake ALTERNATION (FooBar|BazQux, the top measured
+// bypass shape — UE type enumeration). Keyword alternations (TODO|FIXME, GET|POST — ALL-CAPS, no lower→upper
+// transition) and freeform single tokens stay WARN (no false-positive block). VTS_GREP_BLOCK=0 reverts; a
+// doc-target (*.md) isn't blocked. Plus discover counts the built-in Glob/Search tool as a find_files bypass.
 const hSymHunt = runHook({ tool_name: "Grep", tool_input: { pattern: "::FooWidget\\b|void.*FooWidget\\(", path: "src/lib" } });
 const hIdentBlk = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", path: "src/lib" } });
-const hFreeform = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO|FIXME", path: "src/lib" } });
-const hAltern = runHook({ tool_name: "Grep", tool_input: { pattern: "BarA|BarB", path: "src/lib" } });
+const hCamelAlt = runHook({ tool_name: "Grep", tool_input: { pattern: "FooBar|BazQux", path: "src/lib" } }); // CamelCase symbol enumeration → block (v2.1)
+const hFreeform = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO|FIXME", path: "src/lib" } });    // ALL-CAPS keyword alternation → warn
+const hKwAlt = runHook({ tool_name: "Grep", tool_input: { pattern: "GET|POST|HEAD", path: "src/lib" } });    // ALL-CAPS keyword alternation → warn
 const hSymOff = runHook({ tool_name: "Grep", tool_input: { pattern: "void.*FooWidget\\(", path: "src/lib" } }, { VTS_GREP_BLOCK: "0" });
 const hSymDoc = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", glob: "*.md" } });
 const enforceV2Ok =
   hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a SYMBOL/.test(hSymHunt.err) && // structural-cue regex → block
   hIdentBlk.status === 2 && /find_references symbol="FooWidget"/.test(hIdentBlk.err) &&                    // bare identifier → block
-  hFreeform.status === 0 && hAltern.status === 0 &&    // freeform text + bare alternation → NOT blocked (warn)
+  hCamelAlt.status === 2 && /search_text q="/.test(hCamelAlt.err) &&                                       // CamelCase alternation → block (v2.1)
+  hFreeform.status === 0 && hKwAlt.status === 0 &&     // keyword alternations (no CamelCase) → NOT blocked (warn)
   hSymOff.status === 0 &&                              // VTS_GREP_BLOCK=0 → reverts to warn
   hSymDoc.status === 0;                                // doc target (*.md) → not blocked
 const glProj = path.join(os.tmpdir(), `vts-eval-${process.pid}-globdisc`);
