@@ -108,11 +108,14 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `vts discover`) rewrite to `vts text` (regex); inside double quotes `\"` is an escaped literal; SAFE_TEXT
   allows `| ^ #` (always double-quoted; `$`/space/backslash still rejected). `grepNudgeFor` embeds a
   READY-TO-USE equivalent call (identifier→search_symbol, regex→search_text) in every Grep nudge/block.
-  GREP-TOOL enforcement v2 (A+): a clear SYMBOL HUNT — a bare identifier OR a regex with a code-structural
-  cue (`::` / a literal `(` / `void·class·struct·enum·template`) per `isSymbolHuntGrep` — is BLOCKED (exit 2)
-  and routed to search_symbol/search_text; freeform text AND bare identifier-alternation (`TODO|FIXME`) stay
-  WARN (no false-positive block). `VTS_GREP_BLOCK=0` reverts the escalation to warn-only. Measured: symbol
-  hunts ≈ 64% of Grep-tool result tokens; freeform left alone. GLOB/Search TOOL (filename search): warn-only
+  GREP-TOOL enforcement v2 (A+) + v2.1: a clear SYMBOL HUNT is BLOCKED (exit 2) and routed to search_symbol/
+  search_text per `isSymbolHuntGrep` — (1) a bare identifier, (2) a regex with a code-structural cue (`::` /
+  literal `(` / `void·class·struct·enum·template`), OR (3) **v2.1** an ALTERNATION (`A|B|C`) carrying a
+  CamelCase/snake identifier (`MaxWalkSpeed|MaxExcessSpeed`, `get_value|set_value`) — the top measured bypass
+  (UE type/symbol enumeration). KEPT as warn (false-positive-safe): freeform single tokens, AND keyword
+  alternations (`TODO|FIXME`/`GET|POST` — ALL-CAPS, no lower→upper transition, so no CamelCase signal). The
+  reroute is search_text (same regex, token-capped) → no wrong/missing results, just friction. `VTS_GREP_BLOCK=0`
+  reverts all of it to warn-only. Measured: v2 block ~172k tok/30d; v2.1 adds ~319k (CamelCase alternation). GLOB/Search TOOL (filename search): warn-only
   nudge → `find_files` (a different tool, can't updatedInput-rewrite), source-signal-gated (`isCodeGlobTool`);
   the built-in Glob has no cap + times out on a giant UE tree. find_files/search_text are walk-BOUNDED:
   shared `SKIP_DIRS` (node_modules/Intermediate/Binaries/Saved/build/… ) + a 4s time box so a huge tree can't
