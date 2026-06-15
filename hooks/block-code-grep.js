@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * vs-token-safer — PreToolUse hook (matchers: Bash, Grep)
+ * vs-token-safer — PreToolUse hook (matchers: Bash, Grep, Glob)
  *
  * Steers code search toward the language-server index (vs-search MCP) instead of text search, and steers
  * LOG analysis toward gamedev-log. Three vectors:
@@ -286,6 +286,36 @@ function grepNudgeFor(ti) {
       "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
       "Grep is fine — carry on. Disable: VTS_ENFORCE=0.";
 }
+// Glob / Search TOOL — the built-in filename search. vts's find_files is the token-capped, walk-bounded
+// equivalent (skips Intermediate/Binaries/node_modules, time-boxed) — the built-in Glob has no result cap
+// and times out on a giant tree (a real UE dead-end: the model gave up on file search entirely). Warn-only
+// (find_files is a DIFFERENT tool → can't updatedInput-rewrite a Glob), nudged ONLY on a source signal so
+// a doc/log/asset glob isn't pestered. The basename of the glob pattern is the ready-to-use find_files q.
+function globBasename(pat) {
+  const seg = String(pat || "").replace(/\\/g, "/").split("/").pop() || "";
+  return seg.replace(/[{}]/g, ""); // a {ts,tsx} brace-set still reads as a hint
+}
+function isCodeGlobTool(ti) {
+  const base = globBasename(ti.pattern).toLowerCase();
+  const p = String(ti.path || "").replace(/\\/g, "/").toLowerCase();
+  if (LOG_TARGET_RE.test(String(ti.pattern || "")) || LOG_TARGET_RE.test(p)) return false; // log → not here
+  if (TEXT_TARGET_RE.test(base)) return false;                                              // *.md/*.json → skip
+  // a code extension in the glob, a code dir in the path, or a specific source filename (Name.* / Name.ext)
+  return CODE_EXT_RE.test(base) || CODE_DIR_RE.test(p) || /[a-z0-9_]\.[*a-z0-9]+$/.test(base);
+}
+function globNudgeFor(ti) {
+  const base = globBasename(ti.pattern);
+  const call = base && base.length <= 80
+    ? (KO ? ` 바로 쓸 수 있는 토큰캡 호출: find_files q="${base}".` : ` Equivalent token-capped call: find_files q="${base}".`)
+    : "";
+  return KO
+    ? "[vs-token-safer] Glob(Search) 툴로 파일명 검색 중이에요. find_files가 토큰캡 + 워크 바운드(Intermediate/" +
+      "Binaries/node_modules 스킵, 시간박스) 버전이라 거대 트리(UE)에서도 안 멈춰요." + call +
+      " 작은 트리 빠른 확인이면 Glob 그대로 OK. 끄기: VTS_ENFORCE=0."
+    : "[vs-token-safer] Filename search via the Glob/Search tool. find_files is the token-capped, walk-bounded " +
+      "equivalent (skips Intermediate/Binaries/node_modules, time-boxed) — it won't time out on a giant tree " +
+      "(UE)." + call + " On a small tree a quick Glob is fine. Disable: VTS_ENFORCE=0.";
+}
 const LOG_NUDGE = KO
   ? "[vs-token-safer] 이 검색은 LOG가 대상입니다. 언어 서버 인덱스는 소스 코드만 다뤄요 — 로그 분석은 grep 대신 " +
     "gamedev-log를 쓰세요 (/gamedev-log-analyzer:logs, 또는 gamedev-log CLI: summary / search / locate / fields / diff). 끄기: VTS_ENFORCE=0."
@@ -350,6 +380,13 @@ process.stdin.on("end", () => {
   if (toolName === "Grep") {
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
     else if (isCodeGrepTool(ti)) emitWarn(grepNudgeFor(ti) + setup);
+    process.exit(0);
+  }
+
+  // Glob / Search TOOL — warn-only nudge toward find_files (token-capped + walk-bounded). Never block —
+  // a quick filename glob on a small tree is fine; the point is to steer the big/UE case off a timeout.
+  if (toolName === "Glob") {
+    if (isCodeGlobTool(ti)) emitWarn(globNudgeFor(ti) + setup);
     process.exit(0);
   }
 
