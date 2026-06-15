@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { compactGit, compactP4 } from "./compact.js";
@@ -32,6 +32,45 @@ export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn"
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
 const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok"];
+
+// ---- per-call project root resolution ----
+// The MCP server is ONE long-lived process serving every repo a session touches, so a single configured
+// projectPath can't be right for all of them. Resolve the root PER CALL instead, preferring the most
+// specific signal available. MCP_ROOTS is the workspace folder(s) the client (Claude Code) advertises via
+// the `roots` capability — set by the index.js handshake; empty when the client doesn't support roots, in
+// which case behavior collapses to exactly the old `PROJECT_PATH || cwd`.
+let MCP_ROOTS = [];
+export function setMcpRoots(paths) { MCP_ROOTS = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === "string" && p); }
+export function getMcpRoots() { return MCP_ROOTS.slice(); }
+function isInside(root, target) {
+  try {
+    const rel = path.relative(path.resolve(root), path.resolve(target));
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  } catch { return false; }
+}
+// Root for an LSP/filesystem query. Precedence: (1) explicit a.projectPath; (2) the enclosing project of a
+// `path` argument — but only walk UP to a NEW root when the path falls OUTSIDE every known root (config pin
+// + MCP roots); a path INSIDE a known root keeps that root so clangd's compile-DB rooting is preserved;
+// (3) an MCP workspace root (current project) over the stale config pin; (4) PROJECT_PATH; (5) cwd.
+export function resolveRoot(a = {}) {
+  if (a.projectPath) return a.projectPath;
+  const known = [PROJECT_PATH, ...MCP_ROOTS].filter(Boolean);
+  const p = a.path || (Array.isArray(a.paths) ? a.paths.find((x) => typeof x === "string") : null);
+  if (p) {
+    const abs = path.isAbsolute(p) ? p : path.resolve(MCP_ROOTS[0] || PROJECT_PATH || process.cwd(), p);
+    const enclosing = known.find((r) => isInside(r, abs));
+    if (enclosing) return enclosing;                 // inside a known root → keep it (preserve rooting)
+    const found = findProjectRoot(abs);
+    if (found) return found;                          // outside all known roots → its real project
+  }
+  if (MCP_ROOTS.length) {
+    return MCP_ROOTS.find((r) => isInside(r, process.cwd())) || MCP_ROOTS[0];
+  }
+  return PROJECT_PATH || process.cwd();
+}
+// Root for a CWD-relative external command (git/p4): never the config pin (the user/agent runs these where
+// they ARE), but an MCP workspace root beats the long-lived server's own process.cwd().
+export function resolveCwdRoot(a = {}) { return a.projectPath || MCP_ROOTS[0] || process.cwd(); }
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
@@ -344,7 +383,7 @@ function discoverReport(a = {}) {
   const { missed, rawTokTotal, learned, filesCount: fc, all, since } = r;
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
-  const learnRoot = a.projectPath || PROJECT_PATH || process.cwd();
+  const learnRoot = resolveRoot(a);
   const scope = (all ? "all time" : `last ${since} day(s)`) + (a.projectPath ? `, scoped to ${a.projectPath}` : "");
   // Synergy B: feed the files those bypassed searches actually hit into the warm-set's query-history, so
   // prewarm front-loads them next time — vts learns from the greps it didn't run.
@@ -898,7 +937,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_savings_reset") { try { fs.writeFileSync(SAVINGS_FILE, "{}"); } catch { /* ignore */ } return out("Savings ledger cleared."); }
     if (name === "vts_discover") return out(discoverReport(a));
     if (name === "vts_warmup") {
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const backendName = a.backend || BACKEND || pickBackend(root);
       if (!backendName) return err(`No backend to warm. Pass backend=clangd|roslyn or ensure ${root} has compile_commands.json / a .sln.`);
       const t0 = Date.now();
@@ -908,7 +947,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
       // no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (minutes).
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const plan = genCompileDbPlan(root, a);
       if (plan.error) return err(plan.error);
       const apply = a.apply === true || a.apply === "true";
@@ -962,7 +1001,7 @@ export async function runTool(name, a = {}) {
     // is set, and are the sanctioned, token-capped replacements for `find -name` / `grep`.
     if (name === "find_files") {
       if (!a.q) return err("find_files needs q (a filename substring or glob like *Manager.cpp).");
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
       if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
@@ -972,7 +1011,7 @@ export async function runTool(name, a = {}) {
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
-      const root = a.projectPath || PROJECT_PATH || process.cwd();
+      const root = resolveRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       // Target selection — naming a file/glob auto-includes WHATEVER extension it is (no docs flag needed):
       //   path=README.md  → search that one file (any ext)
@@ -1010,7 +1049,7 @@ export async function runTool(name, a = {}) {
     if (name === "vts_git" || name === "vts_p4") {
       // git/p4 are cwd-relative — run where the user/agent IS, not the configured PROJECT_PATH (which would
       // surprise: `vts git status` in repo B showing the configured repo A). Explicit projectPath still wins.
-      const root = a.projectPath || process.cwd();
+      const root = resolveCwdRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       const bin = name === "vts_git" ? "git" : "p4";
       const argv = toArgv(a);
@@ -1043,7 +1082,7 @@ export async function runTool(name, a = {}) {
       return finishOut(raw, `${bin} ${argv.join(" ")} (compacted):\n${body}`);
     }
 
-    const root = a.projectPath || PROJECT_PATH || process.cwd();
+    const root = resolveRoot(a);
     const backendName = a.backend || BACKEND || pickBackend(root);
     // search_symbol degrades gracefully when NO backend resolves (text fallback) instead of hard-erroring —
     // so the grep-rewrite hook can always route an identifier to `vts symbol` (semantic when a backend

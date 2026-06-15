@@ -864,6 +864,37 @@ const sweepDisabledOk = __pool.sweepIdle(T).length === 0; // TTL 0 → reaping d
 delete process.env.VTS_MAX_BACKENDS; delete process.env.VTS_BACKEND_IDLE_MS; __pool.clear();
 const poolLifecycleOk = lruEvictOk && busyProtectedOk && noEvictOk && idleSweepOk && sweepDisabledOk;
 
+// 46) per-call root resolution (A1/A2): findProjectRoot walks UP to the nearest project marker so a `path`
+// argument pins the correct repo; resolveRoot precedence = explicit projectPath > a path's enclosing
+// project (only when OUTSIDE every known root, so an inside-path keeps its root and clangd rooting is
+// preserved) > an MCP workspace root (over the stale config pin) > PROJECT_PATH > cwd. setMcpRoots holds
+// the client-advertised workspace folders. (Config is empty in the eval, so PROJECT_PATH === "".)
+const { resolveRoot, setMcpRoots, getMcpRoots } = await import("../server/core.js");
+const { findProjectRoot } = await import("../server/backends/index.js");
+const rootBase = path.join(os.tmpdir(), `vts-eval-${process.pid}-roots`);
+const repoCC = path.join(rootBase, "withcc"); const deepCC = path.join(repoCC, "a", "b");
+fs.mkdirSync(deepCC, { recursive: true });
+fs.writeFileSync(path.join(repoCC, "compile_commands.json"), "[]"); fs.writeFileSync(path.join(deepCC, "x.cpp"), "int x;\n");
+const repoGit = path.join(rootBase, "withgit"); const deepGit = path.join(repoGit, "src");
+fs.mkdirSync(path.join(repoGit, ".git"), { recursive: true }); fs.mkdirSync(deepGit, { recursive: true });
+fs.writeFileSync(path.join(deepGit, "y.cpp"), "int y;\n");
+const rl = (p) => path.resolve(p);
+const findRootOk =
+  rl(findProjectRoot(path.join(deepCC, "x.cpp"))) === rl(repoCC) &&    // climbs to the compile_commands dir
+  rl(findProjectRoot(path.join(deepGit, "y.cpp"))) === rl(repoGit) &&  // stops at the .git repo boundary
+  rl(findProjectRoot(repoCC)) === rl(repoCC);                          // a directory arg resolves to itself
+setMcpRoots([]);
+const rrExplicit = rl(resolveRoot({ projectPath: repoGit, path: path.join(deepCC, "x.cpp") })) === rl(repoGit); // explicit wins over path
+setMcpRoots([repoCC]);                                                 // repoCC is now a "known" workspace root
+const rrInsideKept = rl(resolveRoot({ path: path.join(deepCC, "x.cpp") })) === rl(repoCC); // inside known → keep root
+const rrOutside = rl(resolveRoot({ path: path.join(deepGit, "y.cpp") })) === rl(repoGit);  // outside known → its real project
+const rrNoPathRoot = rl(resolveRoot({})) === rl(repoCC);              // no path → the MCP workspace root
+setMcpRoots([]);
+const rrFallback = rl(resolveRoot({})) === rl(process.cwd());         // no roots + empty PROJECT_PATH → cwd
+const rootsRoundtripOk = (() => { setMcpRoots([repoCC, repoGit]); const g = getMcpRoots(); setMcpRoots([]); return g.length === 2 && rl(g[0]) === rl(repoCC); })();
+try { fs.rmSync(rootBase, { recursive: true, force: true }); } catch { /* ignore */ }
+const rootResolveOk = findRootOk && rrExplicit && rrInsideKept && rrOutside && rrNoPathRoot && rrFallback && rootsRoundtripOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -918,6 +949,7 @@ const rows = [
   ["polish: git/p4 run in cwd + p4-changes parse + dedup wording", polishOk, "true", polishOk],
   ["i18n: VTS_LANG=ko Korean block+nudge / en English", i18nOk, "true", i18nOk],
   ["backend pool: LRU evict + idle reap + in-flight protect", poolLifecycleOk, "true", poolLifecycleOk],
+  ["per-call root: findProjectRoot walk-up + resolveRoot precedence + MCP roots", rootResolveOk, "true", rootResolveOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
