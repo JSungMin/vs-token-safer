@@ -1,6 +1,6 @@
 {
   "name": "gamedev-log-analyzer",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "type": "module",
   "description": "Token-efficient game-engine & build log analysis (Unreal/Unity/Godot/MSVC-UBT-MSBuild) for the CLI and MCP — parse, dedup, classify by severity/category, diff runs, locate file:line, and extract scalar fields. No IDE required.",
   "keywords": [

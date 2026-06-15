@@ -281,8 +281,18 @@ const hookOptOut = (() => {
 })();
 const rewriteOk = rewritePure && hookRewrites && hookFallsBack && hookOptOut;
 
+// Quoted-literal dedup: per-asset spam (same error, different quoted asset name) must collapse into ONE
+// template group — without the `<str>` normalizer in templateOf these split N ways. Discriminating: the 6
+// distinct asset names must roll up to exactly 1 group with (×6).
+const assetLog = Array.from({ length: 6 }, (_, i) =>
+  `[2026.06.15-00.00.0${i}][${i}]LogStreaming: Warning: Failed to load asset '/Game/Maps/Zone${i}'`
+).join("\n");
+const assetSummary = analyzeLog(assetLog, { severityMin: "Warning", groupBy: "template" });
+const assetDedupOk = bodyGroups(assetSummary) === 1 && /\(×6\)/.test(assetSummary);
+
 const rows = [
   ["parse coverage", (coverage * 100).toFixed(1) + "%", "≥ 95%", coverage >= 0.95],
+  ["quoted-literal dedup (6 names → 1 ×6)", assetDedupOk, "true", assetDedupOk],
   ["token reduction (callsite)", (reduction * 100).toFixed(1) + "%", "≥ 90%", reduction >= 0.9],
   ["callsite groups", groups, "≤ 20", groups <= 20],
   ["log_fields tokens (20 rows)", fieldsTok, "≤ 400", fieldsTok <= 400],
