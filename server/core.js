@@ -808,6 +808,16 @@ function fmtDocSymbols(syms, max, file) {
   const note = dropped && !raw ? ` (${dropped} local/anonymous hidden; VTS_OUTLINE_RAW=1 to show)` : "";
   return `${rows.length} symbol(s)${note}:\n` + shown.join("\n") + (rows.length > shown.length ? `\n… ${rows.length - shown.length} more.` : "");
 }
+// Directories never worth walking for code search — VCS internals, dependency trees, and (the big one on
+// a real project) BUILD/GENERATED output. On an Unreal tree `Intermediate/` alone holds tens of thousands
+// of generated *.gen.cpp; walking it made find_files/search_text as slow as the built-in Glob (which timed
+// out → the model gave up on file search). Skipping it keeps our walk fast enough to be the better tool.
+const SKIP_DIRS = new Set([
+  "node_modules", ".git", ".svn", ".hg", ".cache", ".vs", ".idea", ".gradle",
+  "intermediate", "binaries", "saved", "deriveddatacache", "build", "dist", "out", "obj", "bin",
+  "__pycache__", ".venv", "venv", "target",
+]);
+const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).
 function findFilesUnder(root, q, max) {
@@ -815,19 +825,22 @@ function findFilesUnder(root, q, max) {
   const re = useGlob ? new RegExp("^" + q.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i") : null;
   const ql = q.toLowerCase();
   const out = [];
-  const stack = [root]; let scanned = 0;
+  const stack = [root]; let scanned = 0; const t0 = Date.now(); let timedOut = false;
   // Collect up to max+1 so "exactly max files exist" (a complete sweep) isn't misreported as truncated.
+  // Time-boxed (4s) like scanTextUnder so a giant tree can never hang the tool — it returns what it found.
   while (stack.length && out.length <= max && scanned < 300000) {
+    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); }
+      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
       else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length > max) break; } }
     }
   }
   // Flag a truncated sweep so the caller never presents a capped/aborted result as complete (no silent caps).
   if (out.length > max) { out.length = max; out.truncated = "cap"; }
+  else if (timedOut) out.truncated = "time";
   else if (scanned >= 300000 && stack.length) out.truncated = "scan";
   return out;
 }
@@ -854,7 +867,7 @@ function scanTextUnder(root, q, max, accept) {
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(p); continue; }
+      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
       if (!ok(e.name)) continue;
       if (Date.now() - t0 >= 4000) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
