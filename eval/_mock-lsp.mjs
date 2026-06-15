@@ -65,6 +65,11 @@ process.stdin.on("data", (d) => {
           { name: "keepProp", kind: 7, range: rng, selectionRange: sel },
         ] },
       ] });
+    } else if (msg.method === "textDocument/references") {
+      // "Foo"'s name sits at line 4 (its selectionRange) — return one usage there so safe_delete sees a
+      // referrer and refuses; any other position (e.g. the find_references guard at line 41) returns none.
+      const rp = msg.params.position;
+      send({ jsonrpc: "2.0", id: msg.id, result: rp.line === 4 ? [{ uri: "file:///proj/src/User.cpp", range: { start: { line: 7, character: 2 }, end: { line: 7, character: 5 } } }] : [] });
     } else if (msg.method === "textDocument/rename") {
       const uri = msg.params.textDocument.uri, p = msg.params.position;
       if (msg.params.newName === "MULTI") {

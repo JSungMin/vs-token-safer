@@ -9,133 +9,89 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/JSungMin/vs-token-safer/pulls)
 [![Stars](https://img.shields.io/github/stars/JSungMin/vs-token-safer?style=social)](https://github.com/JSungMin/vs-token-safer/stargazers)
 
-> 대형 Unreal C++ · Visual Studio · .NET 프로젝트용 Claude Code 플러그인 두 개. 코드베이스는 `grep`
-> 대신 공식 언어 서버 인덱스(clangd / Roslyn)로 검색하고, 수십 MB짜리 에디터 로그는 대화에 통째로
-> 쏟지 않고 읽습니다. 둘 다 토큰을 약 99% 적게 씁니다. **로컬 전용, IDE 불필요.**
+> **거대한 Unreal C++ / Visual Studio / .NET 코드베이스를 `grep` 대신 공식 언어 서버 인덱스
+> (clangd / Roslyn / tsserver / pyright)로 검색하고 편집합니다.** 결과는 소스 본문 없이 `file:line`으로만,
+> 토큰 상한이 걸린 채 돌아옵니다. 여기에 수십 MB짜리 에디터 로그를 대화에 쏟아붓지 않고 읽어 주는 형제
+> 플러그인이 따라옵니다. 둘 다 단순 방식보다 토큰을 약 99% 덜 씁니다. **로컬 전용, IDE 불필요.**
 
-### 실제 모습
 ```text
-# Claude가 코드를 grep 시도 → 훅이 그 자리에서 인덱스 쿼리로 재작성:
+# Claude가 코드를 grep하려 하면 → 훅이 그 자리에서 인덱스 질의로 바꿔치기:
 $ grep -rn "SpawnActor" Source/**/*.cpp
-↻ [vs-token-safer] 재라우팅 → search_symbol "SpawnActor"   # 텍스트 매치가 아닌 의미 기반
+↻ [vs-token-safer] 우회 → search_symbol "SpawnActor"          # 텍스트 매치가 아니라 시맨틱
   func SpawnActor (in AGameMode)   @ Source/GameMode.cpp:142   (+2 more)
-  → ~120 토큰   (grep이면 수천 줄 덤프)
-# 막다른 길 없음: 검색은 인덱스를 통해 그대로 실행됨. 차단을 원하면 VTS_REWRITE=0.
+  → ~120 토큰   (grep이었다면 수천 줄을 쏟아냈을 것)
 
-# 1MB 에디터 로그 → 파싱·dedup·분류 (동봉된 gamedev-log-analyzer):
-▶ /gamedev-log-analyzer:logs
-  41,233줄 · 에러 7 · 경고 312
-  ERROR   [LogStreaming] Failed to load asset <addr>         (×128)   @ AssetManager.cpp:210
-  WARNING [LogPhysics]   Penetration depth <n> exceeds limit (×4,051) @ MyComponent.cpp:88
-  → ~130 토큰   (raw 로그 ≈ 267,000)
+# 그 심볼을 고친다면? 파일을 통째로 읽지도, 줄 번호를 세지도 않고 이름만 지정:
+$ replace_symbol_body symbol="SpawnActor" body="…"           # 기본 미리보기, apply=true면 기록
+  replace_symbol_body "SpawnActor" — PREVIEW at Source/GameMode.cpp:142-160
 ```
-<sub>공개 Unreal Engine 심볼을 쓴 예시 출력.</sub>
+<sub>공개된 Unreal Engine 심볼로 만든 예시 출력. `VTS_REWRITE=0`이면 바꿔치기 대신 차단합니다.</sub>
 
-### 이런 경험 있나요?
-- 🔍 거대 Unreal C++ / .NET repo에서 `grep`이 컨텍스트를 폭발시킴 → clangd/Roslyn 인덱스로 검색하면 토큰 상한 (**~97–99% 절감**, [벤치마크](#성능-실측)).
-- 🪵 50MB 에디터 로그는 그대로는 못 읽음 → 파싱하고 dedup하고 분류하면 수백 토큰으로 줄어듦.
-- 🤖 Claude가 자꾸 코드를 `grep`으로 뒤질 때, 훅이 막기만 하는 게 아니라 그 자리에서 인덱스 쿼리로 바꿔 줍니다. 검색은 그대로 돌아가고 작업 흐름도 끊기지 않습니다.
-- 📊 grep이 얼마나 새어 나가는지 안 보일 때는 `vts discover`를 쓰면 됩니다. 최근 세션을 읽어 인덱스를 우회한 검색과 그 토큰 비용을 정확히 짚어 줍니다.
-- 🖥️ IDE 프록시 방식과 달리 언어 서버를 헤드리스로 실행하니 에디터를 열 필요가 없음.
+## 왜 쓰나
 
-### 목차
-- [마켓플레이스 — 2개 플러그인](#마켓플레이스--2개-플러그인) · [합산 절감](#합산-토큰-절감-실측) · [두 플러그인 함께 쓰기](#두-플러그인-함께-쓰기)
-- [무엇을 하나](#무엇을-하나) · [성능](#성능-실측) · [사전 인덱싱과 hit-rate](#사전-인덱싱pre-warm과-hit-rate)
-- [사전 요구사항](#사전-요구사항) · [설치](#설치) · [설정](#설정-명령어) · [업데이트](#새-버전으로-업데이트)
-- [설정 항목](#설정-항목-env) · [문제 해결](#문제-해결) · [상태 / 주의](#상태--주의) · [기여](#기여) · [Releases](https://github.com/JSungMin/vs-token-safer/releases)
+- 큰 Unreal C++ / .NET 레포에서 `grep`은 컨텍스트를 잠식합니다. clangd/Roslyn 인덱스는 토큰 상한이 걸려 약 97~99% 작습니다 ([벤치마크](#성능)).
+- Claude는 자꾸 `grep`으로 손이 갑니다. 훅은 단순히 막지 않고 **그 자리에서 명령을 인덱스 질의로 다시 씁니다.** 검색은 그대로 실행되고 흐름이 끊기지 않습니다.
+- **줄이 아니라 심볼 단위로 편집합니다.** 선언을 *이름으로* 지정해 교체/앞뒤 삽입/삭제 — 인덱스가 범위를 알려 주므로 파일을 통째로 컨텍스트에 읽어 들일 필요가 없습니다.
+- grep이 얼마나 새 나가는지 알기 어렵습니다. `vts discover`가 최근 세션을 읽어 어떤 검색이 인덱스를 우회했고 토큰을 얼마나 썼는지 짚어 줍니다.
+- 언어 서버는 **헤드리스**로 돕니다 — IDE 프록시 방식과 달리 에디터를 띄울 필요가 없습니다.
 
----
+## 빠른 시작
 
-심볼 검색, 참조 찾기, 정의로 이동, hover, 아웃라인, 프로젝트 전역 rename이 전부 Bash `grep` 대신 공식
-언어 서버 인덱스 — **clangd**(C/C++), **Roslyn**(C#/.NET), **tsserver**(JS/TS), **pyright**(Python) — 를
-거쳐, 간결하고 상한이 걸린 `file:line` 목록(소스 본문 없음)으로 돌아옵니다. `grep`이 느리고 컨텍스트를
-잡아먹는 대형 Unreal C++ / .NET 코드베이스를 위해 만들었습니다.
-[rider-mcp-enforcer](https://github.com/JSungMin/rider-mcp-enforcer)의 IDE 비종속 형제로, 목표는 같지만
-IDE를 프록시하지 않고 언어 서버를 헤드리스로 실행합니다 — 에디터를 열 필요가 없습니다.
-
-## 마켓플레이스 — 2개 플러그인
-
-이 repo는 **"큰 것을 싸게 읽는다"** 는 한 가지 목표를 공유하는 플러그인 두 개가 든 Claude Code
-플러그인 마켓플레이스입니다:
-
-| 플러그인 | 기능 | 필요 |
-| --- | --- | --- |
-| **vs-token-safer** (이 페이지) | 코드 검색을 grep 대신 clangd/Roslyn/tsserver/pyright 인덱스로 강제(기본 하드 차단, 탈출구 opt-out), `file:line`으로 토큰 캡 | Node + 언어 서버: clangd / Roslyn(직접 설치), JS/TS + Python(자동 설치). IDE 불필요. |
-| **[gamedev-log-analyzer](gamedev-log-analyzer/README.ko.md)** | 거대 Unreal/Unity/Godot/MSVC-UBT-MSBuild 로그 파싱·dedup·분류·검색·diff·locate·스칼라 추출 (CLI 우선) | Node만 (IDE 불필요) |
-
-**한 번에 설치.** `vs-token-safer`가 `gamedev-log-analyzer`를 의존성으로 선언하므로 한 번 설치하면 둘
-다 깔립니다. 각 서버의 `npm install`은 첫 세션에 자동 실행되니 수동 설정은 없습니다:
 ```bash
+# 1) 설치 (형제 플러그인 gamedev-log-analyzer도 함께 설치됨)
 /plugin marketplace add JSungMin/vs-token-safer
-/plugin install vs-token-safer@vs-token-safer        # gamedev-log-analyzer도 자동 설치
-/reload-plugins                                       # 첫 실행 시 둘 다 의존성 자동 설치
+/plugin install vs-token-safer@vs-token-safer
+/reload-plugins        # 첫 실행 때 서버 의존성 자동 설치 (수동 npm 불필요)
+
+# 2) 설정 — 백엔드를 감지하고 프로젝트 경로를 물어 본 뒤 설정을 기록
+/vs-token-safer:setup
 ```
-로그 분석기만 원하면 단독 설치: `/plugin install gamedev-log-analyzer@vs-token-safer`.
 
-### 합산 토큰 절감 (실측)
-| 작업 | Bash / raw | 플러그인 | 절감 |
-| --- | ---: | ---: | ---: |
-| 실제 UE5 repo 심볼 검색 (`FGameplayTag`) | ~282,194 tok | ~2,048 tok | **~99.3% (~138×)** |
-| raw 인덱스 응답 → 캡된 목록 (eval, 심볼 1,000개) | ~57,308 tok | ~1,549 tok | **~97.3%** |
-| ~1MB 에디터 로그 읽기 (`summary`) | ~267,000 tok | ~130 tok | **~99.95%** |
+그다음 **Claude Code 세션을 재시작**하세요 (`vs-search` MCP 서버는 새 세션에서만 뜹니다). 도구가 보이는지,
+`grep src/**/*.cpp`가 인덱스로 우회되는지 확인하면 됩니다. 사전 준비물: **Node ≥ 18**과 언어 서버 —
+clangd(C/C++) / Roslyn(C#)은 직접 설치, JS/TS·Python은 자동 설치됩니다. 자세한 건 아래
+[사전 준비](#사전-준비-자세히)에 있습니다.
 
-### 두 플러그인 함께 쓰기
-로그 분석기는 각 항목의 `file:line`을 출력하고 vs-token-safer는 그 `file:line`을 실제 심볼/소스로
-바꿉니다. 전형적인 흐름은 이렇습니다:
-1. `/gamedev-log-analyzer:logs` → 에러/경고와 그 `file:line` 찾기.
-2. 그 위치를 vs-token-safer의 `goto_definition`/`find_references`(또는 `search_symbol`)에 넘겨 코드를
-   엽니다. raw 로그를 grep하거나 덤프하지 않고요.
+> 로그 분석기만 필요하면: `/plugin install gamedev-log-analyzer@vs-token-safer`.
 
-역방향도 동작합니다: 코드 검색(vs-search 도구나 Bash/Grep 검색)이 로그를 겨냥하면 — `Logs/` 디렉터리나
-`.log`/`.jsonl` 파일 — vs-token-safer가 코드 인덱스에서 빈 결과를 주는 대신 gamedev-log로 안내합니다.
-언어 서버 인덱스는 소스를 다루지 로그를 다루지 않으니까요.
+## 도구
 
-## 무엇을 하나
+검색과 편집은 모두 공식 언어 서버 인덱스 — **clangd**(C/C++), **Roslyn**(C#/.NET), **tsserver**(JS/TS),
+**pyright**(Python) — 를 거쳐, 소스 본문 없이 토큰 상한이 걸린 `file:line` 목록으로 돌아옵니다. MCP 서버
+이름은 `vs-search`이고, `vts` CLI도 같은 도구를 씁니다.
 
-clangd와 Roslyn은 그 자체로 이미 의미 기반 심볼/참조 분석을 합니다. 이 플러그인이 그 위에 더하는 건
-강제, 토큰 캡, 헤드리스 실행 + warm-up입니다. Claude가 grep 대신 인덱스를 실제로 쓰게 만들죠:
+**검색 / 탐색**
 
-| 레이어 | 파일 | 효과 |
+| 도구 | CLI | 하는 일 |
 | --- | --- | --- |
-| **재작성/강제 훅(hook)** | `hooks/block-code-grep.js` | 세 가지 표면을 다룹니다. **Bash** `grep`/`rg`/`ack`/`ag`/`findstr`/`git grep`/`find <dir> -name`이 소스를 겨냥하고 안전한 단일 세그먼트라면 그 자리에서 동등한 `vts` 쿼리로 바꿔 줍니다(식별자는 의미 기반 `search_symbol`, 리터럴은 `search_text`, `find`는 그 `<dir>`을 루트로 한 `find_files`). 안전·완전한 재작성을 못 만들면(파이프라인, 셸 메타문자, 한 번에 못 담는 다중 `-name`/`-o` find) 차단합니다. 내장 **Grep 도구**: 패턴이 명백한 *심볼 사냥*(맨 식별자, `::`/`(`/`void·class`류 정규식, `FooBar|BazQux` 같은 CamelCase alternation)이면 `search_symbol`/`search_text`로 **차단**하고, 자유 텍스트와 대문자 키워드 alternation(`TODO|FIXME`)은 경고만 합니다. 내장 **Glob 도구**: 구체적 코드 파일 패턴(`*.cpp`·`Foo.h`·`**/Bar.*`)이면 `find_files`로 **차단**(거대 트리에서도 안 멈춤)하고, 에셋·맨 글롭(`Foo.png`·`**/*`)은 그대로 둡니다. 메시지는 에이전트 지시형(어시스턴트가 다시 실행할 도구를 콕 집어줌)이고 EN/KO 양쪽을 지원합니다. 원시 텍스트 검색(로그·`.md`/`.json`·설정·build)은 통과시킵니다. `VTS_REWRITE=0`이면 Bash를 재작성 대신 차단, `VTS_GREP_BLOCK=0`이면 Grep/Glob 차단이 경고로 되돌아가고, `excludeCommands`로 특정 명령을 빼며, `VTS_ENFORCE=0`이면 전부 끕니다. |
-| **라우팅 스킬** | `skills/vs-search/SKILL.md` | Claude가 인덱스 도구를 먼저 쓰도록 유도하는 규칙입니다. 심볼/참조/정의 검색은 `search_symbol`/`find_references`/`goto_definition`로 가고, grep은 최후수단입니다. |
-| **토큰 캡 코어** | `server/core.js` | 두 어댑터가 공유하는 `runTool()`. LSP 결과를 `kind name (in container) @ file:line`으로 바꾸고 `maxResults`로 상한을 걸고 `… N more` 푸터를 붙입니다. range/kind/소스 본문은 절대 넣지 않습니다. 참조가 많은 결과는 한 번 더 접습니다 — `find_references`는 파일당 한 줄로 합치고(`Foo.cpp:42,88,120`) 공통 디렉터리 프리픽스를 한 번만 빼내, 깊은 호출 지점 트리도 작게 유지합니다(모든 위치 보존; `VTS_COMPACT_RESULTS=0`이면 한 줄에 하나씩). 잘린 `find_files`/`search_text`는 전체 결과를 복구(tee) 파일로 써서 조용히 누락되지 않게 합니다. |
-| **절감 + discover** | `server/core.js` | 로컬 원장이 검색마다 절감 토큰을 기록하고(`vts savings`의 30일 그래프·일별/이력·추정 가치), `vts discover`는 최근 Claude 세션에서 인덱스를 *우회한* 코드 검색과 그 토큰 비용을 보고합니다 — 성공만이 아니라 catch-rate가 보입니다. |
-| **헤드리스 LSP 클라이언트** | `server/lsp.js` + `server/backends/index.js` | 완전 자체 구현 LSP 클라이언트(JSON-RPC 2.0, `Content-Length` 프레이밍)가 공식 엔진을 stdio로 실행합니다. 실행 설정, `pickBackend(root)` 자동 감지, IDE식 pre-warm(`afterInit`)을 포함합니다. 프로젝트 루트는 **호출마다** 정합니다 — 명시 `projectPath`, 없으면 쿼리에 실린 파일의 소속 프로젝트, 없으면 MCP 워크스페이스 루트 — 그래서 전역 설치 서버 하나가 **세션이 건드리는 모든 repo**에 답합니다(핀 하나에 묶이지 않음). 살아있는 백엔드는 풀로 묶고 상한을 둬서(`VTS_MAX_BACKENDS` + 유휴 회수기), 여러 repo를 건드려도 언어 서버가 무제한으로 뜨지 않습니다. |
-| **VCS 출력 압축** | `server/compact.js` | 인덱스가 `git`/`p4` 출력엔 손대지 못하지만, 원시 덤프는 장황하고 반복적입니다. `vts_git` / `vts_p4`는 **읽기 전용** 명령을 돌려 결과를 그룹·dedup·캡합니다(status는 변경 종류+디렉터리, log는 커밋당 한 줄, diff는 파일별 통계, `p4 opened`는 액션+depot 디렉터리). 같은 절감 원장에 기록되고, 변이 서브커맨드는 거부하며, 훅이 평범한 `git status` / `p4 opened`을 여기로 자동 보냅니다. |
+| `search_symbol` | `vts symbol` | 이름/부분 문자열로 심볼 선언 찾기 (텍스트 아닌 시맨틱). |
+| `find_references` | `vts references` | 심볼의 모든 호출 지점. **이름을 바로** 받습니다(`symbol="FooBar"`) — 함수/타입을 바꿔 모든 사용처를 손봐야 할 때 쓰는 도구. |
+| `goto_definition` | `vts definition` | 위치의 심볼 정의로 이동. |
+| `hover` | `vts hover` | 위치의 타입/시그니처. |
+| `document_symbols` | `vts symbols` | 파일 아웃라인 (클래스/함수/타입을 `file:line`으로). |
+| `find_files` | `vts files` | 이름/glob으로 파일 찾기 — `find -name`의 토큰캡 대체. |
+| `search_text` | `vts text` | 원시 텍스트/정규식 검색 — `grep`의 토큰캡 대체 (`path=`/`glob=`/`docs=true`로 범위 지정). |
 
-> **엔진은 공식, 글루는 우리 것.** 분석은 clangd(LLVM)·Roslyn(Microsoft)이 하고, 이 저장소는
-> LSP↔MCP 글루만 작성합니다. 소스 위에서 서드파티 MCP 서버가 돌지 않습니다.
+**편집 (심볼 단위 — 줄을 세지 말고 이름을 대세요)** — 기본 미리보기, `apply=true`면 기록.
 
-> **쓸수록 좋아집니다.** 각 조각이 하나의 피드백 루프로 맞물리기 때문입니다. 재작성은 식별자를 단순 텍스트
-> grep이 아니라 *의미 기반* `search_symbol`로 넘기고, `vts discover --learn`은 과거 검색이 실제로 맞춘
-> 파일들을 warm-up 세트에 올려 다음 세션이 미리 열도록 합니다. 그리고 `discover`가 catch-rate를 보고해 아직
-> 무엇이 새고 있는지 알려 주죠. 세션을 거듭할수록 인덱스는 더 따뜻해지고 강제는 더 촘촘해집니다.
+| 도구 | CLI | 하는 일 |
+| --- | --- | --- |
+| `rename` | `vts rename` | 시맨틱 프로젝트 전역 이름 변경 (텍스트 sed가 아니라 모든 참조). |
+| `replace_symbol_body` | `vts replace-symbol` | 선언 전체(시그니처+본문)를 이름으로 교체 — 범위는 인덱스가 알려 줍니다. |
+| `insert_after_symbol` | `vts insert-after` | 선언 뒤에 텍스트 삽입 (예: 형제 메서드 추가). |
+| `insert_before_symbol` | `vts insert-before` | 선언 앞에 텍스트 삽입 (예: import/속성). |
+| `safe_delete` | `vts safe-delete` | 선언 삭제 — **참조가 남아 있으면 거부**, `force=true`라야 진행. |
 
-### 명령어 & 도구
-- `/vs-token-safer:setup` — 플러그인 설정 ([설정](#설정-명령어) 참고).
-- `/vs-token-safer:savings` — 누적 토큰 절감량 표시.
-- MCP 도구(서버 `vs-search`): `search_symbol`, `find_references`, `goto_definition`, `hover`,
-  `document_symbols`, `rename`, `find_files`, `search_text`, `vts_git`, `vts_p4`, `vts_warmup`, `vts_setup`,
-  `vts_config`, `vts_savings`, `vts_savings_reset`, `vts_discover`. `find_files`와 `search_text`는 심볼이
-  아니라 파일명이나 raw 텍스트가 필요할 때 쓰는 `find -name`·`grep`의 토큰캡 대체입니다 — `search_text`는
-  파일 하나(`path=`)나 글롭(`glob=`, 그 확장자를 자동 포함)을 겨냥하거나 `docs=true`로 문서까지 넓힐 수
-  있습니다. `vts_git` / `vts_p4`는 **읽기 전용** git/p4 명령을 돌려 그 출력을 압축(그룹·dedup·캡)해 돌려
-  줍니다 — `git status/log/diff`, `p4 opened/status/changes`. 변이 서브커맨드는 거부합니다. `rename`은
-  프로젝트 전역 의미 기반 이름 변경으로, 기본은 미리보기이고 `apply=true`일 때만 편집을 기록합니다.
-  `vts_discover`는 인덱스를 우회한 코드 검색(놓친 절감)을 찾고, `learn=true`면 그 결과 파일을 warm-up
-  세트에 넣습니다.
-- **심볼 이름을 바꾸려는 참인가요?** `find_references`는 위치 좌표 대신 심볼 이름을 그대로 받습니다.
-  `find_references symbol="FooBar"`라고 하면 호출 지점이 전부 나오니 line/column을 따질 필요가 없죠.
-  함수나 타입 하나를 고치고 사용처를 모두 따라가 손봐야 할 때 쓰면 됩니다. 이름으로 grep하면 주석이나 부분
-  일치까지 섞여 들어오지만, 여기서는 의미상 실제 참조만 잡힙니다. 특정 오버로드를 콕 집어야 한다면 `path`와
-  `line`, `character`로 위치를 지정하는 방식도 그대로 쓸 수 있습니다.
-- CLI (`vts`): `symbol`, `references`, `definition`, `hover`, `symbols`, `rename`, `files`, `text`
-  (`--path`/`--glob`/`--docs`), `git`, `p4`(압축·읽기 전용 — 예: `vts git status`, `vts p4 opened`),
-  `warmup`, `setup`, `config`, `savings`(`--graph`/`--daily`/`--history`), `savings-reset`,
-  `discover`(`--since N`/`--all`/`--learn`).
-- "X가 어디 / Y를 누가 호출 / W 파일 찾기" 같은 조회는 `code-locator` 서브에이전트에 통째로 맡기세요.
-  자기 컨텍스트에서 검색하고 `file:line` 표만 돌려줍니다.
+**버전 관리 (출력 압축, 읽기 전용)**
+
+| 도구 | CLI | 하는 일 |
+| --- | --- | --- |
+| `vts_git` | `vts git` | 읽기 전용 `git status/log/diff`를 돌려 출력을 그룹/중복제거/상한. 변경 서브커맨드는 거부. |
+| `vts_p4` | `vts p4` | Perforce `opened/status/changes/reconcile`도 동일. |
+
+이외에 `vts_warmup`, `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`, `vts_discover`,
+`vts_gen_compile_db`가 있습니다. 아니면 "X 어디 있어 / Y 누가 부르나 / 파일 W 찾아" 류의 조회를 통째로
+**`code-locator` 서브에이전트**에 넘겨도 됩니다 — 자기 컨텍스트에서 검색하고 `file:line` 표만 돌려줍니다.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame
@@ -147,57 +103,80 @@ func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
 ✓ Saved ~4,200 tokens here (96.8% / 31× smaller than the raw index response).
 ```
 
-## 성능 (실측)
+## 동작 방식
 
-대형 Unreal Engine 5 프로젝트에서 공개 엔진 심볼 한 개(`FGameplayTag`)를 Bash grep-and-paste vs 이
-플러그인으로 찾은 실측 A/B입니다. 프로젝트 소스는 공개하지 않고 집계 수치만 씁니다. 방법은
-[BENCHMARK.md](BENCHMARK.md)를 참고하세요.
+clangd와 Roslyn이 시맨틱 분석은 이미 해 줍니다. 이 플러그인이 그 위에 얹는 건 **강제, 토큰 상한, 헤드리스
+스폰 + 워밍업** — Claude가 grep 대신 실제로 인덱스를 쓰게 만드는 부분입니다.
 
-| | Bash grep-and-paste (전체 repo) | **플러그인 (clangd 인덱스, 캡)** |
+| 계층 | 효과 |
+| --- | --- |
+| **바꿔치기/강제 훅** | 세 표면을 다룹니다. **Bash** grep/rg/`find -name`이 소스를 향하면 → 그 자리에서 같은 뜻의 `vts` 질의로 **바꿔치기**(식별자 → `search_symbol`, 리터럴 → `search_text`, `find <dir> -name` → `<dir>`를 루트로 한 `find_files`); 애매하면(파이프라인, 다중 `-name`) 차단. **Grep 도구**의 명백한 심볼 사냥(맨 식별자, `::`/`(`/`void·class` 정규식, `FooBar\|BazQux` 식 CamelCase 교대)은 바로 쓸 수 있는 호출과 함께 **차단**, 자유 텍스트·키워드 교대는 경고만. **Glob 도구**의 구체적 코드 파일(`*.cpp`, `Foo.h`)은 `find_files`로 **차단**. 메시지는 에이전트 대상이고 EN/KO 양쪽. 로그·`.md`·설정은 통과. 스위치: `VTS_REWRITE=0`, `VTS_GREP_BLOCK=0`, `VTS_ENFORCE=0`. |
+| **토큰캡 코어** | LSP 결과를 `kind name @ file:line`으로 바꾸고 상한을 건 뒤 `… N more`를 붙입니다. 참조가 많은 결과는 파일당 한 줄로(`Foo.cpp:42,88,120`) 접고 공통 디렉터리 접두사를 한 번만 빼냅니다(`VTS_COMPACT_RESULTS=0`이면 줄당 복원). 잘린 `find_files`/`search_text`는 전체를 복구 파일로 tee. |
+| **심볼 단위 편집** | `replace_symbol_body`/`insert_*`/`safe_delete`가 아웃라인으로 선언을 이름으로 찾아 정확한 범위에 텍스트를 끼웁니다 — 기본 미리보기, `apply=true`면 기록, `safe_delete`는 참조가 남으면 거부. 파일을 통째로 컨텍스트에 읽지 않습니다. |
+| **헤드리스 LSP 클라이언트** | 직접 만든 LSP 클라이언트가 공식 엔진을 stdio로 띄웁니다. 프로젝트 루트는 **호출마다** 결정됩니다(명시 `projectPath` → 질의한 파일의 소속 프로젝트 → MCP 워크스페이스 루트). 그래서 전역 서버 하나가 **세션이 건드리는 모든 레포**에 답합니다. 살아 있는 백엔드는 풀로 묶여 상한이 걸립니다(`VTS_MAX_BACKENDS` + 유휴 수거기). |
+| **절감 + discover** | 로컬 장부가 검색마다 아낀 토큰을 기록합니다(`vts savings`, 30일 그래프 포함). `vts discover`는 최근 세션에서 인덱스를 **우회한** 검색을 훑어 — 단순 합계가 아니라 포착률을 보여 줍니다. |
+
+> **엔진은 공식, 글루는 우리 것.** clangd(LLVM)와 Roslyn(Microsoft)이 분석을 하고, 이 레포는 LSP↔MCP
+> 글루만 씁니다. 제3자 MCP 서버가 소스 위에서 돌지 않습니다. 로컬 전용, 아무것도 업로드하지 않습니다.
+
+## 두 플러그인
+
+| 플러그인 | 하는 일 | 필요한 것 |
+| --- | --- | --- |
+| **vs-token-safer** (이 페이지) | 코드 검색·편집을 Bash grep 대신 clangd/Roslyn/tsserver/pyright 인덱스로 강제, `file:line`으로 토큰캡 | Node + 언어 서버 (clangd / Roslyn은 직접, JS/TS·Python은 자동). IDE 불필요. |
+| **[gamedev-log-analyzer](gamedev-log-analyzer/README.md)** | 거대한 Unreal/Unity/Godot/MSVC-UBT 로그를 파싱/중복제거/분류, 검색 + diff + 스칼라 추출 | Node만 |
+
+`vs-token-safer`가 `gamedev-log-analyzer`를 의존성으로 선언하므로 한 번 설치로 둘 다 들어옵니다. **함께
+쓰기:** 로그 분석기가 항목마다 `file:line`을 내놓으면 → 그걸 `goto_definition`/`find_references`에 넘겨
+grep이나 원시 로그 덤프 없이 코드를 엽니다. 반대 방향도 됩니다 — 로그(`Logs/`, `.log`/`.jsonl`)를 향한 코드
+검색은 빈 결과 대신 gamedev-log를 가리켜 줍니다.
+
+| 합산 절감 (실측) | Bash / 원시 | 플러그인 | 절감 |
+| --- | ---: | ---: | ---: |
+| 실제 UE5 레포 심볼 검색 (`FGameplayTag`) | ~282,194 토큰 | ~2,048 토큰 | **~99.3% (~138×)** |
+| 원시 인덱스 응답 → 캡 목록 (eval, 심볼 1,000개) | ~57,308 토큰 | ~1,549 토큰 | **~97.3%** |
+| ~1 MB 에디터 로그 읽기 (`summary`) | ~267,000 토큰 | ~130 토큰 | **~99.95%** |
+
+## 성능
+
+대형 Unreal Engine 5 프로젝트에서의 실제 A/B: 공개 엔진 심볼 하나(`FGameplayTag`)를 Bash grep-and-paste로
+찾을 때와 이 플러그인으로 찾을 때. 프로젝트 소스는 재현하지 않고 집계 수치만 씁니다.
+[BENCHMARK.md](BENCHMARK.md) 참고.
+
+| | Bash grep-and-paste (레포 전체) | **플러그인 (clangd 인덱스, 캡)** |
 | --- | ---: | ---: |
-| 모델이 받는 것 | 5,654줄 / 1,010 파일 | 47개 의미 기반 선언 (`file:line`) |
+| 모델이 받는 것 | 5,654줄 / 1,010파일 | 시맨틱 선언 47개 (`file:line`) |
 | 모델로 가는 토큰 | ~282,194 | **~2,048** |
 
-- **토큰: ~99.3% 절감 (~138×).** grep은 매칭 줄의 전체 텍스트를 반환하고, 텍스트로 매칭하니 더 많은
-  줄(주석, 문자열, 무관한 식별자)을 끌어옵니다. 플러그인은 의미 기반 히트당 `file:line` 하나만, 그것도
-  캡해서 반환합니다.
-- 목-LSP eval(`node eval/run.mjs`, 툴체인 불필요)이 매 커밋 응답 정형화 절감을 게이트합니다: raw 인덱스
-  `~57,308 tok` → 캡된 출력 `~1,549 tok` = **97.3%** (체크 52/52).
+**약 99.3% 적음(~138×).** grep은 매칭된 줄의 전체 텍스트를 돌려주고 텍스트로 매칭하니(주석·문자열·무관한
+식별자) 더 많이 잡습니다. 플러그인은 시맨틱 히트마다 `file:line` 하나씩, 상한을 걸어 돌려줍니다. mock-LSP
+eval(`node eval/run.mjs`, 툴체인 불필요)이 커밋마다 이걸 검증합니다: `~57,308 → ~1,549 토큰` = **97.3%**
+(검사 53/53).
 
-### 정확도 차이와 그 이유
-"누가 더 맞다"가 아니라 정밀도/재현율 트레이드오프입니다:
-- **재현율:** 플러그인은 모든 텍스트 occurrence가 아니라 상위 `N`개(cap)만 반환합니다. 빠진 꼬리는
-  대부분 주석, include, 부분문자열 노이즈입니다. 전수가 필요하면 `maxResults`를 올리거나 grep을 쓰세요.
-- **정밀도:** grep은 모든 부분문자열을 매칭하므로(`Foo` 검색이 `FooBar`도 매칭) 과다보고합니다. 인덱스는
-  distinct한 의미 기반 선언을 반환합니다. `search_symbol`은 심볼 인덱스 질의이고
-  `find_references`/`goto_definition`은 텍스트 매치가 아니라 위치의 심볼을 해석합니다.
+<details>
+<summary><b>정확도: 정밀도/재현율 트레이드오프</b></summary>
 
-> 정리하면 탐색(정의 + 대표 사용처) 용도에는 플러그인이 더 정확하고 훨씬 저렴합니다. 전수 감사라면 cap을
-> 올리거나 일부러 grep을 쓰세요.
+- **재현율:** 플러그인은 모든 텍스트 출현이 아니라 상위 `N`개(캡)를 돌려줍니다 — 빠진 꼬리는 대개 주석/include/부분 문자열 잡음입니다. 전수가 필요하면 `maxResults`를 올리거나 grep을 쓰세요.
+- **정밀도:** grep은 모든 부분 문자열을 매칭하지만(`Foo` 질의가 `FooBar`도 잡음), 인덱스는 서로 다른 시맨틱 선언을 돌려줍니다.
 
-## 사전 인덱싱(pre-warm)과 hit-rate
+그래서 탐색(정의 하나 + 대표 사용처)에는 플러그인이 더 정확하면서 훨씬 쌉니다. 전수 출현 감사라면 캡을
+올리거나 일부러 grep으로 떨어뜨리세요.
+</details>
 
-clangd는 비동기로 인덱싱하므로 서버 기동 후 *첫* 검색은 1회 warm-up 비용(엔진 헤더 인덱싱)을 치릅니다.
-vts는 이를 IDE처럼 처리합니다.
+<details>
+<summary><b>프리워밍 &amp; 적중률</b></summary>
 
-- **MCP 서버가 기동 시 pre-warm** (`VTS_PREWARM`, `projectPath` 설정 시 기본 on). 첫 검색 시점엔 이미
-  인덱스가 데워지는 중이고 클라이언트는 서버 수명 동안 캐시됩니다. 그래서 warm-up은 쿼리마다가 아니라
-  **세션당 1회**입니다(이후 검색은 sub-초).
-- **`vts warmup`**. CLI/CI용으로 clangd 온디스크 인덱스(`.cache/clangd`)를 미리 구축합니다.
-- **`VTS_CLANGD_REMOTE`**. clangd를 공유/사전구축 clangd-index-server로 연결하면 개발자별 warm-up이
-  ~0이 됩니다(팀/CI가 사전구축 인덱스 하나를 질의).
+clangd는 비동기로 인덱싱하므로 *첫* 검색은 일회성 워밍업을 치릅니다. vts는 이걸 IDE처럼 다룹니다: MCP
+서버가 **부팅 때 프리워밍**하고(`VTS_PREWARM`, `projectPath`가 있으면 기본 켜짐) 클라이언트를 세션 동안
+캐시하므로 비용은 한 번만 냅니다. `vts warmup`은 디스크 인덱스를 미리 빌드하고(CLI/CI),
+`VTS_CLANGD_REMOTE`는 공유 프리빌드 인덱스 서버를 가리킵니다.
 
-무엇을 먼저 데우느냐가 중요합니다. clangd는 열린 파일의 인덱싱 우선순위를 높이므로 vts는 warm-up
-대상을 곧 검색할 것 우선으로 정렬합니다. 순서는 **쿼리 이력**(과거 검색이 반환한 파일), **지금 편집
-중**(`git status` 수정/미추적 + Perforce `p4 opened`), **git 커밋 최근성**, **include 중심성**(여러
-후보가 `#include`하는 헤더. 적응형이라 영속 include-그래프 캐시를 매 warm-up마다 시간예산만큼 채워
-커버리지가 회차에 걸쳐 늘어남), 그리고 mtime입니다. 거대한 트리에선 일부(언리얼의 수만 TU 중 수백
-개)만 데울 수 있으니, 이 정렬이 warm 윈도가 실제 검색 대상을 포함하게 만드는 핵심입니다. git과
-Perforce 모두 지원합니다.
+순서가 중요합니다. clangd는 연 파일의 우선순위를 올리므로, vts는 **쿼리 이력 우선**으로 워밍합니다 — 그다음
+지금 편집 중인 것(`git status` / `p4 opened`), git-log 최신순, include 중심성, mtime 순. 거대한 트리에서는
+일부만 워밍할 수 있으니, 이 순서가 워밍 창에 실제 검색할 것이 담기게 만듭니다. 실측 향상
+(`node eval/bench-hitrate.mjs`, 2,000파일):
 
-측정된 향상 (`node eval/bench-hitrate.mjs`, 실제 `orderForWarm()`, 현실적 locality 합성 워크로드, 2,000 파일):
-
-| warm-up cap | 임의 순서 | 이력 기반 정렬 | 향상 |
+| 워밍업 캡 | 임의 순서 | 이력 순서 | 향상 |
 | --- | --- | --- | --- |
 | 파일의 3% | 1.5% | **54.3%** | **36×** |
 | 5% | 7.8% | **56.5%** | 7.3× |
@@ -205,311 +184,162 @@ Perforce 모두 지원합니다.
 | 20% | 24.8% | **68.5%** | 2.8× |
 | 50% | 46.3% | **80.5%** | 1.7× |
 
-데울 수 있는 비율이 작을수록 효과가 큽니다. 임의 순서는 거의 못 맞히고, 정렬은 대부분을 맞힙니다.
+워밍할 수 있는 조각이 작을수록 이득이 큽니다.
+</details>
 
-## 얼마나 절약했나? (토큰 절감 명령어)
+<details>
+<summary><b>절감 &amp; discover (포착률)</b></summary>
 
-코어는 검색마다 언어 서버 raw 인덱스 응답 대비 절약한 토큰을 기록합니다. 누적 합계는 이렇게 확인합니다:
+검색마다 원시 인덱스 응답을 그대로 보내는 것 대비 아낀 토큰을 기록합니다. `/vs-token-safer:savings`,
+`vts savings`(`--graph`/`--daily`/`--history`)로 확인하고, `vts savings-reset`으로 초기화합니다.
 
-- **Claude Code에서:** `/vs-token-safer:savings` 실행 (또는 "플러그인이 얼마나 아꼈어?"라고 질문).
-  `vts_savings` MCP 도구를 호출합니다.
-- **셸에서:** `vts savings`
-- **리셋:** `vts_savings_reset` 도구 호출 (또는 `vts savings-reset`).
-
-출력 예시:
 ```
 vs-token-safer savings (local, 1 search(es))
   total saved: ~4,200 tokens vs forwarding raw index responses
   raw → output: 4,340 → 140 tok (~31× smaller)
-  biggest single run: 4,340 → 140 tok
-  est. value: ~$0.01 (@ $3/Mtok — rough, set VTS_USD_PER_MTOK)
+  est. value: ~$0.01 (@ $3/Mtok — set VTS_USD_PER_MTOK)
 ```
-`vts savings --graph`는 30일치 절감 추이를 ASCII 그래프로 그려 주고, `--daily`와 `--history`를 붙이면
-일별·최근 실행별 분석까지 나옵니다. 여기까지가 *잡은* 쪽 이야기입니다. *놓친* 쪽은 `vts discover`가 맡습니다.
-최근 Claude 세션에서 인덱스를 우회한 코드 검색과 그 비용을 훑어 보여 주죠. 둘을 합치면 막연한 총합이 아니라
-catch-rate가 손에 잡힙니다:
+
+이건 *포착한* 쪽입니다. `vts discover`는 최근 세션에서 인덱스를 **우회한** 검색을 훑습니다:
+
 ```
 $ vts discover --since 1
-vs-token-safer discover — missed token savings (local scan, last 1 day(s), 9 transcript(s))
   86 code search(es) bypassed vts (Grep×48, Glob×18, grep×12, find×8)
-  raw tool output ingested: ~28,692 tok — routed through vts most of this is avoidable
   catch-rate: ~770,333 tok caught (via vts) vs ~28,692 still bypassing → 96.4% routed through vts
 ```
-(훅이 차단한 검색은 우회로 세지 않습니다 — 실제로 빠져나간 것만 집계합니다.)
-> 여기서 말하는 "saved"는 언어 서버의 *raw* 인덱스 응답을 기준으로 한 값입니다. Bash grep과 견주면 절감
-> 폭은 보통 이보다 훨씬 큽니다. 자세한 건 [BENCHMARK.md](BENCHMARK.md)를 보세요. `discover`는 로컬에서
-> 읽기 전용으로만 돕니다. 대화 기록 메타데이터와 도구 입출력 크기만 읽을 뿐, 무엇도 밖으로 내보내지 않습니다.
 
-## 사전 요구사항
+(훅이 *차단한* 검색은 우회로 세지 않습니다.) `discover`는 로컬·읽기 전용입니다 — 트랜스크립트 메타데이터와
+도구 입출력 크기만 읽고 어디로도 보내지 않습니다. `--learn`은 과거 검색이 실제로 건드린 파일을 워밍업
+세트에 먹여, 세션마다 인덱스를 더 따뜻하게 둡니다.
+</details>
 
-- PATH에 **Node.js ≥ 18**.
-- 검색할 언어의 언어 서버:
-  - **C/C++ → clangd ≥ 22** ([clangd 릴리스](https://github.com/clangd/clangd/releases)). Visual
-    Studio에 동봉된 clangd 19.1.x(`…/VC/Tools/Llvm/bin/clangd.exe`)는 실제 Unreal TU를 서버 모드에서
-    인덱싱할 때 **데드락**합니다. vts가 오래된 버전을 감지하면 경고합니다. `compile_commands.json`
-    컴파일 DB가 필요합니다.
-  - **C#/.NET → Roslyn LSP.** VS Code C# 확장(`ms-dotnettools.csharp`)을 설치하면 vts가 번들에서
-    `Microsoft.CodeAnalysis.LanguageServer`와 그 전용 .NET 런타임을 자동 감지합니다. 폴백은
-    `dotnet tool install --global csharp-ls`. `.sln`/`.csproj`가 필요합니다.
-  - **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 동봉되어 첫 세션에
-    자동 설치됩니다 — 따로 할 일 없습니다. vts가 번들 복사본을 `node`로 실행하니 전역 설치나 PATH 설정이
-    필요 없습니다. 원하면 `VTS_TS_CMD`/`VTS_PY_CMD`로 직접 지정하세요. (참고: 동봉으로 첫 실행 `npm
-    install`에 1회 ~50MB가 추가되고, JS/TS 서버는 **Node 20+**를 권장합니다 — Node 18에서는 건너뛰며
-    나머지 백엔드는 정상 동작합니다.)
-- IDE는 실행 중이지 않아도 됩니다.
+## 사전 준비 (자세히)
 
-clangd는 컴파일 DB(`compile_commands.json`)가 필요합니다:
-- **Unreal Engine:** UBT로 생성합니다. `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`.
-  타겟이 clang-cl로 빌드되면 **`-Compiler=VisualCpp`**를 추가하세요. 안 그러면
-  `GenerateClangDatabase`가 clang 툴체인 검증에 실패합니다(`Unable to find valid C++ toolchain for
-  Clang x64`). MSVC-컴파일러 DB도 clangd용 전체 엔진 include 그래프를 해석합니다.
-- **CMake:** `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`로 구성.
+<details>
+<summary><b>언어 서버 &amp; 컴파일 데이터베이스</b></summary>
 
-### compile DB가 아직 없을 때
+- **Node.js ≥ 18**이 PATH에.
+- **C/C++ → clangd ≥ 22** ([릴리스](https://github.com/clangd/clangd/releases)). Visual Studio에 번들된 clangd 19.1.x는 실제 Unreal TU를 서버 모드로 인덱싱할 때 **교착**합니다 — 오래된 게 감지되면 vts가 경고합니다. `compile_commands.json`이 필요합니다.
+- **C#/.NET → Roslyn LSP.** VS Code C# 확장(`ms-dotnettools.csharp`)을 설치하면 vts가 번들에서 `Microsoft.CodeAnalysis.LanguageServer`와 런타임을 자동 감지합니다. 대안: `dotnet tool install --global csharp-ls`. `.sln`/`.csproj`가 필요합니다.
+- **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 들어가 첫 세션에 자동 설치됩니다(최초 1회 ~50MB; JS/TS는 Node 20+를 원하고 18에서는 건너뜀).
 
-새로 만든 Unreal 프로젝트에는 대개 `compile_commands.json`이 없습니다. clangd는 이 파일이 없으면 의미
-기반 인덱스를 만들지 못합니다. 그렇다고 플러그인이 말없이 멈추거나 사용자를 막다른 곳에 두지는 않습니다.
+**clangd는 컴파일 데이터베이스가 필요합니다:**
+- **Unreal:** `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`. 타깃이 clang-cl로 빌드되면 **`-Compiler=VisualCpp`**를 더하세요 — 아니면 clang 툴체인 검증에 실패합니다.
+- **CMake:** `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 
-1. **그래도 결과는 돌아옵니다.** `search_symbol`이 범위를 좁힌 리터럴 텍스트 검색으로 넘어가고, 결과에
-   그 사실을 분명히 표시합니다(`Literal text matches … not a semantic decl`). 해석된 심볼이 아니라
-   텍스트로 찾은 것일 뿐, 이름은 여전히 찾을 수 있습니다.
-2. **원인은 한 번만 알려줍니다.** 첫 clangd 결과에 "compile DB가 없어 인덱스가 비어 있다"는 안내가 한 번
-   붙고, `/vs-token-safer:setup`도 DB가 없는 C++ 프로젝트를 센서스할 때 같은 내용을 미리 경고합니다.
-3. **해결은 명령 하나로 끝나며, 실행 여부는 직접 정합니다.** `vts_gen_compile_db`(CLI는
-   `vts gen-compile-db`)가 프로젝트에 맞는 UBT `GenerateClangDatabase` 명령을 알아서 조립합니다.
-   `.uproject`를 찾고, `<Name>Editor` 타깃을 추론하고, 엔진 위치를 찾고(`VTS_UE_ROOT`나 `engineRoot`
-   인자, 또는 프로젝트에서 상위로 거슬러 올라가며 탐색), clang-cl로 빌드하는 타깃이면
-   `-Compiler=VisualCpp`를 덧붙입니다. 기본 동작은 dry-run이라 명령만 출력하고 아무것도 실행하지
-   않습니다. `apply=true`를 줘야 비로소 UBT를 돌리고(몇 분 걸립니다), 만들어진 DB를 소스 트리 바깥
-   `~/.vs-token-safer/db/<project>`에 둔 다음 clangd를 그 위치에 연결합니다. clangd가 `.cache/`
-   인덱스를 DB 옆에 쓰므로 git에도 `p4 reconcile`에도 산출물이 전혀 잡히지 않습니다. 예전처럼 프로젝트
-   루트에 두고 싶다면 `inTree=true`를 주세요. 그러면 VCS-ignore 가드가 `.gitignore`에 항목을 더하거나,
-   depot 루트까지 올라가며 Perforce ignore 파일을 찾아 처리하고(읽기 전용이면 `p4 edit` 뒤에 넣을 줄을
-   알려줍니다), 어느 모드에서든 엔진 루트에 남은 사본을 지웁니다.
-4. 이후 MCP 서버를 재시작하거나 쿼리를 다시 실행하면 `search_symbol`, `find_references`,
-   `goto_definition`이 엔진 전체 인덱스를 바탕으로 의미 기반 답을 돌려줍니다.
+**아직 컴파일 DB가 없다면?** 그래도 답은 나옵니다 — `search_symbol`이 제한된 리터럴 텍스트 검색으로
+폴백하고(그렇게 라벨됨), 첫 결과에 일회성 안내가 붙습니다. 한 방에 고치려면: `vts_gen_compile_db`(CLI
+`vts gen-compile-db`)가 정확한 UBT 명령을 조립합니다(`.uproject`를 찾고, `<Name>Editor` 타깃을 끌어내고,
+엔진을 찾고, clang-cl 타깃이면 `-Compiler=VisualCpp`를 더함). **기본은 드라이런**이고, `apply=true`면
+UBT를 돌려 DB를 **소스 트리 밖**(`~/.vs-token-safer/db/<project>`, clangd의 `.cache/`도 그 옆)에 두므로
+git이나 `p4 reconcile`이 산출물을 보지 못합니다. `inTree=true`면 VCS 무시 가드로 보호되는 고전적
+프로젝트-루트 배치를 씁니다.
+</details>
 
-빠른 조회만 하면 된다면 DB 없이 텍스트 모드로 두는 것도 충분히 합리적인 선택입니다. 전체 DB가 진짜
-필요해지는 순간은 엔진 include 그래프를 가로질러 참조와 정의를 해석해야 할 때입니다.
+<details>
+<summary><b>독립 CLI (IDE·Claude Code 없이)</b></summary>
 
-## 설치
-
-```bash
-# 1) 마켓플레이스 추가 + 설치 (gamedev-log-analyzer도 자동 설치)
-/plugin marketplace add JSungMin/vs-token-safer
-/plugin install vs-token-safer@vs-token-safer
-/reload-plugins        # 첫 실행 시 서버 의존성 자동 설치 (수동 npm 불필요)
-
-# 2) 설정 — Claude Code 안에서 그냥 실행:
-/vs-token-safer:setup
-#   백엔드를 감지하고, 프로젝트 경로를 물어본 뒤 config를 기록합니다.
-```
-
-`vs-search` MCP 서버와 도구들이 보이는지, `grep src/**/*.cpp`이 인덱스 도구 유도와 함께 차단되는지
-(또는 `VTS_ENFORCE=0`이면 자유롭게 실행되는지) 확인하세요. MCP 서버의 의존성 하나
-(`@modelcontextprotocol/sdk`)는 첫 세션에 플러그인 데이터 디렉터리로 자동 설치됩니다.
-
-### 독립 CLI로 (IDE·Claude Code 불필요)
-
-vs-token-safer는 npm에 배포하지 않으니 `vts` CLI를 클론해서 설치합니다:
+npm에 게시하지 않으므로 클론에서 `vts`를 설치합니다:
 
 ```bash
 git clone https://github.com/JSungMin/vs-token-safer
 cd vs-token-safer/server && npm install && npm link   # `vts` 제공
-# 또는 link 없이 직접 실행:
-node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
+# 또는 직접 실행: node /path/to/vs-token-safer/server/cli.js symbol --q SpawnActor --projectPath /path/to/proj
 ```
-
-## 설정 명령어
-
-OS 환경변수를 직접 편집하지 않습니다. 설정은 CLI와 MCP 서버가 시작할 때 읽는 config 파일
-(`~/.vs-token-safer/config.json`)에 저장됩니다. 설정 방법은 다음과 같습니다:
-
-- **Claude Code에서 (권장):** `/vs-token-safer:setup`가 가이드해 줍니다. 현재 설정을 보여주고
-  (`vts_config`), 백엔드를 감지하고, `projectPath`를 물어본 뒤 `vts_setup` 도구로 적용합니다. 그 후
-  `/reload-plugins`.
-- **도구 직접 호출:** Claude에게 `vts_setup { "projectPath": "…", "backend": "clangd" }`를 호출하거나
-  `vts_config`로 유효 설정을 보여달라고 요청하세요.
-- **셸에서:**
-  ```bash
-  vts setup --projectPath <root> --backend clangd
-  vts config
-  ```
-
-백엔드는 루트에서 자동 감지합니다. `compile_commands.json`(또는 `.uproject`)이면 **clangd**,
-`.sln`/`.csproj`이면 **roslyn**. 설정은 시작할 때 읽으니 **변경 후 `/reload-plugins`를 실행하세요**.
-우선순위는 **환경변수(`VTS_*`) > config 파일 > 기본값**이라, 같은 이름 환경변수가 있으면 그게
-이깁니다.
-
-## 새 버전으로 업데이트
-
-Claude Code는 마켓플레이스 repo를 캐시하므로 새 커밋이 **자동으로 받아지지 않습니다**. 새 버전을
-받으려면:
-
-```bash
-# 1) 캐시된 마켓플레이스 카탈로그 갱신
-/plugin marketplace update vs-token-safer
-
-# 2) 설치된 플러그인 업데이트 (확실히 하려면 uninstall 후 install)
-/plugin update vs-token-safer
-#   안 되면: /plugin uninstall vs-token-safer  그 다음  /plugin install vs-token-safer@vs-token-safer
-
-# 3) 훅/명령어/스킬 리로드
-/reload-plugins
-
-# 4) Claude Code 세션 재시작 — 이 단계는 선택이 아니라 필수입니다.
-#    /reload-plugins는 훅·명령어·스킬만 리로드합니다. vs-search MCP 서버는 세션 시작 때 한 번 뜨는
-#    자식 프로세스라, 재시작 전까지 옛 코드를 계속 돌립니다. 그래서 새 버전의 도구(search_symbol,
-#    find_references 등)는 세션을 껐다 켜기 전엔 실제로 바뀌지 않습니다.
-```
-
-> ⚠️ **새 플러그인 버전은 세션을 재시작해야 완전히 적용됩니다.** `/reload-plugins`만으로는 부족합니다 —
-> 돌고 있는 `vs-search` MCP 서버 프로세스는 리로드로 재시작되지 않아, Claude Code를 껐다 켜기 전까지
-> 이전 버전의 도구 코드를 그대로 제공합니다. 훅·명령어·스킬은 리로드로 갱신되지만, MCP 서버(따라서 모든
-> `search_*` / `find_*` 도구)는 재시작에서만 갱신됩니다.
-
-`/plugin`으로 설치 상태와 버전을 확인할 수 있습니다. `/vs-token-safer:setup` 같은 명령이 안 보이면
-설치본이 구버전이니 위 절차로 업데이트하세요.
-
-> 유지보수 참고: `.claude-plugin/plugin.json`(과 마켓플레이스 엔트리)의 `version` 필드가 업데이트
-> 게이트입니다. 클라이언트가 변경을 받게 하려면 버전을 올리세요. 변경이 동봉된 `gamedev-log-analyzer`
-> (자체 독립 semver 유지)에만 있더라도 헤드라인 플러그인을 올려야 합니다(아니면 "already at latest").
-> 버전 히스토리는 README가 아니라 [Releases](https://github.com/JSungMin/vs-token-safer/releases)에
-> 있습니다(각 `v*` 태그마다 자동 생성).
-
-## 설정 항목 (env)
-
-<details>
-<summary><b>전체 환경변수 펼치기</b></summary>
-
-우선순위: **환경변수(`VTS_*`) > `~/.vs-token-safer/config.json` > 기본값.**
-
-| 설정 키 | 환경변수 | 기본값 | 의미 |
-| --- | --- | --- | --- |
-| `projectPath` | `VTS_PROJECT_PATH` | cwd | 프로젝트 루트(컴파일 DB / `.sln` 위치). |
-| `backend` | `VTS_BACKEND` | auto | `clangd` \| `roslyn` (루트에서 자동 감지). |
-| `maxResults` | `VTS_MAX_RESULTS` | `60` | 반환 `file:line` 개수 상한. |
-| — | `VTS_COMPACT_RESULTS` | `1` | `0`이면 한 줄에 위치 하나씩으로 되돌림(`find_references` 파일별+공통 프리픽스 접기 비활성). |
-| — | `VTS_MAX_BACKENDS` | `2` | 동시에 살아있는 언어 서버 최대 수; 상한 초과 시 가장 오래 안 쓴 유휴 백엔드를 회수(멀티-repo 메모리 가드). |
-| — | `VTS_BACKEND_IDLE_MS` | `300000` | 이만큼 유휴한 언어 서버는 백그라운드 회수기가 종료(`0`=비활성). |
-| — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일/인자 재정의. |
-| — | `VTS_ROSLYN_DLL` | auto | 특정 `Microsoft.CodeAnalysis.LanguageServer.dll` 경로. |
-| — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto(MS 엔진) → `csharp-ls` | C# LSP 실행 파일/인자 재정의. |
-| — | `VTS_TS_CMD` / `VTS_TS_ARGS` | 동봉 `typescript-language-server` | JS/TS LSP 실행 파일/인자 재정의. |
-| — | `VTS_PY_CMD` / `VTS_PY_ARGS` | 동봉 `pyright-langserver` | Python LSP 실행 파일/인자 재정의. |
-| — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | JS/TS · Python warm-up이 서버를 데우려 여는 파일 최대 수. |
-| — | `VTS_LSP_TIMEOUT_MS` | `30000` | 요청당 LSP 타임아웃. 차갑고 큰(예: UE) 인덱스면 올림. |
-| — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | clangd warm-up이 첫 쿼리 전 백그라운드 인덱싱 완료를 기다리는 시간. |
-| — | `VTS_CLANGD_OPEN_CAP` | `100` | warm-up이 clangd 인덱스를 데우려 여는 파일 최대 수(persisted 인덱스 없는 cold 상태). |
-| — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | persisted `.cache/clangd` 인덱스가 있을 때 여는 파일 수 — clangd가 인덱스에서 답하므로 재파싱이 거의 불필요. |
-| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `60000` | persisted 인덱스가 있을 때, 로딩 중인 인덱스를 쿼리가 폴링하는 상한 — 고정 시각이 아니라 심볼이 잡히는 순간 즉시 반환. |
-| — | `VTS_CLANGD_PERSISTED_FLOOR_MS` | `3000` | persisted 인덱스가 있을 때 첫 쿼리가 폴링을 시작하기 전 warm-up이 기다리는 짧은 바닥 시간. |
-| — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd 백그라운드 인덱싱 스레드 우선순위. 기본 `normal`은 빠르게 구축, `background`는 유휴 CPU만(느리지만 공용 머신에 양보). |
-| — | `VTS_CLANGD_JOBS` | `코어수-1` | clangd async/인덱스 워커 수(`-j`). |
-| — | `VTS_PREWARM` | on (`projectPath` 설정 시) | MCP 서버가 기동 시 인덱스 pre-warm(IDE식); `0`이면 비활성. |
-| — | `VTS_PREWARM_HOOK` | `0` | SessionStart 훅도 detached `vts warmup`으로 pre-warm(opt-in; 주로 CLI/비-MCP). |
-| — | `VTS_PREWARM_BACKENDS` | auto | pre-warm할 백엔드. `auto`=감지된 단일/우세 백엔드 하나; `all`=repo에 존재하는 모든 언어(각 언어 파일수에 비례해 warm); 또는 `clangd,typescript` 같은 콤마 목록. |
-| — | `VTS_WARM_CAP_RATIO` | `0.1` | 적응형 warm-up: 한 언어 파일의 ~이 비율만큼 open(큰 언어가 더 많이 warm), `[백엔드별 base, VTS_WARM_CAP_MAX]`로 clamp. `VTS_*_OPEN_CAP` 명시 시 그게 우선. |
-| — | `VTS_WARM_CAP_MAX` | `300` | 적응형 백엔드별 warm-up open-cap 상한. |
-| — | `VTS_CLANGD_REMOTE` | — | 공유/사전구축 clangd 인덱스 서버 주소(`--remote-index-address`); 개발자별 warmup ~0. |
-| — | `VTS_QUERY_HISTORY` | `~/.vs-token-safer/query-history.json` | 쿼리 이력 원장 위치(warm-up 세트를 곧-검색-우선으로 정렬하는 데 사용). |
-| — | `VTS_CENTRALITY_MAX` | `20000` | 중심성 스캔이 순회할 후보 상한; `0`이면 중심성 비활성. |
-| — | `VTS_CENTRALITY_BUDGET_MS` | `400` | warm-up당 *신규* include-프리픽스 읽기 예산. 중심성은 적응형이라, 매 warm-up이 예산만큼 새/변경 파일을 영속 include-그래프 캐시(`VTS_INCLUDE_GRAPH`)에 채워 회차마다 커버리지가 늘어남(`0`=캐시만). |
-| — | `VTS_ENFORCE` | `1` | `0`/`false`/`off`이면 Bash 코드 grep 허용(언어 서버 불가 시 탈출구). |
-| — | `VTS_REWRITE` | `1` | `0`이면 Bash 코드 grep을 `vts` 쿼리로 재작성하지 않고 차단합니다. |
-| — | `VTS_GREP_BLOCK` | `1` | `0`이면 **Grep/Glob 도구**의 심볼사냥/코드파일글롭 차단이 경고로 되돌아갑니다. |
-| — | `VTS_EXCLUDE_COMMANDS` | — | 재작성/차단에서 제외할 실행 파일 콤마 목록(예: `rg,find`). config.json의 `excludeCommands`도 가능. |
-| — | `VTS_COMPACT_VCS` | `1` | `0`이면 훅이 읽기 전용 `git status/log/diff` / `p4 opened/…`을 압축 `vts_git`/`vts_p4` 래퍼로 보내지 않습니다. |
-| `lang` | `VTS_LANG` | auto | 훅의 차단/넛지/로그 메시지 언어: `ko` 또는 `en`. OS 로케일에서 한국어를 자동 감지하며, `VTS_LANG`(또는 config `lang`)으로 강제할 수 있습니다. |
-| — | `VTS_TEE` | `truncate` | `truncate`면 잘린 `find_files`/`search_text` 전체 결과를 복구 파일로 씁니다. `off`면 비활성화. 디렉터리: `VTS_TEE_DIR`. |
-| — | `VTS_USD_PER_MTOK` | `3` | `vts savings`/`discover`의 추정 가치 줄에 쓰는 $/Mtok 단가. 참고용. |
-| — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 스캔할 대화 기록 위치. |
-| — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 compile DB의 트리 밖 보관소(프로젝트별 하위 디렉터리, clangd `.cache/` 인덱스도 함께). |
-
-
 </details>
 
-## 강제(enforcement) 동작 방식
-
-- **훅**은 Bash·Grep·Glob 도구 호출 전마다 실행됩니다.
-  - **Bash** 코드 검색(grep/rg/ack/ag/findstr/`git grep`, 또는 코드 확장자·`src|source|engine|plugins/`를
-    겨냥한 `find <dir> -name`)이 로그·md·json·빌드 경로가 *아닐* 때, 그 자리에서 동등한 `vts` 쿼리로 바꿔
-    줍니다(식별자→의미 기반 `symbol`, 리터럴→`text`, `find`→그 디렉터리를 루트로 한 `files`). 안전·완전한
-    재작성을 못 만들면(파이프라인, 셸 메타문자, 다중 `-name`/`-o` find) 차단합니다.
-  - 내장 **Grep 도구**는 패턴이 명백한 심볼 사냥(맨 식별자, 코드 구조 정규식, CamelCase alternation)이면
-    `search_symbol`/`search_text`로 **차단**하고, 자유 텍스트·대문자 키워드 alternation은 경고만 합니다.
-  - 내장 **Glob 도구**는 구체적 코드 파일(`*.cpp`·`Foo.h`·`**/Bar.*`)이면 `find_files`로 **차단**(walk-bound라
-    거대 트리에서도 안 멈춤)하고, 에셋·맨 글롭은 통과시킵니다.
-  - 스위치: `VTS_REWRITE=0`은 Bash 차단만, `VTS_GREP_BLOCK=0`은 Grep/Glob 차단을 경고로 되돌림,
-    `excludeCommands`/`VTS_EXCLUDE_COMMANDS`로 Bash 명령 제외, `VTS_ENFORCE=0`이면 전부 끔.
-- **스킬**은 Claude가 인덱스 도구를 선제적으로 쓰도록 유도합니다.
-- **코어**는 Claude가 도구를 어떻게 호출하든 토큰 상한을 보장하고, `find_files`나 `search_text` 결과가 잘리면
-  전체 결과를 tee 파일로 남겨 조용히 빠뜨리는 일을 막습니다.
-
-## 문제 해결
+## 설정
 
 <details>
-<summary><b>문제 해결 표 펼치기</b></summary>
+<summary><b>설정 명령 &amp; 업데이트</b></summary>
+
+설정은 `~/.vs-token-safer/config.json`에 있습니다(시작 때 읽음 — 바꾼 뒤 `/reload-plugins`). 방법은
+`/vs-token-safer:setup`(안내형), `vts_setup`/`vts_config` 도구, 또는 `vts setup --projectPath <root>
+--backend clangd`. 백엔드는 루트에서 자동 감지됩니다. 우선순위: **env(`VTS_*`) > 설정 파일 > 기본값.**
+
+**업데이트:** Claude Code가 마켓플레이스를 캐시하므로 새 커밋은 자동으로 안 받아집니다:
+```bash
+/plugin marketplace update vs-token-safer
+/plugin update vs-token-safer
+/reload-plugins
+# 그다음 세션 재시작 — 필수.
+```
+> ⚠️ 새 버전은 **세션 재시작** 후에야 완전히 적용됩니다. `/reload-plugins`는 훅/명령/스킬만 갱신하고,
+> 돌고 있는 `vs-search` MCP 서버는 종료-재실행 전까지 옛 도구 코드를 씁니다. 버전 이력:
+> [Releases](https://github.com/JSungMin/vs-token-safer/releases).
+</details>
+
+<details>
+<summary><b>환경 변수 전체</b></summary>
+
+우선순위: **`VTS_*` env > `~/.vs-token-safer/config.json` > 기본값.**
+
+| 설정 키 | 환경 변수 | 기본값 | 의미 |
+| --- | --- | --- | --- |
+| `projectPath` | `VTS_PROJECT_PATH` | cwd | 프로젝트 루트 (컴파일 DB / `.sln` 위치). |
+| `backend` | `VTS_BACKEND` | auto | `clangd` \| `roslyn` \| `typescript` \| `pyright`. |
+| `maxResults` | `VTS_MAX_RESULTS` | `60` | 반환 `file:line` 위치 상한. |
+| — | `VTS_COMPACT_RESULTS` | `1` | `0`이면 위치당 한 줄 출력으로 복원. |
+| — | `VTS_MAX_BACKENDS` | `2` | 동시에 살아 있는 언어 서버 최대치 (초과분은 LRU 축출). |
+| — | `VTS_BACKEND_IDLE_MS` | `300000` | 이만큼 유휴인 언어 서버는 종료 (`0`이면 끔). |
+| — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일 / 인자 오버라이드. |
+| — | `VTS_ROSLYN_DLL` | auto | 특정 `Microsoft.CodeAnalysis.LanguageServer.dll` 경로. |
+| — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | C# LSP 오버라이드. |
+| — | `VTS_TS_CMD` / `VTS_PY_CMD` (+ `_ARGS`) | 번들 | JS/TS · Python LSP 오버라이드. |
+| — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | JS/TS · Python 워밍업이 여는 파일 수. |
+| — | `VTS_LSP_TIMEOUT_MS` | `30000` | LSP 요청별 타임아웃. 차갑고 큰 인덱스면 올리세요. |
+| — | `VTS_LSP_INDEX_WAIT_MS` | `120000` | clangd 워밍업이 백그라운드 인덱스 완료를 기다리는 시간. |
+| — | `VTS_CLANGD_OPEN_CAP` | `100` | 차가운 워밍업이 clangd 준비에 여는 파일 수. |
+| — | `VTS_CLANGD_WARM_CAP_PERSISTED` | `8` | 영속 `.cache/clangd` 인덱스가 있을 때의 오픈 캡. |
+| — | `VTS_CLANGD_PERSISTED_WAIT_MS` | `60000` | 아직 로딩 중인 영속 인덱스를 질의가 폴링하는 상한. |
+| — | `VTS_CLANGD_PERSISTED_FLOOR_MS` | `3000` | 첫 질의가 폴링을 시작하기 전 잠깐의 바닥. |
+| — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd 백그라운드 인덱스 우선순위 (`background`는 유휴 CPU 전용). |
+| — | `VTS_CLANGD_JOBS` | `cores-1` | clangd 비동기/인덱스 워커 (`-j`). |
+| — | `VTS_PREWARM` | on (`projectPath` 있으면) | MCP 서버가 부팅 때 프리워밍; `0`이면 끔. |
+| — | `VTS_PREWARM_BACKENDS` | auto | `auto` / `all` / 콤마 목록 — 프리워밍할 백엔드. |
+| — | `VTS_WARM_CAP_RATIO` / `VTS_WARM_CAP_MAX` | `0.1` / `300` | 적응형 워밍업 오픈 캡 (언어 파일 수의 비율, 클램프). |
+| — | `VTS_CLANGD_REMOTE` | — | 공유/프리빌드 clangd 인덱스 서버 주소. |
+| — | `VTS_QUERY_HISTORY` / `VTS_INCLUDE_GRAPH` | `~/.vs-token-safer/…` | 워밍업 순서 캐시. |
+| — | `VTS_CENTRALITY_MAX` / `VTS_CENTRALITY_BUDGET_MS` | `20000` / `400` | include 중심성 스캔 한도 (`0`이면 끔 / 캐시 전용). |
+| — | `VTS_ENFORCE` | `1` | `0`이면 Bash 코드-grep 통과 (탈출구). |
+| — | `VTS_REWRITE` | `1` | `0`이면 훅이 바꿔치기 대신 Bash 코드-grep을 차단. |
+| — | `VTS_GREP_BLOCK` | `1` | `0`이면 **Grep/Glob 도구** 격상을 차단에서 경고로 되돌림. |
+| — | `VTS_EXCLUDE_COMMANDS` | — | 면제할 실행 파일 콤마 목록 (설정의 `excludeCommands`도). |
+| — | `VTS_COMPACT_VCS` | `1` | `0`이면 읽기 전용 `git`/`p4`의 압축 래퍼 우회를 멈춤. |
+| `lang` | `VTS_LANG` | auto | 훅 메시지 언어: `ko` / `en` (OS 로케일에서 자동 감지). |
+| — | `VTS_TEE` / `VTS_TEE_DIR` | `truncate` | 잘린 `find_files`/`search_text` 결과의 복구 파일. |
+| — | `VTS_USD_PER_MTOK` | `3` | 추정값 줄의 $/Mtok 단가 (참고용). |
+| — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 트랜스크립트를 찾는 곳. |
+| — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 컴파일 DB의 소스 트리 밖 보관처. |
+</details>
+
+<details>
+<summary><b>문제 해결</b></summary>
 
 | 증상 | 원인 | 해결 |
 | --- | --- | --- |
-| `/vs-token-safer:setup`가 자동완성에 안 뜸 | 플러그인 미설치(마켓플레이스만 add) 또는 구버전 | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. `/plugin`에서 버전 확인. |
-| 첫 clangd 쿼리가 매우 느리거나 타임아웃 | 차가운 UE-스케일 인덱스, clangd가 엔진 헤더 인덱싱 중 | pre-warm(`VTS_PREWARM` on, 또는 `vts warmup`); `VTS_LSP_TIMEOUT_MS`/`VTS_LSP_INDEX_WAIT_MS` 올림. MCP 서버를 띄워둬 인덱스를 warm 유지. |
-| 실제 UE 프로젝트에서 clangd 쿼리가 영영 안 돌아옴(hang) | VS 동봉 clangd 19.1.x가 UE TU에서 **데드락** | **clangd ≥ 22** 설치 후 `VTS_CLANGD_CMD`로 지정. 오래된 clangd 감지 시 vts가 버전 경고 출력. |
-| `GenerateClangDatabase` 실패: "Unable to find valid C++ toolchain for Clang x64" | 타겟이 clang-cl 빌드; UBT가 Clang 툴체인 검증 | UBT 명령에 **`-Compiler=VisualCpp`** 추가. MSVC DB도 include 그래프를 해석함. |
-| clangd가 헤더 없는 심볼만 해석 | 컴파일 DB에 include 경로 없음 → 시스템/서드파티 헤더 미해석 | UBT 생성 DB 사용(경로 포함); 수작업 `compile_commands.json`은 include 경로를 명시해야 함. |
-| C# 결과 없음 / "No backend resolved" | Roslyn 엔진 미발견 | VS Code C# 확장(`ms-dotnettools.csharp`) 설치, 또는 `dotnet tool install --global csharp-ls`; 또는 `VTS_ROSLYN_DLL`/`VTS_ROSLYN_CMD` 설정. |
-| JS/TS·Python 결과 없음 | 동봉 LSP 미설치(오프라인 첫 실행, npm 실패) | 세션을 다시 시작해 의존성 재설치, 또는 PATH의 `typescript-language-server`/`pyright-langserver`를 `VTS_TS_CMD`/`VTS_PY_CMD`로 지정. |
-| 원하던 grep인데 코드 검색이 차단됨 | 훅이 인덱스로 유도 중 | `VTS_ENFORCE=0`으로 grep 허용(예: 언어 서버 불가 시). |
-| 잘못된 백엔드 선택됨 | 루트 아래 프로젝트 파일이 여럿 | 고정: `VTS_BACKEND=clangd`(또는 `roslyn`), 또는 호출마다 `backend` 전달. |
-
-
+| `/vs-token-safer:setup`이 자동완성에 없음 | 플러그인 미설치(마켓플레이스만 추가) 또는 오래됨 | `/plugin install vs-token-safer@vs-token-safer` → `/reload-plugins`. |
+| 첫 clangd 질의가 매우 느림 | UE 규모 트리의 스폰당 clangd 비용(차가운 인덱스, 또는 영속 인덱스 재검증) | **MCP 서버**를 계속 띄워 clangd를 한 번만 스폰. `VTS_CLANGD_PERSISTED_WAIT_MS` / `VTS_LSP_INDEX_WAIT_MS` 조정. |
+| clangd 질의가 UE에서 안 돌아옴(멈춤) | VS 번들 clangd 19.1.x가 UE TU에서 **교착** | **clangd ≥ 22** 설치 후 `VTS_CLANGD_CMD`로 지정. |
+| `GenerateClangDatabase` 실패: "Unable to find valid C++ toolchain for Clang x64" | 타깃이 clang-cl로 빌드 | UBT 명령에 **`-Compiler=VisualCpp`** 추가. |
+| clangd가 헤더 없는 심볼만 해석 | 컴파일 DB에 include 경로 없음 | UBT 생성 DB 사용(경로 포함). |
+| C# 결과 없음 / "No backend resolved" | Roslyn 엔진 못 찾음 | VS Code C# 확장 설치, 또는 `csharp-ls`; 또는 `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD` 설정. |
+| JS/TS·Python 결과 없음 | 번들 LSP 미설치(오프라인 첫 실행) | 세션 재실행, 또는 `VTS_TS_CMD` / `VTS_PY_CMD` 설정. |
+| 그냥 grep을 원했는데 코드 검색이 차단됨 | 훅이 인덱스로 유도 | `VTS_ENFORCE=0`이면 grep 통과. |
+| 잘못된 백엔드 선택 | 루트에 프로젝트 파일 여럿 | `VTS_BACKEND=clangd`로 고정(또는 호출마다 `backend`). |
 </details>
 
-## 상태 / 주의
+## 상태 &amp; 안전
 
-- **clangd 라이브 검증됨.** `compile_commands.json` 프로젝트 대상 실제 clangd로
-  `search_symbol`/`find_references`/`goto_definition`을 확인했고, **실제 Unreal 5.x 게임 프로젝트
-  end-to-end**도 포함합니다(게임 `UCLASS`와 그 `*.generated.h` 심볼을 반환). 정확한 컴파일 DB(include
-  경로 포함)와 **clangd ≥ 22**가 필요합니다. 오래된 clangd는 실제 UE TU에서 데드락합니다.
-- **Roslyn 라이브 검증됨.** 실제 `.csproj` 대상 **Microsoft.CodeAnalysis.LanguageServer**(VS 실제
-  엔진)로 확인했습니다. VS Code C# 확장 번들에서 자동 감지하며 `csharp-ls`로 폴백합니다.
-- 차가운 UE-스케일 인덱스는 첫 쿼리가 느리니 pre-warm하거나 LSP wait/timeout 환경변수를 올리세요.
-- 절감 원장과 벤치마크 수치는 응답 정형화(raw 인덱스 → 캡) 기준입니다. grep 대비 절감은 더 큽니다.
-  [BENCHMARK.md](BENCHMARK.md)를 참고하세요.
-
-## 권한 & 안전
-
-전부 **로컬**에서 동작하고 아무것도 업로드하지 않습니다:
-
-- **훅**(`PreToolUse` Bash)은 명령 문자열만 검사해 code-grep을 인덱스로 리다이렉트할지 결정합니다. 파일
-  내용을 읽거나 무언가를 실행하지 않습니다. `VTS_ENFORCE=0`을 존중합니다.
-- **언어 서버**는 기기에서 stdio로 실행됩니다. 유일한 외부 네트워크 호출은 첫 실행 시 MCP SDK의
-  `npm install`뿐입니다. 텔레메트리도 소스도 쿼리도 기기를 떠나지 않고, `~/.vs-token-safer/`에 설정과
-  로컬 토큰절감 원장만 기록합니다.
-- **gamedev-log-analyzer**는 지정한 로컬 로그 파일을 읽어 요약만 출력합니다.
-
-[SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md)를 참고하세요.
-
-## 버전 히스토리
-
-버전별 노트(🚀 Features / 🐛 Bug Fixes / 📝 Documentation / 🔧 Maintenance)는 `v*` 태그마다 PR과 함께
-자동 생성됩니다. 상단 배지가 항상 최신을 가리킵니다. 전체 이력은
-**[Releases](https://github.com/JSungMin/vs-token-safer/releases)** 페이지를 보세요.
+- **clangd와 Roslyn 라이브 검증** — `search_symbol`/`find_references`/`goto_definition`을 실제 clangd(실제 Unreal 5.x 게임 프로젝트 엔드투엔드 포함)와 **Microsoft.CodeAnalysis.LanguageServer**로 확인했습니다. clangd ≥ 22와 올바른 컴파일 DB가 필요합니다.
+- **로컬 전용, 아무것도 업로드 안 함.** 훅은 명령 문자열만 검사하고(`VTS_ENFORCE=0` 존중), 언어 서버는 stdio로 돕니다. 유일한 외부 호출은 첫 실행 때 MCP SDK의 `npm install`뿐입니다. `~/.vs-token-safer/` 아래에 설정과 로컬 절감 장부만 씁니다. [SECURITY.md](SECURITY.md)·[PRIVACY.md](PRIVACY.md) 참고.
+- 절감/벤치 수치는 응답 정형(원시 인덱스 → 캡) 기준입니다. grep 대비 절감은 더 큽니다([BENCHMARK.md](BENCHMARK.md)).
 
 ## 기여
 
-이슈와 PR 환영합니다. 버그 리포트, 새 백엔드/엔진, 언어 매핑 추가, 문서 모두 좋습니다.
-
-이 repo는 AI 보조 리뷰로 유지보수합니다. PR은 diff와 설명과 증거로 판단하니 **작고, 명확히 설명되고,
-증거가 있고, 사내정보(실제 경로·심볼·프로젝트 식별자)가 없게** 올려주세요. 새 코드 경로에는
-`eval/run.mjs`에 eval 가드를 추가하세요. PR 전 **[CONTRIBUTING.md](CONTRIBUTING.md)**를 읽어주세요.
-
-**⭐ 토큰이나 디버깅 시간을 아꼈다면, star가 다른 사람들의 발견을 돕습니다.**
-
-## 개인정보
-
-이 플러그인들은 개인정보를 수집하지 않고 모든 처리를 로컬에서 합니다. [PRIVACY.md](PRIVACY.md)를 참고하세요.
+이슈와 PR 환영합니다 — 버그 신고, 새 백엔드/엔진, 언어 매핑, 문서. PR은 작게, 근거를 붙여, 독점 데이터(실제
+경로/심볼/프로젝트 식별자) 없이 보내 주세요. 새 코드 경로에는 `eval/run.mjs` 가드를 더해 주세요.
+[CONTRIBUTING.md](CONTRIBUTING.md) 참고. 토큰을 아꼈다면 별 하나가 다른 사람에게 도움이 됩니다. ⭐
 
 ## 라이선스
 

@@ -132,6 +132,88 @@ const TOOLS = [
     },
   },
   {
+    name: "replace_symbol_body",
+    description:
+      "Replace a whole declaration (function/method/class body, signature included) by NAMING it — the " +
+      "language-server outline supplies the exact span, so you don't Read the file into context or count " +
+      "lines for an exact-match Edit. Default PREVIEW returns the affected `file:line`; apply=true writes. " +
+      "Token-cheap symbol-level editing instead of read-whole-file-then-Edit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Declaration name to replace (e.g. a function/class name)." },
+        body: { type: "string", description: "New full text for the declaration (signature + body)." },
+        path: { type: "string", description: "File holding the symbol (pins the outline; else resolved via the index)." },
+        line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
+        apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["symbol", "body"],
+    },
+  },
+  {
+    name: "insert_after_symbol",
+    description:
+      "Insert text on a new line AFTER a named declaration (e.g. add a sibling function/method). The outline " +
+      "supplies the insertion point. Default PREVIEW; apply=true writes. No need to Read the file to find the line.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Declaration to insert after." },
+        text: { type: "string", description: "Text inserted on a new line after the declaration." },
+        path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
+        line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
+        apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["symbol", "text"],
+    },
+  },
+  {
+    name: "insert_before_symbol",
+    description:
+      "Insert text on a line BEFORE a named declaration (e.g. add an import/attribute/decorator above it). " +
+      "The outline supplies the insertion point. Default PREVIEW; apply=true writes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Declaration to insert before." },
+        text: { type: "string", description: "Text inserted on a line before the declaration." },
+        path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
+        line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
+        apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["symbol", "text"],
+    },
+  },
+  {
+    name: "safe_delete",
+    description:
+      "Delete a named declaration — but REFUSE while it's still referenced (so a delete can't silently orphan " +
+      "call sites). Checks references first; lists them and stops unless force=true. Default PREVIEW; apply=true writes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Declaration to delete." },
+        path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
+        line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
+        force: { type: "boolean", description: "Delete even if references remain (default false = refuse when referenced)." },
+        apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
+        projectPath: { type: "string" },
+        backend: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
     name: "find_files",
     description:
       "Find files by name (substring or glob like *Manager.cpp) under the project root — token-capped " +
