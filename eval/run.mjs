@@ -830,6 +830,40 @@ const i18nOk =
   /Grep 툴로 코드 검색/.test(hKoNudge) &&
   hEnBlock.status === 2 && /caught a code search/.test(hEnBlock.err); // en explicit still English
 
+// 45) backend pool lifecycle (memory guard): the live language-server pool is BOUNDED so a session that
+// touches many repos can't spawn an unbounded number of persistent clangd/Roslyn processes. evictLRU shuts
+// down the least-recently-used SETTLED+idle client at the cap; an in-flight request (pending.size>0)
+// protects its client from both eviction and the idle sweep; sweepIdle reaps clients idle past the TTL;
+// idleMs=0 disables reaping. Seeded with FAKE clients (no real LSP spawn) so the checks are deterministic.
+const { __pool } = await import("../server/core.js");
+const shut = [];
+const mk = (k, pending = 0) => ({ _k: k, pending: new Map(Array.from({ length: pending }, (_, i) => [i, 1])), async shutdown() { shut.push(this._k); } });
+process.env.VTS_MAX_BACKENDS = "2"; // cap = 2
+__pool.clear();
+__pool.seed("clangd|A", mk("A"), 100); __pool.seed("clangd|B", mk("B"), 200); __pool.seed("clangd|C", mk("C"), 300);
+const evicted = __pool.evictLRU(); // over cap → drop the oldest (smallest lastUsed)
+await new Promise((r) => setTimeout(r, 0)); // flush the async shutdown microtask
+const lruEvictOk = evicted === "clangd|A" && shut.includes("A") && !__pool.clients.has("clangd|A") && __pool.clients.size === 2;
+shut.length = 0; __pool.clear();
+__pool.seed("clangd|busy", mk("busy", 1), 50); __pool.seed("clangd|idle", mk("idle"), 150); __pool.seed("clangd|warm", mk("warm"), 250);
+const evicted2 = __pool.evictLRU(); // oldest is BUSY → skipped, next-oldest idle dropped
+const busyProtectedOk = evicted2 === "clangd|idle" && __pool.clients.has("clangd|busy");
+__pool.clear(); __pool.seed("clangd|solo", mk("solo"), 100);
+const noEvictOk = __pool.evictLRU() === null && __pool.clients.size === 1; // under cap → no eviction
+shut.length = 0; process.env.VTS_BACKEND_IDLE_MS = "1000"; __pool.clear();
+const T = 1_000_000;
+__pool.seed("clangd|old", mk("old"), T - 5000);        // idle 5s > 1s TTL → reaped
+__pool.seed("clangd|fresh", mk("fresh"), T - 100);     // idle 0.1s < TTL → kept
+__pool.seed("clangd|oldbusy", mk("oldbusy", 1), T - 9000); // old but busy → kept
+const reaped = __pool.sweepIdle(T);
+await new Promise((r) => setTimeout(r, 0));
+const idleSweepOk = reaped.length === 1 && reaped[0] === "clangd|old" && shut.includes("old") &&
+  __pool.clients.has("clangd|fresh") && __pool.clients.has("clangd|oldbusy");
+process.env.VTS_BACKEND_IDLE_MS = "0";
+const sweepDisabledOk = __pool.sweepIdle(T).length === 0; // TTL 0 → reaping disabled
+delete process.env.VTS_MAX_BACKENDS; delete process.env.VTS_BACKEND_IDLE_MS; __pool.clear();
+const poolLifecycleOk = lruEvictOk && busyProtectedOk && noEvictOk && idleSweepOk && sweepDisabledOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -883,6 +917,7 @@ const rows = [
   ["hardening: ro-allowlist + path-confine + rename/binary/budget/trunc", hardeningOk, "true", hardeningOk],
   ["polish: git/p4 run in cwd + p4-changes parse + dedup wording", polishOk, "true", polishOk],
   ["i18n: VTS_LANG=ko Korean block+nudge / en English", i18nOk, "true", i18nOk],
+  ["backend pool: LRU evict + idle reap + in-flight protect", poolLifecycleOk, "true", poolLifecycleOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

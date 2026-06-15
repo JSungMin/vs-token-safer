@@ -373,28 +373,101 @@ function discoverReport(a = {}) {
     `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${learnLine}`;
 }
 
-// ---- LSP client cache (one per root+backend; reused across calls in a process) ----
-// key -> Promise<LspClient>. We cache the PROMISE (not the resolved client) so a boot-time pre-warm
-// racing the first real query share ONE clangd instead of spawning two (the warmup is expensive).
+// ---- LSP client pool (one per root+backend; reused across calls in a process) ----
+// key -> { p: Promise<LspClient>, client: LspClient|null, lastUsed: ms }. We cache the PROMISE (not just
+// the resolved client) so a boot-time pre-warm racing the first real query share ONE clangd instead of
+// spawning two (the warmup is expensive).
+//
+// BACKEND POOL LIFECYCLE (memory guard). The MCP server is long-lived, and once the root is resolved
+// PER-CALL (a path's enclosing project / the MCP workspace root) a session that touches several repos
+// would otherwise spawn a PERSISTENT language server per root and never reap them — N repos × a UE-sized
+// clangd index = memory blow-up. So the pool is BOUNDED two ways: at most `maxBackends()` live clients
+// (the least-recently-used idle one is shut down past the cap), and any client idle past `idleMs()` is
+// reaped by a background sweep. Steady state ≈ 1 warm backend; bouncing between two repos keeps both warm
+// (no re-index); a third evicts the LRU. An evicted clangd reloads fast from its persisted on-disk index
+// (symbolReady polls the shards back in), so reaping is cheap. A client with an in-flight request is
+// NEVER evicted (pending.size guards it) — eviction/idle only ever touch settled, quiescent clients.
 const clients = new Map();
+const nowMs = () => Date.now();
+const maxBackends = () => Math.max(1, envInt("VTS_MAX_BACKENDS", 2));
+const idleMs = () => { const v = parseInt(process.env.VTS_BACKEND_IDLE_MS, 10); return Number.isFinite(v) && v >= 0 ? v : 300000; }; // 5 min; 0 disables idle reaping
+
+// Settled clients with no in-flight request, oldest-used first — the only ones safe to reap.
+function evictableEntries() {
+  return [...clients.entries()]
+    .filter(([, e]) => e.client && e.client.pending && e.client.pending.size === 0)
+    .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+}
+// Make room for one new backend: at/over the cap, shut down the least-recently-used idle client. If every
+// client is busy or still warming, allow a transient over-cap rather than block a live query.
+function evictLRU() {
+  if (clients.size < maxBackends()) return null;
+  const ev = evictableEntries();
+  if (!ev.length) return null;
+  const [key, e] = ev[0];
+  clients.delete(key);
+  Promise.resolve(e.client).then((c) => c && c.shutdown()).catch(() => {});
+  return key;
+}
+// Background reaper: shut down any client idle past idleMs (in-flight requests protected).
+function sweepIdle(now = nowMs()) {
+  const ttl = idleMs();
+  if (!ttl) return [];
+  const cut = now - ttl;
+  const reaped = [];
+  for (const [key, e] of clients) {
+    if (e.client && e.client.pending && e.client.pending.size === 0 && e.lastUsed < cut) {
+      clients.delete(key);
+      reaped.push(key);
+      Promise.resolve(e.client).then((c) => c && c.shutdown()).catch(() => {});
+    }
+  }
+  return reaped;
+}
+let _sweeper = null;
+function ensureSweeper() {
+  if (_sweeper || !idleMs()) return;
+  // unref'd so the timer never keeps the process (or the eval) alive.
+  _sweeper = setInterval(() => sweepIdle(), Math.min(idleMs(), 60000));
+  _sweeper.unref?.();
+}
 function getClient(root, backendName) {
   const key = `${backendName}|${root}`;
-  if (clients.has(key)) return clients.get(key);
+  const hit = clients.get(key);
+  if (hit) { hit.lastUsed = nowMs(); return hit.p; }
+  evictLRU();      // bound the pool BEFORE adding another backend
+  ensureSweeper();
   const b = BACKENDS[backendName];
-  const p = (async () => {
+  const entry = { p: null, client: null, lastUsed: nowMs() };
+  entry.p = (async () => {
     const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell });
     await c.initialize(root);
     if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
+    entry.client = c;
+    entry.lastUsed = nowMs();
     return c;
   })();
-  clients.set(key, p);
-  p.catch(() => clients.delete(key)); // a failed warmup shouldn't poison the cache — allow a retry
-  return p;
+  clients.set(key, entry);
+  entry.p.catch(() => clients.delete(key)); // a failed warmup shouldn't poison the cache — allow a retry
+  return entry.p;
 }
 export async function disposeClients() {
-  for (const p of clients.values()) { try { (await p).shutdown(); } catch { /* ignore */ } }
+  const entries = [...clients.values()];
   clients.clear();
+  if (_sweeper) { clearInterval(_sweeper); _sweeper = null; }
+  for (const e of entries) { try { (await e.p).shutdown(); } catch { /* ignore */ } }
 }
+// Test surface for the eval — deterministic pool checks (LRU eviction, idle sweep, pending protection)
+// without spawning a real language server.
+export const __pool = {
+  clients,
+  evictLRU,
+  sweepIdle,
+  maxBackends,
+  idleMs,
+  seed(key, client, lastUsed) { clients.set(key, { p: Promise.resolve(client), client, lastUsed }); },
+  clear() { clients.clear(); },
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Return-when-found query for clangd with a PERSISTED index that's still loading: afterInit no longer
 // blocks on the full re-index, so the first workspace/symbol can land while shards are still loading and
