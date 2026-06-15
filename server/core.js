@@ -427,6 +427,13 @@ function discoverReport(a = {}) {
 // (symbolReady polls the shards back in), so reaping is cheap. A client with an in-flight request is
 // NEVER evicted (pending.size guards it) — eviction/idle only ever touch settled, quiescent clients.
 const clients = new Map();
+// Master registry of EVERY spawned client, independent of the `clients` map. The map can lose a reference
+// via several paths (evict, idle sweep, failed-warmup catch, key overwrite); this set is the single source
+// of truth for teardown, so disposeClients can guarantee NO orphaned child survives (a live child holds
+// the event loop open — it hung the eval after PASS and the CI test step never exited). killClient is the
+// one place a client is torn down: drop it from both the registry and shut it down (idempotent).
+const allClients = new Set();
+function killClient(c) { if (!c) return undefined; allClients.delete(c); try { return c.shutdown(); } catch { return undefined; } }
 const nowMs = () => Date.now();
 const maxBackends = () => Math.max(1, envInt("VTS_MAX_BACKENDS", 2));
 const idleMs = () => { const v = parseInt(process.env.VTS_BACKEND_IDLE_MS, 10); return Number.isFinite(v) && v >= 0 ? v : 300000; }; // 5 min; 0 disables idle reaping
@@ -445,7 +452,7 @@ function evictLRU() {
   if (!ev.length) return null;
   const [key, e] = ev[0];
   clients.delete(key);
-  Promise.resolve(e.client).then((c) => c && c.shutdown()).catch(() => {});
+  killClient(e.client);
   return key;
 }
 // Background reaper: shut down any client idle past idleMs (in-flight requests protected).
@@ -458,7 +465,7 @@ function sweepIdle(now = nowMs()) {
     if (e.client && e.client.pending && e.client.pending.size === 0 && e.lastUsed < cut) {
       clients.delete(key);
       reaped.push(key);
-      Promise.resolve(e.client).then((c) => c && c.shutdown()).catch(() => {});
+      killClient(e.client);
     }
   }
   return reaped;
@@ -478,8 +485,16 @@ function getClient(root, backendName) {
   ensureSweeper();
   const b = BACKENDS[backendName];
   const entry = { p: null, client: null, lastUsed: nowMs() };
+  // `spawned` captures the client the INSTANT it's constructed (its child is alive from initialize on), so
+  // a warmup that throws can still tear the child down. entry.client is set only on SUCCESS, so a
+  // still-warming client is never treated as evictable (no mid-warmup eviction). Without the failure-path
+  // shutdown a failed warmup deleted the cache entry but ORPHANED its child — a killed=false zombie that
+  // held the event loop open (the eval hung after PASS / the CI test step never exited).
+  let spawned = null;
   entry.p = (async () => {
     const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell });
+    spawned = c;
+    allClients.add(c); // register the INSTANT it's constructed (child alive from initialize on) → never orphanable
     await c.initialize(root);
     if (typeof b.afterInit === "function") await b.afterInit(c, root); // e.g. Roslyn solution/open + load wait
     entry.client = c;
@@ -487,14 +502,17 @@ function getClient(root, backendName) {
     return c;
   })();
   clients.set(key, entry);
-  entry.p.catch(() => clients.delete(key)); // a failed warmup shouldn't poison the cache — allow a retry
+  entry.p.catch(() => { clients.delete(key); killClient(spawned); }); // failed warmup: drop the cache entry AND kill the spawned child
   return entry.p;
 }
 export async function disposeClients() {
-  const entries = [...clients.values()];
   clients.clear();
   if (_sweeper) { clearInterval(_sweeper); _sweeper = null; }
-  for (const e of entries) { try { (await e.p).shutdown(); } catch { /* ignore */ } }
+  // Tear down EVERY spawned client from the master registry (not just the map's current entries) so no
+  // child — evicted, swept, mid-warmup, or key-overwritten — is ever left running. shutdown is synchronous
+  // + idempotent, so a client already torn down is a harmless no-op.
+  for (const c of [...allClients]) { try { c.shutdown(); } catch { /* ignore */ } }
+  allClients.clear();
 }
 // Test surface for the eval — deterministic pool checks (LRU eviction, idle sweep, pending protection)
 // without spawning a real language server.

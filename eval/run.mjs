@@ -921,6 +921,16 @@ const capToggleOk = !rOff.isError && /@ .*Foo\.cpp:42/.test(rOff.text); // class
 const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
 
 await disposeClients();
+// 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
+// child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
+// holds the event loop open (the process hangs after PASS → the CI test step never exits). Assert no mock
+// LSP child handle is still alive shortly after teardown. (process._getActiveHandles is internal but
+// stable across the CI Node versions; the guard is the regression net for the orphan that caused this.)
+await new Promise((r) => setTimeout(r, 300)); // let killed children reap (Windows TerminateProcess + 'exit')
+const liveChildren = (process._getActiveHandles?.() || [])
+  .filter((h) => h && h.constructor && h.constructor.name === "ChildProcess" && (h.spawnargs || []).some((a) => /_mock-lsp/.test(String(a)))).length;
+const teardownOk = liveChildren === 0;
+
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
@@ -976,6 +986,7 @@ const rows = [
   ["backend pool: LRU evict + idle reap + in-flight protect", poolLifecycleOk, "true", poolLifecycleOk],
   ["per-call root: findProjectRoot walk-up + resolveRoot precedence + MCP roots", rootResolveOk, "true", rootResolveOk],
   ["output cap v2: refs collapse per-file + common-prefix factor (toggle)", capResultsOk, "true", capResultsOk],
+  ["clean teardown: no orphaned LSP child after disposeClients", teardownOk, "true", teardownOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
