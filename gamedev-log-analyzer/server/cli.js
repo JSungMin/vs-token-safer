@@ -23,7 +23,8 @@ Commands:
   detect            Find editor logs (newest first).               [--projectPath]
   summary           Severity counts + top categories (no bodies).  [--path|--projectPath]
   search            Parse + dedup into templated groups w/ counts.
-                    [--path --query --severityMin --category --file --groupBy --maxGroups]
+                    [--path --query --severityMin --category --file --groupBy --maxGroups --members N]
+                    --members N: drill down — list up to N DISTINCT collapsed messages (the actual names)
   fields            Columnar scalar extraction from trace logs. Add --stats for per-column
                     min/max/avg/Δ (one line/col) instead of rows — even fewer tokens.
                     [--path --fields a,b,c --query --severityMin --window t0,t1 --max --stats]

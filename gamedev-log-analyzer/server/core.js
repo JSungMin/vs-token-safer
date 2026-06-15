@@ -299,6 +299,7 @@ export function runTool(name, a = {}) {
             maxGroups: Number(a.maxGroups) || MAX_GROUPS,
             maxLineChars: MAX_LINE_CHARS,
             summaryOnly: name === "log_summary",
+            members: Number(a.members) > 0 ? Number(a.members) : 0,
             groupBy: ["callsite", "code"].includes(a.groupBy) ? a.groupBy : "template",
           }) + covHint
       );
