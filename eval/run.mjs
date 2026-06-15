@@ -246,7 +246,7 @@ const runHook = (payload, env) => {
 const hCode = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } });
 const hCodeBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0" });
 const hLog = runHook({ tool_name: "Bash", tool_input: { command: "grep Error Saved/Logs/run.log" } });
-const hGrep = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } });
+const hGrep = runHook({ tool_name: "Grep", tool_input: { pattern: "return null", glob: "*.ts" } }); // freeform code text → warns (not a symbol hunt)
 const hGrepLog = runHook({ tool_name: "Grep", tool_input: { pattern: "Error", path: "Saved/Logs" } }); // bare Logs dir
 let hCodeJson = {}; try { hCodeJson = JSON.parse(hCode.out || "{}"); } catch { /* ignore */ }
 const rwOut = hCodeJson.hookSpecificOutput || {};
@@ -540,11 +540,13 @@ try { fs.rmSync(nobeDir, { recursive: true, force: true }); } catch { /* ignore 
 // autoLearn() — the boot-time hook — harvests bypassed-search result files into the warm-set with no
 // human in the loop (same write as discover --learn).
 const nudgeCtx = (r) => { try { return JSON.parse(r.out || "{}").hookSpecificOutput?.additionalContext || ""; } catch { return ""; } };
-const nIdent = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }));
+// A bare identifier is now BLOCKED (enforcement v2 A+), so its concrete nudge lands in the block stderr;
+// a non-symbol-hunt alternation still WARNS (additionalContext). Read each from where it now lives.
+const nIdent = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }).err;
 const nRegex = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "FooA|FooB", glob: "*.cpp" } }));
 const nudgeOk =
-  /find_references symbol="Foo"/.test(nIdent) && /search_symbol q="Foo"/.test(nIdent) && // identifier → usages + decl
-  /search_text q="FooA\|FooB"/.test(nRegex); // regex → text suggestion
+  /find_references symbol="Foo"/.test(nIdent) && /search_symbol q="Foo"/.test(nIdent) && // identifier → usages + decl (in the block msg)
+  /search_text q="FooA\|FooB"/.test(nRegex); // regex (no structural cue) → warn with a text suggestion
 const alRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-alproj`);
 fs.mkdirSync(path.join(alRoot, "P--x"), { recursive: true });
 fs.writeFileSync(path.join(alRoot, "P--x", "s.jsonl"), [
@@ -823,7 +825,7 @@ const polishOk = gitCwdOk && p4ChangesOk && dedupWordOk && benignOk;
 // 44) i18n: VTS_LANG=ko renders the block + Grep nudge in Korean; en stays English (forced en above keeps
 // every other assertion deterministic). A Korean user (ko-KR locale) auto-gets Korean.
 const hKoBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "ko" });
-const hKoNudge = nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }, { VTS_LANG: "ko" }));
+const hKoNudge = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }, { VTS_LANG: "ko" }).err; // identifier → blocked; KO nudge is in the block stderr
 const hEnBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "en" });
 const i18nOk =
   hKoBlock.status === 2 && /코드 검색을 가로챘어요/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
@@ -925,11 +927,11 @@ const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
 // glob is NOT nudged. And find_files SKIPS heavy build/dep dirs (node_modules/Intermediate/Binaries/…) so a
 // giant UE tree can't time it out like the built-in Glob did.
 const hGlobCode = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } }));
-const hGlobFile = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/TSCheatManager.*" } }));
+const hGlobFile = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/FooManager.*" } }));
 const hGlobDoc = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.md" } });
 const globNudgeOk =
   /find_files q="\*\.cpp"/.test(hGlobCode) && /Glob/.test(hGlobCode) &&            // code glob → find_files nudge
-  /find_files q="TSCheatManager\.\*"/.test(hGlobFile) &&                           // specific source file → nudged
+  /find_files q="FooManager\.\*"/.test(hGlobFile) &&                                // specific source file → nudged
   hGlobDoc.status === 0 && !/find_files/.test(nudgeCtx(hGlobDoc));                 // doc glob → no nudge
 const skipRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-skip`);
 fs.mkdirSync(path.join(skipRoot, "src"), { recursive: true });
@@ -942,6 +944,35 @@ const ffSkip = await runTool("find_files", { q: "*.cpp", projectPath: skipRoot }
 const skipOk = !ffSkip.isError && /Real\.cpp/.test(ffSkip.text) && !/Gen\.cpp/.test(ffSkip.text) && !/Dep\.cpp/.test(ffSkip.text);
 try { fs.rmSync(skipRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 const globAndWalkOk = globNudgeOk && skipOk;
+
+// 50) enforcement v2 (A+): a SYMBOL-HUNT Grep is BLOCKED (exit 2 → search_symbol/search_text); a bare
+// identifier blocks; freeform text (TODO|FIXME) and bare identifier-alternation (FooBar|BazQux) stay WARN
+// (no false-positive block); VTS_GREP_BLOCK=0 reverts to warn; a doc-target (*.md) isn't blocked. Plus
+// discover now counts the built-in Glob/Search tool as a find_files bypass.
+const hSymHunt = runHook({ tool_name: "Grep", tool_input: { pattern: "::FooWidget\\b|void.*FooWidget\\(", path: "src/lib" } });
+const hIdentBlk = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", path: "src/lib" } });
+const hFreeform = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO|FIXME", path: "src/lib" } });
+const hAltern = runHook({ tool_name: "Grep", tool_input: { pattern: "BarA|BarB", path: "src/lib" } });
+const hSymOff = runHook({ tool_name: "Grep", tool_input: { pattern: "void.*FooWidget\\(", path: "src/lib" } }, { VTS_GREP_BLOCK: "0" });
+const hSymDoc = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", glob: "*.md" } });
+const enforceV2Ok =
+  hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a SYMBOL/.test(hSymHunt.err) && // structural-cue regex → block
+  hIdentBlk.status === 2 && /find_references symbol="FooWidget"/.test(hIdentBlk.err) &&                    // bare identifier → block
+  hFreeform.status === 0 && hAltern.status === 0 &&    // freeform text + bare alternation → NOT blocked (warn)
+  hSymOff.status === 0 &&                              // VTS_GREP_BLOCK=0 → reverts to warn
+  hSymDoc.status === 0;                                // doc target (*.md) → not blocked
+const glProj = path.join(os.tmpdir(), `vts-eval-${process.pid}-globdisc`);
+fs.mkdirSync(path.join(glProj, "G--proj"), { recursive: true });
+const GNOW = new Date().toISOString();
+fs.writeFileSync(path.join(glProj, "G--proj", "t.jsonl"),
+  JSON.stringify({ type: "assistant", cwd: glProj, timestamp: GNOW, message: { role: "assistant", content: [{ type: "tool_use", id: "g1", name: "Glob", input: { pattern: "**/*Manager.cpp" } }] } }) + "\n" +
+  JSON.stringify({ type: "user", cwd: glProj, timestamp: GNOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "g1", content: "a.cpp\nb.cpp\n".repeat(40) }] } }) + "\n");
+process.env.VTS_CLAUDE_PROJECTS = glProj;
+const discGlob = await runTool("vts_discover", { since: 7 });
+delete process.env.VTS_CLAUDE_PROJECTS;
+const globDiscOk = !discGlob.isError && /Glob×\d/.test(discGlob.text); // discover groups bypasses by tool → "Glob×1"
+try { fs.rmSync(glProj, { recursive: true, force: true }); } catch { /* ignore */ }
+const enforceAndDiscoverOk = enforceV2Ok && globDiscOk;
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
@@ -1011,6 +1042,7 @@ const rows = [
   ["output cap v2: refs collapse per-file + common-prefix factor (toggle)", capResultsOk, "true", capResultsOk],
   ["clean teardown: no orphaned LSP child after disposeClients", teardownOk, "true", teardownOk],
   ["Glob-tool nudge → find_files + find_files skips heavy dirs", globAndWalkOk, "true", globAndWalkOk],
+  ["enforce v2: symbol-hunt Grep blocks, freeform warns + discover counts Glob", enforceAndDiscoverOk, "true", enforceAndDiscoverOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
