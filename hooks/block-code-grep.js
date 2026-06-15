@@ -150,6 +150,14 @@ function extractFindName(segment) {
   const m = segment.match(/\s-name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
 }
+// `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
+// the rewrite searches the tree the command names, not the configured root — dropping it made a
+// `find /abs/UE/path -name X` rewrite search the vts repo and falsely report "No files" (live dogfood bug).
+function extractFindDir(segment) {
+  const t = segment.trim().split(/\s+/)[1]; // token after `find`
+  if (!t || t.startsWith("-") || t.startsWith("(") || t.startsWith("!")) return null; // no path operand → cwd
+  return stripQuotes(t);
+}
 // Shell-safe pattern: alnum/_/./:/- plus the regex chars `|` `^` `#` (alternations like `FooA|FooB` and
 // anchors like `^#include` are the most-bypassed real queries, and search_text takes a regex). The rewrite
 // always double-quotes the -q arg, and these chars are literal inside double quotes in bash AND cmd.exe.
@@ -173,7 +181,9 @@ function buildRewrite(segment) {
   if (exec === "find") {
     const glob = extractFindName(segment);
     if (!glob || !SAFE_GLOB.test(glob)) return null;
-    return { cmd: `node ${quote(CLI_PATH)} files --q ${quote(glob)} --projectPath ${quote(root)}`, tool: "find_files", q: glob };
+    const dir = extractFindDir(segment); // honor `find <dir>` — else find_files searches the wrong tree (configured root)
+    const searchRoot = dir && SAFE_PATH.test(dir) ? dir : root; // unsafe/absent dir → fall back to the configured root
+    return { cmd: `node ${quote(CLI_PATH)} files --q ${quote(glob)} --projectPath ${quote(searchRoot)}`, tool: "find_files", q: glob };
   }
   const isGit = exec === "git";
   if (!isGit && !SEARCH_EXECS.has(exec)) return null;
@@ -355,6 +365,36 @@ function globNudgeFor(ti) {
       "equivalent (skips Intermediate/Binaries/node_modules, time-boxed) — it won't time out on a giant tree " +
       "(UE)." + call + " On a small tree a quick Glob is fine. Disable: VTS_ENFORCE=0.";
 }
+// v2.2: a Glob naming a CONCRETE code file/extension (`*.cpp`, `Foo.h`, `**/Bar.*`) is BLOCKED → find_files,
+// which is walk-bounded (won't time out on a giant UE tree) and token-capped, so it's strictly better. A bare
+// `*` / `**/*` (no extension) stays a warn — genuinely ambiguous. The warn was ignored: the model kept
+// Glob-ing a huge tree and narrowing the path instead of switching tools (live dogfood). VTS_GREP_BLOCK=0 reverts.
+function isBlockableGlob(ti) {
+  if (!isCodeGlobTool(ti)) return false;
+  const base = globBasename(ti.pattern).toLowerCase();
+  return CODE_EXT_RE.test(base) || /[a-z0-9_]\.[a-z0-9*]+$/.test(base); // concrete extension or Name.* — not a bare *
+}
+// Root hint for the reroute: the explicit `path`, else the literal directory prefix of the glob (everything
+// before the first wildcard, minus the trailing filename) — so the model narrows the giant tree.
+function globRootHint(ti) {
+  if (ti.path) return String(ti.path).replace(/\\/g, "/");
+  const dir = String(ti.pattern || "").replace(/\\/g, "/").split(/[*?]/)[0].replace(/\/[^/]*$/, "");
+  return dir.includes("/") ? dir : "";
+}
+function globBlockMsg(ti) {
+  const base = globBasename(ti.pattern);
+  const hint = globRootHint(ti);
+  const call = `find_files q="${base}"${hint ? ` projectPath="${hint}"` : ""}`;
+  return KO
+    ? "✨ vs-token-safer가 파일명 검색을 가로챘어요 — 고장이 아니라 의도된 동작이고, 거대 트리 타임아웃을 막아줍니다. 🎉\n" +
+      "(빨간 박스는 \"잠깐\"의 신호일 뿐, 실패가 아니에요.) find_files는 walk-bound(Intermediate/Binaries/node_modules " +
+      "스킵 + 시간박스)라 UE 트리에서도 안 멈춰요.\n어시스턴트는 이렇게 다시 실행하세요: " + call +
+      " (루트를 좁힐수록 빠름). 끄기: VTS_GREP_BLOCK=0 / VTS_ENFORCE=0."
+    : "✨ vs-token-safer caught a filename search — intended, not broken; it avoids a giant-tree timeout. 🎉\n" +
+      "(The red box is just a \"hold on\", not a failure.) find_files is walk-bounded (skips Intermediate/Binaries/" +
+      "node_modules + time-boxed) so it won't hang on a UE tree.\nAssistant: re-run as: " + call +
+      " (narrow the root for speed). Disable: VTS_GREP_BLOCK=0 / VTS_ENFORCE=0.";
+}
 const LOG_NUDGE = KO
   ? "[vs-token-safer] 이 검색은 LOG가 대상입니다. 언어 서버 인덱스는 소스 코드만 다뤄요 — 로그 분석은 grep 대신 " +
     "gamedev-log를 쓰세요 (/gamedev-log-analyzer:logs, 또는 gamedev-log CLI: summary / search / locate / fields / diff). 끄기: VTS_ENFORCE=0."
@@ -427,10 +467,15 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
 
-  // Glob / Search TOOL — warn-only nudge toward find_files (token-capped + walk-bounded). Never block —
-  // a quick filename glob on a small tree is fine; the point is to steer the big/UE case off a timeout.
+  // Glob / Search TOOL — v2.2: a CONCRETE code-file glob (`*.cpp`, `Foo.h`, `**/Bar.*`) is BLOCKED → find_files
+  // (walk-bounded, won't time out on a giant tree); a bare `*` / code-dir glob stays a warn. The warn alone was
+  // ignored — the model kept Glob-ing a huge UE tree instead of switching. VTS_GREP_BLOCK=0 reverts to warn-only.
   if (toolName === "Glob") {
-    if (isCodeGlobTool(ti)) emitWarn(globNudgeFor(ti) + setup);
+    if (grepBlockOn() && isBlockableGlob(ti)) {
+      process.stderr.write(globBlockMsg(ti) + setup + "\n");
+      process.exit(2); // block — route the concrete code-file glob to find_files
+    }
+    else if (isCodeGlobTool(ti)) emitWarn(globNudgeFor(ti) + setup);
     process.exit(0);
   }
 

@@ -922,17 +922,19 @@ delete process.env.VTS_COMPACT_RESULTS;
 const capToggleOk = !rOff.isError && /@ .*Foo\.cpp:42/.test(rOff.text); // classic "  @ path:line" restored
 const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
 
-// 49) Glob-tool nudge + find_files walk bound: the built-in Glob/Search tool (filename search) now gets a
-// warn-only nudge toward find_files (token-capped + walk-bounded), with a ready-to-use call; a doc/asset
-// glob is NOT nudged. And find_files SKIPS heavy build/dep dirs (node_modules/Intermediate/Binaries/…) so a
-// giant UE tree can't time it out like the built-in Glob did.
-const hGlobCode = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } }));
-const hGlobFile = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "**/FooManager.*" } }));
-const hGlobDoc = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.md" } });
+// 49) Glob-tool steering + find_files walk bound: a CONCRETE code-file Glob (v2.2) is BLOCKED → find_files
+// (token-capped + walk-bounded); a code-DIR glob with no extension stays a warn nudge; a doc/asset glob is
+// left alone. And find_files SKIPS heavy build/dep dirs (node_modules/Intermediate/Binaries/…) so a giant UE
+// tree can't time it out like the built-in Glob did.
+const hGlobCode = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } });        // concrete extension → block
+const hGlobFile = runHook({ tool_name: "Glob", tool_input: { pattern: "**/FooManager.*" } }); // specific source file → block
+const hGlobWarn = nudgeCtx(runHook({ tool_name: "Glob", tool_input: { pattern: "*", path: "src/lib" } })); // code dir, no ext → warn
+const hGlobDoc = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.md" } });          // doc → neither
 const globNudgeOk =
-  /find_files q="\*\.cpp"/.test(hGlobCode) && /Glob/.test(hGlobCode) &&            // code glob → find_files nudge
-  /find_files q="FooManager\.\*"/.test(hGlobFile) &&                                // specific source file → nudged
-  hGlobDoc.status === 0 && !/find_files/.test(nudgeCtx(hGlobDoc));                 // doc glob → no nudge
+  hGlobCode.status === 2 && /find_files q="\*\.cpp"/.test(hGlobCode.err) &&        // concrete code glob → block → find_files
+  hGlobFile.status === 2 && /find_files q="FooManager\.\*"/.test(hGlobFile.err) && // specific source file → block
+  /find_files q=/.test(hGlobWarn) &&                                               // code-dir glob (no ext) → warn nudge
+  hGlobDoc.status === 0 && !/find_files/.test(nudgeCtx(hGlobDoc));                 // doc glob → no block, no nudge
 const skipRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-skip`);
 fs.mkdirSync(path.join(skipRoot, "src"), { recursive: true });
 fs.mkdirSync(path.join(skipRoot, "Intermediate"), { recursive: true });
@@ -976,6 +978,18 @@ delete process.env.VTS_CLAUDE_PROJECTS;
 const globDiscOk = !discGlob.isError && /Glob×\d/.test(discGlob.text); // discover groups bypasses by tool → "Glob×1"
 try { fs.rmSync(glProj, { recursive: true, force: true }); } catch { /* ignore */ }
 const enforceAndDiscoverOk = enforceV2Ok && globDiscOk;
+
+// 51) v2.2: (A) a Bash `find <dir> -name X` rewrite HONORS <dir> as the search root — dropping it made
+// find_files search the configured root and falsely report "No files" (live dogfood bug on a UE worktree).
+// (B) a CONCRETE code-file Glob (`*.cpp` / `Name.h`) is BLOCKED → find_files with a projectPath hint; a
+// bare `**/*` stays allowed.
+const hFindDir = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'find "/abs/widget/src/lib" -name "FooThing.h" 2>/dev/null' } }));
+const findDirOk = /files --q "FooThing\.h" --projectPath "\/abs\/widget\/src\/lib"/.test(hFindDir.updatedInput?.command || ""); // dir honored, not the configured root
+const hGlobBlk = runHook({ tool_name: "Glob", tool_input: { pattern: "src/lib/**/FooThing.cpp", path: "/abs/widget" } });
+const globBlkOk = hGlobBlk.status === 2 && /find_files q="FooThing\.cpp" projectPath="\/abs\/widget"/.test(hGlobBlk.err); // block + path hint
+const hGlobConcrete = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*.cpp" } });   // concrete extension → block
+const hGlobBare = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*" } });            // no extension → allowed
+const v22Ok = findDirOk && globBlkOk && hGlobConcrete.status === 2 && hGlobBare.status === 0;
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
@@ -1046,6 +1060,7 @@ const rows = [
   ["clean teardown: no orphaned LSP child after disposeClients", teardownOk, "true", teardownOk],
   ["Glob-tool nudge → find_files + find_files skips heavy dirs", globAndWalkOk, "true", globAndWalkOk],
   ["enforce v2: symbol-hunt Grep blocks, freeform warns + discover counts Glob", enforceAndDiscoverOk, "true", enforceAndDiscoverOk],
+  ["v2.2: find <dir> honored in rewrite + concrete-code Glob blocks → find_files", v22Ok, "true", v22Ok],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
