@@ -378,9 +378,11 @@ export function analyzeLog(text, opts = {}) {
     maxLocs = 5,
     maxLineChars = 200,
     summaryOnly = false,
+    members = 0, // drill-down: list up to N DISTINCT collapsed full messages under each group (0 = off)
     groupBy = "template", // "template" (per distinct message) | "callsite" (per file:line) | "code" (per diagnostic code)
   } = opts;
   const minRank = rank(severityMin);
+  const memberCap = members > 0 ? Math.min(members, 100) : 0; // opt-in + hard ceiling so it can't re-flood
   const q = String(query).toLowerCase();
   const catLc = String(category).toLowerCase();
   const fileLc = String(file).toLowerCase();
@@ -411,11 +413,12 @@ export function analyzeLog(text, opts = {}) {
         : `${e.severity}|${e.category}|${templateOf(e.message)}`;
     let g = groups.get(key);
     if (!g) {
-      g = { severity: e.severity, category: e.category, code: e.code || "", message: e.message, count: 0, locs: new Set() };
+      g = { severity: e.severity, category: e.category, code: e.code || "", message: e.message, count: 0, locs: new Set(), members: memberCap ? new Set() : null };
       groups.set(key, g);
     }
     g.count++;
     if (e.location && g.locs.size < maxLocs) g.locs.add(e.location);
+    if (g.members && g.members.size < memberCap) g.members.add(e.message); // Set dedups → DISTINCT values
   }
 
   const header =
@@ -445,7 +448,14 @@ export function analyzeLog(text, opts = {}) {
       const loc = g.locs.size ? "  @ " + [...g.locs].join(", ") : "";
       const mult = g.count > 1 ? `  (×${g.count})` : "";
       const codeTag = groupBy === "code" && g.code && !g.message.startsWith(g.code) ? `${g.code}: ` : "";
-      return `${g.severity.toUpperCase()} [${g.category}] ${codeTag}${msg}${mult}${loc}`;
+      // --members drill-down: list the DISTINCT collapsed full messages under the group (capped).
+      let memberLines = "";
+      if (g.members && g.members.size) {
+        const items = [...g.members].map((m) => `    • ${m.length > maxLineChars ? m.slice(0, maxLineChars) + " …" : m}`);
+        memberLines = "\n" + items.join("\n");
+        if (g.members.size >= memberCap) memberLines += `\n    … +more distinct (×${g.count} total; raise --members)`;
+      }
+      return `${g.severity.toUpperCase()} [${g.category}] ${codeTag}${msg}${mult}${loc}${memberLines}`;
     })
     .join("\n");
   const more = sorted.length - shown.length;

@@ -1,7 +1,7 @@
 {
   "name": "gamedev-log-analyzer",
   "description": "Token-efficient game-engine & build log analysis for Claude Code (CLI-first). Parses, deduplicates, and classifies huge Unreal/Unity/Godot/MSVC-UBT-MSBuild logs — search by severity/category, roll up by callsite, diff runs, locate file:line, and extract decisive scalar fields. No IDE required.",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "author": { "name": "JSungMin", "url": "https://github.com/JSungMin" },
   "homepage": "https://github.com/JSungMin/rider-mcp-enforcer",
   "repository": "https://github.com/JSungMin/rider-mcp-enforcer",
