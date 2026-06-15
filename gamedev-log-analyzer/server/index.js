@@ -56,6 +56,7 @@ const TOOLS = [
         file: { type: "string" },
         maxGroups: { type: "number" },
         groupBy: { type: "string", description: "'template', 'callsite', or 'code' (roll up by diagnostic code)" },
+        members: { type: "number", description: "drill-down: list up to N DISTINCT collapsed full messages (e.g. the actual asset names) under each group; 0 = off (default)" },
       },
     },
   },

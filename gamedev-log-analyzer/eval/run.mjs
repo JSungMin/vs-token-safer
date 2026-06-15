@@ -290,9 +290,21 @@ const assetLog = Array.from({ length: 6 }, (_, i) =>
 const assetSummary = analyzeLog(assetLog, { severityMin: "Warning", groupBy: "template" });
 const assetDedupOk = bodyGroups(assetSummary) === 1 && /\(×6\)/.test(assetSummary);
 
+// --members drill-down: with members>0 the DISTINCT collapsed messages are listed; off (default) only the
+// representative shows. Discriminating: Item_D is collapsed (absent) by default, present + 4 bullets with --members.
+const memLog = Array.from({ length: 4 }, (_, i) =>
+  `[2026.06.15-09.00.0${i}][${i}]LogStreaming: Warning: Failed to load asset '/Game/A/Item_${String.fromCharCode(65 + i)}'`
+).join("\n");
+const memOff = analyzeLog(memLog, { severityMin: "Warning", groupBy: "template" });
+const memOn = analyzeLog(memLog, { severityMin: "Warning", groupBy: "template", members: 10 });
+const membersOk =
+  /Item_A/.test(memOff) && !/Item_D/.test(memOff) &&
+  /Item_A/.test(memOn) && /Item_D/.test(memOn) && (memOn.match(/^ {4}• /gm) || []).length === 4;
+
 const rows = [
   ["parse coverage", (coverage * 100).toFixed(1) + "%", "≥ 95%", coverage >= 0.95],
   ["quoted-literal dedup (6 names → 1 ×6)", assetDedupOk, "true", assetDedupOk],
+  ["--members drill-down (distinct list)", membersOk, "true", membersOk],
   ["token reduction (callsite)", (reduction * 100).toFixed(1) + "%", "≥ 90%", reduction >= 0.9],
   ["callsite groups", groups, "≤ 20", groups <= 20],
   ["log_fields tokens (20 rows)", fieldsTok, "≤ 400", fieldsTok <= 400],
