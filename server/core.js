@@ -362,6 +362,12 @@ function scanBypasses(a = {}) {
         else if (b && b.type === "tool_result" && cand.has(b.tool_use_id)) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          // A search our OWN hook BLOCKED (exit 2) has the block message as its tool_result — it was CAUGHT,
+          // not bypassed, so counting it (and the long block copy as "raw tokens") over-reports bypasses and
+          // under-reports the catch-rate. Skip it. (A WARNED Grep still ran and returned real matches — no
+          // block header — so it stays counted, correctly.) Rewritten Bash greps already don't reach here
+          // (their tool_use is the vts command, which matchBypass doesn't flag).
+          if (/✨ vs-token-safer/.test(o)) continue;
           const rt = tok(o); rawTokTotal += rt; missed.push({ ...meta, rawTok: rt });
           // resolve relative hits against the ENTRY's cwd (the project the search actually ran in) —
           // recordQueryResults would otherwise resolve them against the scanner's cwd, mis-attributing.
