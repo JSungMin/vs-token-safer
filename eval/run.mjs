@@ -994,8 +994,14 @@ const hGlobBare = runHook({ tool_name: "Glob", tool_input: { pattern: "**/*" } }
 // decides concrete extensions; the earlier `Name.<any-ext>` clause wrongly blocked Foo.png / Bar.uasset).
 const hGlobAsset = runHook({ tool_name: "Glob", tool_input: { pattern: "Texture.png" } });
 const hGlobUasset = runHook({ tool_name: "Glob", tool_input: { pattern: "Mesh.uasset" } });
+// find edge cases: multiple `-name` / an `-o` OR can't be one find_files call → BLOCK (never an incomplete
+// rewrite that silently drops the second extension); a single `-iname` (case-insensitive) IS enforced now.
+const hFindMulti = runHook({ tool_name: "Bash", tool_input: { command: 'find /d -name "*.h" -o -name "*.cpp"' } });
+const hFindIname = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'find "/d/src" -iname "FooThing.cpp"' } }));
+const findEdgeOk = hFindMulti.status === 2 &&                                                  // multi-name → block, not partial rewrite
+  /files --q "FooThing\.cpp" --projectPath "\/d\/src"/.test(hFindIname.updatedInput?.command || ""); // -iname enforced + dir honored
 const v22Ok = findDirOk && globBlkOk && hGlobConcrete.status === 2 && hGlobWild.status === 2 &&
-  hGlobBare.status === 0 && hGlobAsset.status === 0 && hGlobUasset.status === 0;
+  hGlobBare.status === 0 && hGlobAsset.status === 0 && hGlobUasset.status === 0 && findEdgeOk;
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server

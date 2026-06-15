@@ -99,7 +99,7 @@ function isGitGrepSegment(segment) {
 
 function isSearchSegment(segment) {
   const exec = execOf(segment);
-  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
+  return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-i?name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
 }
 
 function isCodeSearchSegment(segment) {
@@ -147,7 +147,7 @@ function extractGrepPattern(segment, isGit) {
   return null;
 }
 function extractFindName(segment) {
-  const m = segment.match(/\s-name\s+("([^"]+)"|'([^']+)'|(\S+))/);
+  const m = segment.match(/\s-i?name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
@@ -179,6 +179,10 @@ function buildRewrite(segment) {
   const root = rewriteRoot();
   if (/["\r\n]/.test(root)) return null; // a root with a quote/newline would break shell quoting → block instead
   if (exec === "find") {
+    // Multiple `-name` / an OR (`-o`) can't be expressed as one find_files call — rewriting to the FIRST
+    // -name would SILENTLY DROP the rest (a wrong/partial result, e.g. `-name *.h -o -name *.cpp` → only *.h).
+    // Bail → block, so the model runs a proper search instead of trusting an incomplete rewrite.
+    if ((segment.match(/\s-i?name\s/g) || []).length > 1 || /\s-or?\s/.test(segment)) return null;
     const glob = extractFindName(segment);
     if (!glob || !SAFE_GLOB.test(glob)) return null;
     const dir = extractFindDir(segment); // honor `find <dir>` — else find_files searches the wrong tree (configured root)
