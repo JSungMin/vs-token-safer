@@ -34,7 +34,9 @@ just the scalar columns that actually decide the answer.
 - **Template dedup:** numbers/addresses/GUIDs/paths/instance-ids **and quoted literals** (asset/object
   names like `'/Game/Maps/Foo'`) are normalized so repeated spam collapses into one group with a `×count`
   and representative locations — per-asset streaming-failure spam dedups instead of splitting one group
-  per name.
+  per name. **Need the actual names back?** `search --members N` (or the `members` arg) lists up to N of the
+  **distinct** messages a group collapsed — token-bounded drill-down, so you get the overview by default and
+  the specifics on demand without dumping the raw log.
 - **Search/filter:** by `severityMin`, `category`, `file`, `query`; `groupBy: "callsite"` rolls
   everything up by `file:line` (best for "what's flooding my log"), and `groupBy: "code"` rolls up by
   diagnostic code (`C4996`, `LNK2019`, `CS1002` …) — a noisy build with hundreds of warnings collapses
