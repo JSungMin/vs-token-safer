@@ -305,3 +305,37 @@ export function pickBackend(root) {
   }
   return "";
 }
+
+// Walk UP from a file (or dir) to the nearest enclosing project root — the directory holding a build /
+// project marker. This lets a per-call `path` argument pin the CORRECT repo even on a globally-installed
+// server: a deep UE `.cpp` resolves to its own `.uproject`/compile_commands root, not whatever single
+// projectPath the config happens to be pinned to. Any one marker wins; the NEAREST dir going up is the
+// root (so a nested sub-package or submodule resolves to itself, and we never cross a repo boundary by
+// climbing past a `.git`). Returns the absolute root dir, or null if nothing is found before the FS root.
+const ROOT_FILE_MARKERS = [
+  "compile_commands.json", "tsconfig.json", "jsconfig.json", "package.json",
+  "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile",
+];
+const ROOT_GLOB_MARKERS = [/\.uproject$/i, /\.sln$/i, /\.csproj$/i];
+export function findProjectRoot(startPath) {
+  if (!startPath) return null;
+  let dir;
+  try { dir = fs.statSync(startPath).isDirectory() ? startPath : path.dirname(startPath); }
+  catch { dir = path.dirname(startPath); } // nonexistent path → still climb its parent chain
+  dir = path.resolve(dir);
+  for (let i = 0; i < 64; i++) { // bounded walk — can't loop past the FS root
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { ents = null; }
+    if (ents) {
+      const files = ents.filter((e) => e.isFile()).map((e) => e.name);
+      const fileSet = new Set(files);
+      if (ROOT_FILE_MARKERS.some((m) => fileSet.has(m))) return dir;
+      if (files.some((n) => ROOT_GLOB_MARKERS.some((re) => re.test(n)))) return dir;
+      if (ents.some((e) => e.name === ".git")) return dir; // weakest marker, but a repo boundary — stop here
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}

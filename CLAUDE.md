@@ -37,6 +37,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,
   `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
   shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.
+  `findProjectRoot(start)` — bounded walk UP from a file to the nearest project marker (compile_commands/
+  *.uproject/.sln/.csproj/tsconfig/package.json/pyproject/…/.git as the repo-boundary fallback; nearest
+  dir wins, never climbs past a `.git`). Feeds `resolveRoot` (core.js) so a per-call `path` pins the right
+  repo on a globally-installed server.
 - `server/core.js` — `runTool()` dispatch, token-cap formatters, savings ledger. Tools: `search_symbol`,
   `find_references` (accepts EITHER a 0-based `path`+`line`+`character` position OR a `symbol` NAME — the
   code-modification primitive: by-name resolves the decl via `c.symbol` [exact-name-then-`path`-endsWith
@@ -70,7 +74,20 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
 - `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`, string→string, no spawn) for the
   `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic). (No grep compaction here —
   grep reroutes to search_text, which scans + token-caps itself; there is no raw grep output to compact.)
-- `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`).
+- `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`). PER-CALL
+  ROOT: `resolveRoot(a)` (core.js) replaces the old single-pin `a.projectPath || PROJECT_PATH || cwd` for
+  every query — precedence: explicit `projectPath` > a `path`'s enclosing project (`findProjectRoot`, only
+  when OUTSIDE every known root so an inside-path keeps clangd's compile-DB rooting) > an MCP workspace root
+  > `PROJECT_PATH` > cwd. `resolveCwdRoot(a)` for git/p4 (MCP root beats server cwd; pin still ignored). One
+  global server now serves every repo a session touches, not just the pinned one. index.js does the MCP
+  `roots` handshake (`getClientCapabilities`→`listRoots`→`setMcpRoots`, re-fetched on `roots/list_changed`,
+  undefined-safe on old SDKs); no roots advertised → collapses to the old `PROJECT_PATH || cwd`. Boot
+  prewarm/auto-learn use `PROJECT_PATH || first MCP root` so a config-less install warms the current
+  workspace (ONE root only). BACKEND POOL (memory guard for dynamic roots): the `clients` map is BOUNDED —
+  `VTS_MAX_BACKENDS` (2) LRU-evicts the least-recently-used idle client past the cap, `VTS_BACKEND_IDLE_MS`
+  (300000, 0=off) reaps idle clients via an unref'd sweep; a client with an in-flight request (`pending.size`)
+  is never evicted/reaped. Steady state ≈ 1 warm backend; bouncing 2 repos keeps both warm; a 3rd evicts LRU.
+  `__pool` test surface + eval guards 45 (pool) / 46 (root resolution).
 - `server/sdk.js` — createRequire MCP-SDK resolution. `server/ensure-deps.mjs` — SessionStart installer.
 - `server/warmset.js` — prewarm ORDERING: `orderForWarm` (query-history > working-now [`git status` /
   `p4 opened`] > git-log recency > include-centrality [adaptive: prefix-read + `VTS_CENTRALITY_BUDGET_MS`
@@ -205,6 +222,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   locals (kinds 13/14/20 at depth>0) — keeping the declaration structure (classes/functions/methods/
   fields/types). A `(N local/anonymous hidden …)` note shows the count; `VTS_OUTLINE_RAW=1` shows all,
   `VTS_OUTLINE_DEPTH` caps nesting (default 4). Live: a 105-symbol warmset.js outline → 32. Token + clarity win.
+- **output cap v2 — collapse repetition (caveman-inspired).** `fmtLocations` (find_references + any
+  multi-location result) no longer prints one line PER location — a refs-heavy result repeats the same long
+  path on every row. `compactLocationLines` groups by FILE (one row, all line numbers joined/deduped/sorted:
+  `Foo.cpp:42,88,120`) then `commonDirPrefix` factors the shared directory tree out once (`under <prefix>/`
+  + relative tails). Every location preserved + recoverable (full path = prefix + tail). Est. ~4× (coalesce)
+  → ~10× (prefix) on a deep UE refs result. `VTS_COMPACT_RESULTS=0` restores the classic `  @ path:line`.
+  fmtSymbols/search_text keep per-row (distinct payload each). eval guard 47.
 - **ts/py search_symbol fallback (dogfood-found).** tsserver/pyright answer `workspace/symbol` from
   OPEN/indexed files, so a symbol whose file the warm-up didn't open (or a non-exported local) returns 0.
   `search_symbol` then falls back to a bounded literal text search (`scanTextUnder`, labeled "Literal text
