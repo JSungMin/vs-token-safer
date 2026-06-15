@@ -501,6 +501,10 @@ const transcript = [
   // MISSED it; the shared quote-aware splitter must count it as one bypassed grep.
   { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: 'grep -rn "QAlpha|QBeta" src/Quoted.cpp' } }] } },
   { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu4", content: "src/Quoted.cpp:3:QAlpha\n".repeat(40) }] } },
+  // a grep our OWN hook BLOCKED — its tool_result IS the block message ("✨ vs-token-safer … 가로챘"), so it
+  // was CAUGHT, not bypassed; discover must NOT count it (nor the long block copy as raw tokens).
+  { type: "assistant", cwd: learnRoot, timestamp: NOW, message: { role: "assistant", content: [{ type: "tool_use", id: "tu7", name: "Bash", input: { command: "grep -rn BLOCKEDONE src/Blk.cpp" } }] } },
+  { type: "user", cwd: learnRoot, timestamp: NOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu7", content: "✨ vs-token-safer가 코드 검색을 가로챘어요 — 의도된 동작입니다.\n".repeat(20) }] } },
   // 30-day-old entry in a still-fresh transcript: counted by --all, EXCLUDED by the since window
   // (entry-level timestamps — file mtime alone would recount this forever).
   { type: "assistant", cwd: learnRoot, timestamp: OLD, message: { role: "assistant", content: [{ type: "tool_use", id: "tu5", name: "Bash", input: { command: "grep -rn STALEONE src/Old.cpp" } }] } },
@@ -520,6 +524,7 @@ const discoverOk =
   /grep×3/.test(disc.text) && /Grep×1/.test(disc.text) &&
   /SpawnActor/.test(disc.text) && /QAlpha\|QBeta/.test(disc.text) && // quote-aware: counted, not dissolved
   !/OTHERGREP/.test(disc.text) && /scoped to/.test(disc.text) &&    // projectPath scope excludes the other root
+  !/BLOCKEDONE/.test(disc.text) &&                  // a hook-BLOCKED grep (block-message result) is NOT a bypass
   /catch-rate:/.test(disc.text) &&                  // synergy C: caught-vs-bypassing
   /learned \d+ file\(s\) into the warm-set/.test(disc.text) && // synergy B: learn line
   /foo\.cpp/i.test(qhAfter) && !/other\.cpp/i.test(qhAfter) && // attribution: learnRoot files only
