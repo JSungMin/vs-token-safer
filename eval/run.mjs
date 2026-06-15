@@ -895,6 +895,31 @@ const rootsRoundtripOk = (() => { setMcpRoots([repoCC, repoGit]); const g = getM
 try { fs.rmSync(rootBase, { recursive: true, force: true }); } catch { /* ignore */ }
 const rootResolveOk = findRootOk && rrExplicit && rrInsideKept && rrOutside && rrNoPathRoot && rrFallback && rootsRoundtripOk;
 
+// 47) output cap v2 (caveman "collapse repetition"): a refs-heavy result collapses to one line per FILE
+// (all line numbers joined, deduped, sorted) with a common DIRECTORY prefix factored out once — every
+// location preserved + recoverable. VTS_COMPACT_RESULTS=0 restores the classic "  @ path:line" shape.
+const { compactLocationLines, commonDirPrefix } = await import("../server/core.js");
+const cl = compactLocationLines([
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:120",
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:42",
+  "G:/proj/Source/Game/Private/Combat/Damage.cpp:42",   // dup → deduped
+  "G:/proj/Source/Game/Private/AI/Enemy.cpp:55",
+]);
+const capV2Ok =
+  commonDirPrefix(["a/b/c/x.cpp", "a/b/d/y.cpp"]) === "a/b" &&      // dir prefix, filename segment excluded
+  commonDirPrefix(["a/x.cpp"]) === "" &&                            // single path → no prefix
+  /under G:\/proj\/Source\/Game\/Private\//.test(cl) &&             // common prefix factored once
+  /Combat\/Damage\.cpp:42,120/.test(cl) &&                          // same-file lines coalesced, deduped, sorted
+  /AI\/Enemy\.cpp:55/.test(cl) &&
+  (cl.match(/Damage\.cpp/g) || []).length === 1;                    // path printed once, not per location
+const clSingle = compactLocationLines(["G:/proj/only/A.cpp:9", "G:/proj/only/A.cpp:3"]); // one file → no prefix header
+const capSingleOk = !/under /.test(clSingle) && /A\.cpp:3,9/.test(clSingle);
+process.env.VTS_COMPACT_RESULTS = "0";
+const rOff = await runTool("find_references", { symbol: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+delete process.env.VTS_COMPACT_RESULTS;
+const capToggleOk = !rOff.isError && /@ .*Foo\.cpp:42/.test(rOff.text); // classic "  @ path:line" restored
+const capResultsOk = capV2Ok && capSingleOk && capToggleOk;
+
 await disposeClients();
 try { fs.rmSync(QH, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
@@ -950,6 +975,7 @@ const rows = [
   ["i18n: VTS_LANG=ko Korean block+nudge / en English", i18nOk, "true", i18nOk],
   ["backend pool: LRU evict + idle reap + in-flight protect", poolLifecycleOk, "true", poolLifecycleOk],
   ["per-call root: findProjectRoot walk-up + resolveRoot precedence + MCP roots", rootResolveOk, "true", rootResolveOk],
+  ["output cap v2: refs collapse per-file + common-prefix factor (toggle)", capResultsOk, "true", capResultsOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

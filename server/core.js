@@ -693,13 +693,51 @@ function fmtSymbols(syms, max) {
   const more = syms.length - shown.length;
   return body + (more > 0 ? `\n… ${more} more (raise maxResults or narrow the query).` : "");
 }
+// Output-cap v2 (caveman "collapse repetition"): a refs-heavy result repeats the same long path on every
+// line. Collapse it — one line per FILE with all its line numbers joined, then factor a common DIRECTORY
+// prefix so a deep shared tree is printed ONCE. Every location is preserved and recoverable (full path =
+// prefix + "/" + tail; lines are the comma list). Biggest win on find_references (the code-mod primitive)
+// and any multi-location result. VTS_COMPACT_RESULTS=0 restores the classic one-location-per-line shape.
+const compactResults = () => { const v = process.env.VTS_COMPACT_RESULTS; return v === undefined || v === "" ? true : !/^(0|false|off|no)$/i.test(v); };
+function splitPathLine(s) { const i = s.lastIndexOf(":"); return i > 1 ? { p: s.slice(0, i), ln: s.slice(i + 1) } : { p: s, ln: "" }; }
+// Longest common DIRECTORY prefix across paths (the filename segment never counts), or "" if <2 paths /
+// no shared dir. Returns a slash-joined prefix with no trailing slash.
+function commonDirPrefix(paths) {
+  if (paths.length < 2) return "";
+  const split = paths.map((p) => p.split("/"));
+  const minLen = Math.min(...split.map((s) => s.length));
+  let i = 0;
+  while (i < minLen - 1 && split.every((s) => s[i] === split[0][i])) i++;
+  return i > 0 ? split[0].slice(0, i).join("/") : "";
+}
+// items: "path:line" strings (path uses "/"). → grouped, deduped, prefix-factored block.
+function compactLocationLines(items) {
+  const byFile = new Map();
+  for (const it of items) {
+    const { p, ln } = splitPathLine(it);
+    if (!byFile.has(p)) byFile.set(p, []);
+    if (ln) byFile.get(p).push(ln);
+  }
+  const files = [...byFile.keys()];
+  const linesOf = (p) => [...new Set(byFile.get(p))].sort((a, b) => Number(a) - Number(b)).join(",");
+  const suffix = (p) => (linesOf(p) ? `:${linesOf(p)}` : "");
+  const prefix = commonDirPrefix(files);
+  if (prefix && files.length > 1) {
+    return `  under ${prefix}/\n` + files.map((p) => `    ${p.slice(prefix.length + 1)}${suffix(p)}`).join("\n");
+  }
+  return files.map((p) => `  ${p}${suffix(p)}`).join("\n");
+}
 function fmtLocations(locs, max, label) {
   const arr = Array.isArray(locs) ? locs : locs ? [locs] : [];
   const shown = arr.slice(0, max);
-  const body = shown.map((l) => `  @ ${locLine(l.uri, l.range)}`).join("\n");
   const more = arr.length - shown.length;
-  return `${arr.length} ${label}:\n${body}${more > 0 ? `\n… ${more} more.` : ""}`;
+  const tail = more > 0 ? `\n… ${more} more.` : "";
+  const body = compactResults()
+    ? compactLocationLines(shown.map((l) => locLine(l.uri, l.range)))
+    : shown.map((l) => `  @ ${locLine(l.uri, l.range)}`).join("\n");
+  return `${arr.length} ${label}:\n${body}${tail}`;
 }
+export { compactLocationLines, commonDirPrefix };
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 function fmtHover(h) {
   if (!h || !h.contents) return "(no hover info)";

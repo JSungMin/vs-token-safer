@@ -222,6 +222,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   locals (kinds 13/14/20 at depth>0) — keeping the declaration structure (classes/functions/methods/
   fields/types). A `(N local/anonymous hidden …)` note shows the count; `VTS_OUTLINE_RAW=1` shows all,
   `VTS_OUTLINE_DEPTH` caps nesting (default 4). Live: a 105-symbol warmset.js outline → 32. Token + clarity win.
+- **output cap v2 — collapse repetition (caveman-inspired).** `fmtLocations` (find_references + any
+  multi-location result) no longer prints one line PER location — a refs-heavy result repeats the same long
+  path on every row. `compactLocationLines` groups by FILE (one row, all line numbers joined/deduped/sorted:
+  `Foo.cpp:42,88,120`) then `commonDirPrefix` factors the shared directory tree out once (`under <prefix>/`
+  + relative tails). Every location preserved + recoverable (full path = prefix + tail). Est. ~4× (coalesce)
+  → ~10× (prefix) on a deep UE refs result. `VTS_COMPACT_RESULTS=0` restores the classic `  @ path:line`.
+  fmtSymbols/search_text keep per-row (distinct payload each). eval guard 47.
 - **ts/py search_symbol fallback (dogfood-found).** tsserver/pyright answer `workspace/symbol` from
   OPEN/indexed files, so a symbol whose file the warm-up didn't open (or a non-exported local) returns 0.
   `search_symbol` then falls back to a bounded literal text search (`scanTextUnder`, labeled "Literal text
