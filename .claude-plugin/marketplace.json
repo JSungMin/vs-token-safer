@@ -10,7 +10,7 @@
     {
       "name": "vs-token-safer",
       "source": "./",
-      "version": "0.19.0",
+      "version": "0.19.1",
       "category": "development",
       "description": "Force Claude Code to search C++/C# code through clangd/Roslyn's index instead of Bash grep, token-capped to a compact file:line list. No IDE required. Bundles gamedev-log-analyzer."
     },
