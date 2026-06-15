@@ -90,4 +90,6 @@ const load = (sub) => import(pathToFileURL(req.resolve("@modelcontextprotocol/sd
 
 export const { Server } = await load("server/index.js");
 export const { StdioServerTransport } = await load("server/stdio.js");
-export const { ListToolsRequestSchema, CallToolRequestSchema } = await load("types.js");
+// RootsListChangedNotificationSchema may be absent on very old SDKs — destructuring then yields undefined,
+// which index.js guards before use (the roots handshake degrades to "no roots" gracefully).
+export const { ListToolsRequestSchema, CallToolRequestSchema, RootsListChangedNotificationSchema } = await load("types.js");
