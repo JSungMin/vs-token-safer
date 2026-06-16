@@ -22,6 +22,8 @@ const SV = path.join(os.tmpdir(), `vts-eval-sv-${process.pid}.json`); // isolate
 process.env.VTS_SAVINGS_FILE = SV;
 const TEE = path.join(os.tmpdir(), `vts-eval-tee-${process.pid}`); // isolate the tee dir
 process.env.VTS_TEE_DIR = TEE;
+const EDL = path.join(os.tmpdir(), `vts-eval-edl-${process.pid}.json`); // isolate the edit-adoption ledger
+process.env.VTS_EDIT_LEDGER = EDL; // so the symbolic-edit guards don't write the user's real adoption ledger
 process.env.VTS_LANG = "en"; // force English UI so message-marker assertions are deterministic regardless of OS locale
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
@@ -1065,6 +1067,38 @@ const editDiscOk = !discEdit.isError && /1 whole-declaration Edit/.test(discEdit
 try { fs.rmSync(eProj, { recursive: true, force: true }); } catch { /* ignore */ }
 const editSteerOk = ssSteerOk && ssOffOk && editDiscOk;
 
+// 54) edit-steer HOOK (L1 warn + L2 escalation): a whole-decl REPLACE/INSERT Edit gets a model-visible
+// nudge with a ready symbol-edit call; a sub-decl tweak / non-code file / VTS_EDIT_WARN=0 stays silent. L2:
+// once the adoption ledger's ignore-streak hits VTS_EDIT_BLOCK_AFTER, a SAFE insert is BLOCKED (a replace
+// stays warn — riskier to force). The ledger is isolated to a temp file so the eval never touches the real one.
+const EL = path.join(os.tmpdir(), `vts-eval-el-${process.pid}.json`);
+const elEnv = (extra) => ({ VTS_EDIT_LEDGER: EL, VTS_LANG: "en", ...(extra || {}) });
+const DECLC = "void Foo::Bar()\n{\n  a();\n  b();\n  c();\n  d();\n  e();\n  f();\n  g();\n}"; // 9 newlines + decl cue
+try { fs.rmSync(EL, { force: true }); } catch { /* ignore */ }
+const hRepl = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: DECLC, new_string: "x" } }, elEnv());
+const hIns = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv());
+const hSub = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "a,\nb,", new_string: "a,\nb,\nc," } }, elEnv());
+const hOff = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: DECLC, new_string: "x" } }, elEnv({ VTS_EDIT_WARN: "0" }));
+const hMd = runHook({ tool_name: "Edit", tool_input: { file_path: "/notes/T.md", old_string: DECLC, new_string: "x" } }, elEnv());
+const editWarnOk =
+  hRepl.status === 0 && /replace_symbol_body symbol="Bar"/.test(nudgeCtx(hRepl)) &&   // whole-decl replace → ready replace call
+  hIns.status === 0 && /insert_after_symbol symbol="Bar"/.test(nudgeCtx(hIns)) &&     // new-decl insert → ready insert call
+  hSub.status === 0 && !nudgeCtx(hSub) &&                                              // sub-decl tweak → silent
+  hOff.status === 0 && !nudgeCtx(hOff) &&                                              // VTS_EDIT_WARN=0 → silent
+  hMd.status === 0 && !nudgeCtx(hMd);                                                  // non-code file → silent
+fs.writeFileSync(EL, JSON.stringify({ builtin: 5, symbol: 0, streak: 5 }));            // streak at the threshold
+const hEsc = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "5" }));
+fs.writeFileSync(EL, JSON.stringify({ builtin: 9, symbol: 0, streak: 9 }));
+const hEscRepl = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: DECLC, new_string: "x" } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "5" }));
+fs.writeFileSync(EL, JSON.stringify({ builtin: 9, symbol: 0, streak: 9 }));
+const hEscOff = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "0" }));
+const editEscalateOk =
+  hEsc.status === 2 && /escalated to a block/.test(hEsc.err) &&   // insert past the streak → block
+  hEscRepl.status === 0 &&                                         // replace stays warn even at high streak
+  hEscOff.status === 0;                                            // VTS_EDIT_BLOCK_AFTER=0 → escalation off
+try { fs.rmSync(EL, { force: true }); } catch { /* ignore */ }
+const editHookOk = editWarnOk && editEscalateOk;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1081,6 +1115,7 @@ try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(CF, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(SV, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(TEE, { recursive: true, force: true }); } catch { /* ignore */ }
+try { fs.rmSync(EDL, { force: true }); } catch { /* ignore */ }
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -1137,6 +1172,7 @@ const rows = [
   ["v2.2: find <dir> honored in rewrite + concrete-code Glob blocks → find_files", v22Ok, "true", v22Ok],
   ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
+  ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
