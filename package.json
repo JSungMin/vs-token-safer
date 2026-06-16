@@ -9,7 +9,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "eval": "node eval/run.mjs",
-    "test": "npm run eval",
+    "eval:steer": "node eval/test-edit-steer.mjs",
+    "test": "npm run eval && npm run eval:steer",
     "bump": "node scripts/bump.mjs"
   },
   "devDependencies": {
