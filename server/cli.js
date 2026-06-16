@@ -49,6 +49,7 @@ Commands:
   setup          Persist config. [--projectPath --backend --maxResults]
                  [--genCompileDb dry|apply] — also generate the C++ compile DB in this step (dry-run prints
                  the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
+                 [--clangdCmd <path>] — persist the clangd ≥ 22 binary path (VS-bundled 19.1.x deadlocks UE).
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
                  [--graph (30-day ASCII) --daily --history]
