@@ -10,7 +10,8 @@
     "format:check": "prettier --check .",
     "eval": "node eval/run.mjs",
     "eval:steer": "node eval/test-edit-steer.mjs",
-    "test": "npm run eval && npm run eval:steer",
+    "eval:skillopt": "node eval/skillopt/selftest.mjs",
+    "test": "npm run eval && npm run eval:steer && npm run eval:skillopt",
     "bump": "node scripts/bump.mjs"
   },
   "devDependencies": {

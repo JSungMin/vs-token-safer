@@ -35,7 +35,7 @@ import { splitSegments } from "../server/shell-split.js";
 // Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
-import { recordEditEvent, readEditLedger } from "../server/edit-ledger.js";
+import { recordEditEvent } from "../server/edit-ledger.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
