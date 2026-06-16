@@ -284,7 +284,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_COMPACT_RESULTS` | `1` | `0` restores one-location-per-line output. |
 | — | `VTS_MAX_BACKENDS` | `2` | Max concurrently-live language servers (LRU-evict past the cap). |
 | — | `VTS_BACKEND_IDLE_MS` | `300000` | Idle language server shut down after this (`0` = off). |
-| — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | Override the clangd executable / args. |
+| `clangdCmd` | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd executable (persist via `vts setup --clangdCmd <path>` — VS-bundled 19.1.x deadlocks UE, use ≥ 22) / args. |
 | — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll`. |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | Override the C# LSP. |
 | — | `VTS_TS_CMD` / `VTS_PY_CMD` (+ `_ARGS`) | bundled | Override the JS/TS / Python LSP. |
