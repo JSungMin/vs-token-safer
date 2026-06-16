@@ -1088,14 +1088,16 @@ const editWarnOk =
   hMd.status === 0 && !nudgeCtx(hMd);                                                  // non-code file → silent
 fs.writeFileSync(EL, JSON.stringify({ builtin: 5, symbol: 0, streak: 5 }));            // streak at the threshold
 const hEsc = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "5" }));
+const escStreakReset = (() => { try { return JSON.parse(fs.readFileSync(EL, "utf8")).streak; } catch { return -1; } })(); // block fires → streak reset (no wall)
 fs.writeFileSync(EL, JSON.stringify({ builtin: 9, symbol: 0, streak: 9 }));
 const hEscRepl = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: DECLC, new_string: "x" } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "5" }));
 fs.writeFileSync(EL, JSON.stringify({ builtin: 9, symbol: 0, streak: 9 }));
-const hEscOff = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv({ VTS_EDIT_BLOCK_AFTER: "0" }));
+const hEscDefault = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp", old_string: "  anchor();", new_string: DECLC } }, elEnv()); // NO VTS_EDIT_BLOCK_AFTER → default OFF
 const editEscalateOk =
-  hEsc.status === 2 && /escalated to a block/.test(hEsc.err) &&   // insert past the streak → block
-  hEscRepl.status === 0 &&                                         // replace stays warn even at high streak
-  hEscOff.status === 0;                                            // VTS_EDIT_BLOCK_AFTER=0 → escalation off
+  hEsc.status === 2 && /one-time block/.test(hEsc.err) &&   // opt-in (BLOCK_AFTER=5): insert past the streak → block once
+  escStreakReset === 0 &&                                   // …and it RESETS the streak — fire-once, not a permanent wall
+  hEscRepl.status === 0 &&                                  // replace stays warn even at high streak
+  hEscDefault.status === 0;                                 // DEFAULT (no env) → NOT blocked (escalation off by default)
 try { fs.rmSync(EL, { force: true }); } catch { /* ignore */ }
 const editHookOk = editWarnOk && editEscalateOk;
 
