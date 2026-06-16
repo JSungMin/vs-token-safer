@@ -10,13 +10,17 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/prewarm.js\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/edit-report.js\""
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep|Glob",
+        "matcher": "Bash|Grep|Glob|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
