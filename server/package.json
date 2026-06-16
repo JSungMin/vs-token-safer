@@ -1,9 +1,9 @@
 {
   "name": "vs-token-safer",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "type": "module",
-  "description": "Force code search through an official language server's index (clangd for C++, Roslyn for C#) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
-  "keywords": ["clangd", "roslyn", "lsp", "code-search", "cpp", "csharp", "unreal", "visual-studio", "mcp", "claude", "claude-code", "grep", "token-efficiency"],
+  "description": "Force code search through an official language server's index (clangd for C/C++, Roslyn for C#/.NET, tsserver for JS/TS, pyright for Python) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
+  "keywords": ["clangd", "roslyn", "tsserver", "pyright", "lsp", "code-search", "cpp", "csharp", "typescript", "javascript", "python", "unreal", "visual-studio", "mcp", "claude", "claude-code", "grep", "token-efficiency"],
   "homepage": "https://github.com/JSungMin/vs-token-safer",
   "repository": { "type": "git", "url": "git+https://github.com/JSungMin/vs-token-safer.git", "directory": "server" },
   "bugs": { "url": "https://github.com/JSungMin/vs-token-safer/issues" },

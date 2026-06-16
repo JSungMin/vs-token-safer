@@ -1,5 +1,5 @@
 ---
-description: Routing rules for code search in C++/C# projects via vs-token-safer — use the vs-search MCP tools (clangd/Roslyn language-server index) or the `vts` CLI instead of Bash grep. Use whenever searching for a symbol, definition, function, variable, type, or finding references/usages in a C/C++ or C#/.NET (incl. Unreal, Visual Studio) codebase.
+description: Routing rules for code search in C/C++, C#/.NET, JS/TS, and Python projects via vs-token-safer — use the vs-search MCP tools (clangd/Roslyn/tsserver/pyright language-server index) or the `vts` CLI instead of Bash grep. Use whenever searching for a symbol, definition, function, variable, type, or finding references/usages in a C/C++, C#/.NET (incl. Unreal, Visual Studio), JavaScript/TypeScript, or Python codebase.
 ---
 
 # vs-token-safer search routing
