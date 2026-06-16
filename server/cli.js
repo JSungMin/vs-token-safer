@@ -62,8 +62,10 @@ Commands:
                  [--projectPath --apply --inTree --engineRoot --target ...]
 
 Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
-  clangd  — C/C++ (needs compile_commands.json; Unreal: UBT -mode=GenerateClangDatabase)
-  roslyn  — C#/.NET (.sln/.csproj; default engine csharp-ls, override via VTS_ROSLYN_CMD)
+  clangd      — C/C++ (needs compile_commands.json; Unreal: UBT -mode=GenerateClangDatabase)
+  roslyn      — C#/.NET (.sln/.csproj; default engine csharp-ls, override via VTS_ROSLYN_CMD)
+  typescript  — JS/TS (tsconfig/jsconfig/package.json; bundled typescript-language-server)
+  pyright     — Python (pyproject/setup.py/requirements or *.py; bundled pyright-langserver)
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
