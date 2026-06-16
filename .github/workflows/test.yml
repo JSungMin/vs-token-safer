@@ -25,6 +25,8 @@ jobs:
         run: node server/cli.js config
       - name: Eval (token-reduction + file:line shape gate, mock LSP — no toolchain)
         run: node eval/run.mjs
+      - name: Edit-steer verification (EDIT_STEER placement + discover edit-habit exactness)
+        run: node eval/test-edit-steer.mjs
       - name: Install MCP server deps
         working-directory: server
         run: npm install --no-audit --no-fund
