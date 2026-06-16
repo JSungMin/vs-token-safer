@@ -1124,7 +1124,20 @@ export async function runTool(name, a = {}) {
         // (at setup) rather than letting the user discover empty search_symbol results later.
         if (census.clangd > 0 && !hasCompileDb(root)) langLine += `\n${compileDbAdvisory(root)}`;
       } catch { /* census is best-effort */ }
-      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}`);
+      // genCompileDb — one-stop: kick off the compile-DB generation right from setup so the user doesn't have
+      // to find the separate vts_gen_compile_db tool. `true` = DRY-RUN (prints the UBT command, runs nothing);
+      // "apply" = run UBT now (heavy — indexes engine headers, needs clangd ≥ 22). Reuses the gen-compile-db
+      // logic verbatim (plan, out-of-tree DB, VCS guard) by dispatching to it.
+      let genLine = "";
+      if (a.genCompileDb) {
+        try {
+          const root = a.projectPath || current.projectPath || PROJECT_PATH || process.cwd();
+          const apply = a.genCompileDb === "apply" || a.genCompileDb === true && (a.apply === true || a.apply === "true");
+          const g = await runTool("vts_gen_compile_db", { projectPath: root, apply });
+          genLine = `\n\n── compile_commands.json (${apply ? "apply" : "dry-run"}) ──\n${g.text}`;
+        } catch (e) { genLine = `\n\n(compile-DB step failed: ${e.message} — run vts_gen_compile_db directly)`; }
+      }
+      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}` + genLine);
     }
     if (name === "vts_config") {
       return out(`Effective settings (env > config > default):\n` + JSON.stringify({ projectPath: PROJECT_PATH || "(unset)", backend: BACKEND || "(auto)", maxResults: MAX_RESULTS, prewarmBackends: PREWARM_BACKENDS || "(auto)" }, null, 2) + `\n\nConfig file: ${CONFIG_FILE}`);
