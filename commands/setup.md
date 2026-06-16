@@ -31,7 +31,13 @@ Steps:
 4. **Apply:** call `vts_setup` with only the keys to change, e.g.
    `vts_setup { "projectPath": "<root>", "backend": "clangd" }`. `vts_setup` reports the detected language
    mix (e.g. `clangd(820), typescript(40)`) and the `prewarmBackends` it chose.
-5. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
+5. **C++ with no compile DB?** `vts_setup` warns when a clangd-dominant root has no `compile_commands.json`
+   (clangd can't index semantically without it). Offer to generate it **in the same step** — pass
+   `genCompileDb` to `vts_setup`: `true` = **dry-run** (prints the exact UBT `GenerateClangDatabase` command,
+   runs nothing — show it to the user first), `"apply"` = run UBT now (heavy: indexes engine headers, takes
+   minutes, needs **clangd ≥ 22**). The DB is parked out-of-tree (`~/.vs-token-safer/db/<project>`), so git/p4
+   never see it. Always dry-run first and let the user confirm before `apply`.
+6. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
 
 Notes:
 - Precedence is **environment variable (`VTS_*`) > config file > default**; a same-named env var wins.

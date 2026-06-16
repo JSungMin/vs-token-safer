@@ -1111,6 +1111,26 @@ const backendPathOk =
   backendForPath("Svc.cs") === "roslyn" &&
   backendForPath("README.md") === null && backendForPath("noext") === null && backendForPath(undefined) === null;
 
+// 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
+// doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs
+// nothing), "apply" = run UBT. Wiring test: the section appears with the GenerateClangDatabase command and
+// UBT was NOT executed (dry).
+const suEng = path.join(os.tmpdir(), `vts-eval-sueng-${process.pid}`);
+fs.mkdirSync(path.join(suEng, "Engine", "Build", "BatchFiles"), { recursive: true });
+fs.writeFileSync(path.join(suEng, "Engine", "Build", "BatchFiles", process.platform === "win32" ? "RunUBT.bat" : "RunUBT.sh"), "");
+const suGame = path.join(os.tmpdir(), `vts-eval-sugame-${process.pid}`);
+fs.mkdirSync(suGame, { recursive: true });
+fs.writeFileSync(path.join(suGame, "MyGame.uproject"), "{}");
+process.env.VTS_UE_ROOT = suEng;
+const suGen = await runTool("vts_setup", { projectPath: suGame, genCompileDb: true });
+delete process.env.VTS_UE_ROOT;
+const setupGenOk =
+  !suGen.isError &&
+  /compile_commands\.json \(dry-run\)/.test(suGen.text) &&   // setup wired the gen step (dry)
+  /GenerateClangDatabase/.test(suGen.text) &&                // the UBT command is shown
+  !/Generated compile_commands/.test(suGen.text);            // …but UBT was NOT actually run
+for (const d of [suEng, suGame]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1186,6 +1206,7 @@ const rows = [
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
+  ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
