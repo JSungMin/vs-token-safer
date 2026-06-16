@@ -1099,6 +1099,18 @@ const editEscalateOk =
 try { fs.rmSync(EL, { force: true }); } catch { /* ignore */ }
 const editHookOk = editWarnOk && editEscalateOk;
 
+// 55) per-file-language backend: a query that TARGETS a file gets its OWN language's backend, so a `.py`/
+// `.ts` file in a clangd/roslyn-rooted MIXED repo (e.g. a UE C++ tree with a Python tooling dir) doesn't
+// hit the wrong LSP and find nothing. Pure ext→backend map; wired as a.backend || BACKEND ||
+// backendForPath(a.path) || pickBackend(root) so an explicit backend=/VTS_BACKEND still wins.
+const { backendForPath } = await import("../server/core.js");
+const backendPathOk =
+  backendForPath("Plugins/MyEditorPlugin/Python/trace_core.py") === "pyright" &&
+  backendForPath("src/App.tsx") === "typescript" && backendForPath("a/b.mjs") === "typescript" &&
+  backendForPath("Source/Foo.cpp") === "clangd" && backendForPath("Bar.h") === "clangd" &&
+  backendForPath("Svc.cs") === "roslyn" &&
+  backendForPath("README.md") === null && backendForPath("noext") === null && backendForPath(undefined) === null;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1173,6 +1185,7 @@ const rows = [
   ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
+  ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
