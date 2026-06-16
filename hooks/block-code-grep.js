@@ -35,7 +35,7 @@ import { splitSegments } from "../server/shell-split.js";
 // Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
-import { recordEditEvent } from "../server/edit-ledger.js";
+import { recordEditEvent, resetStreak } from "../server/edit-ledger.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -506,14 +506,17 @@ process.stdin.on("end", () => {
       const ce = classifyDeclEdit(toolName, ti, editMinLines());
       if (ce.file && (ce.replaceDecl || ce.insertDecl)) {
         const led = recordEditEvent("builtin-warn");
-        // L2: once whole-decl edits have ignored the nudge enough times in a row, BLOCK the SAFE subset — a
-        // pure insert of a new declaration (insert_after_symbol cleanly adds it without needing the old body,
-        // so the reroute can't corrupt). A replace stays warn-only (riskier to force). VTS_EDIT_BLOCK_AFTER=0
-        // disables escalation; VTS_GREP_BLOCK=0 also holds it to warn (shares the master block switch).
+        // L2: an OPT-IN escalation. After VTS_EDIT_BLOCK_AFTER consecutive ignored nudges, BLOCK once on the
+        // SAFE subset (a pure insert of a new declaration). DEFAULT OFF (0) — a persistent block TRAPPED the
+        // agent: it kept fighting the wall with built-in Edit (re-anchoring, even restructuring code to dodge
+        // the hook) instead of switching, and each blocked attempt re-escalated the streak. When it does fire
+        // (user opted in with VTS_EDIT_BLOCK_AFTER≥1), it RESETS the streak so it's a one-time nudge-with-teeth,
+        // not a wall. VTS_GREP_BLOCK=0 also holds it to warn (shares the master block switch).
         const after = Number(process.env.VTS_EDIT_BLOCK_AFTER);
-        const threshold = Number.isFinite(after) && after >= 0 ? after : 5;
+        const threshold = Number.isFinite(after) && after >= 0 ? after : 0; // OFF by default (block traps the model)
         if (grepBlockOn() && threshold > 0 && led.streak >= threshold && ce.insertDecl && !ce.replaceDecl) {
-          process.stderr.write(editNudgeFor(toolName, ti) + " (escalated to a block: the nudge was ignored " + led.streak + "× — use insert_after_symbol / insert_before_symbol, or VTS_EDIT_BLOCK_AFTER=0 to disable.)" + setup + "\n");
+          resetStreak(); // fire ONCE then back off — no permanent wall
+          process.stderr.write(editNudgeFor(toolName, ti) + " (one-time block: the nudge was ignored " + led.streak + "× — use insert_after_symbol / insert_before_symbol for this insert. Set VTS_EDIT_BLOCK_AFTER=0 to disable entirely.)" + setup + "\n");
           process.exit(2); // block — route the safe insert to a symbol-edit
         }
         emitWarn(editNudgeFor(toolName, ti) + setup);
