@@ -69,7 +69,14 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   CLI `vts git/p4` are full arg passthrough → run in cwd, no `--projectPath`); `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
-  BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set).
+  BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set;
+  ALSO MEASURES THE EDIT HABIT — `wholeDeclEdit` flags a built-in Edit/MultiEdit whose `old_string` is a
+  whole declaration on a code file (≥`VTS_EDIT_MIN_LINES`+decl cue), and attributes that file's PRIOR Read
+  tokens [`reads`/`readUse` Read↔Edit correlation in `scanBypasses`] = the read a symbol-edit would've
+  skipped → `edit habit:` line). STEER (B, not a rewrite — Edit-rewrite is unsafe [partial≠whole-decl] and
+  too late [read already sunk], so steer EARLIER+SOFTER): `EDIT_STEER` is appended to a FOCUSED
+  `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result — the moment before the model would
+  Read-the-file-to-Edit — pointing at the symbol-edit tools; `VTS_EDIT_STEER=0` hides it. Eval guard 53.
   `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`, default on-truncate) when a result is
   capped so the full set is recoverable without re-running; a capped `search_symbol`/`find_references`
   ("… N more") tees too (`teeOverflow` — the rows are already in memory, no re-query). The ledger
