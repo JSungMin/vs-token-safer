@@ -1,7 +1,7 @@
 {
   "name": "vs-token-safer",
   "description": "Force Claude Code to search C++/C# code through an official language server's index (clangd / Roslyn) instead of Bash grep, token-capped to a compact file:line list. No IDE required. Faster and far fewer tokens on large Unreal C++/.NET codebases. Auto-installs gamedev-log-analyzer.",
-  "version": "0.23.1",
+  "version": "0.23.2",
   "author": { "name": "JSungMin", "url": "https://github.com/JSungMin" },
   "homepage": "https://github.com/JSungMin/vs-token-safer",
   "repository": "https://github.com/JSungMin/vs-token-safer",
