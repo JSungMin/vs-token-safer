@@ -287,13 +287,15 @@ const TOOLS = [
     name: "vts_setup",
     description:
       "Configure vs-token-safer (projectPath, backend, maxResults). Writes ~/.vs-token-safer/config.json; " +
-      "run /reload-plugins after. Precedence: env (VTS_*) > config file > default.",
+      "run /reload-plugins after. Precedence: env (VTS_*) > config file > default. Can also generate the " +
+      "C++ compile DB in the same step (genCompileDb).",
     inputSchema: {
       type: "object",
       properties: {
         projectPath: { type: "string", description: "Default project root." },
         backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto)." },
         maxResults: { type: "number", description: "Default cap on returned locations." },
+        genCompileDb: { description: "Generate the C++ compile_commands.json (for clangd semantic search) in this step: `true` = DRY-RUN (prints the exact UBT command, runs nothing); \"apply\" = run UBT now (heavy — indexes engine headers, needs clangd ≥ 22). The DB is parked out-of-tree (~/.vs-token-safer/db/<project>).", "type": ["boolean", "string"] },
       },
     },
   },
