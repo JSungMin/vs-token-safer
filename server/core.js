@@ -73,6 +73,21 @@ export function resolveRoot(a = {}) {
 // Root for a CWD-relative external command (git/p4): never the config pin (the user/agent runs these where
 // they ARE), but an MCP workspace root beats the long-lived server's own process.cwd().
 export function resolveCwdRoot(a = {}) { return a.projectPath || MCP_ROOTS[0] || process.cwd(); }
+// File-language backend: when a query TARGETS a specific file, its extension decides the language more
+// reliably than the root's build artifacts. In a MIXED repo — e.g. a UE C++ tree (`.uproject` → clangd)
+// with a Python tooling dir — pickBackend(root) returns clangd for the whole tree, so a `.py`/`.ts` query
+// would hit clangd and find nothing, and the model gives up on vts. Prefer the file's OWN backend over the
+// root heuristic; an explicit `backend=`/`VTS_BACKEND` still wins (this only beats the auto-detect fallback).
+export function backendForPath(p) {
+  const m = p && String(p).toLowerCase().match(/\.[a-z0-9]+$/);
+  if (!m) return null;
+  const e = m[0];
+  if (/^\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp)$/.test(e)) return "clangd";
+  if (e === ".cs") return "roslyn";
+  if (/^\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(e)) return "typescript";
+  if (/^\.(py|pyi)$/.test(e)) return "pyright";
+  return null;
+}
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
@@ -1264,7 +1279,9 @@ export async function runTool(name, a = {}) {
     }
 
     const root = resolveRoot(a);
-    const backendName = a.backend || BACKEND || pickBackend(root);
+    // backendForPath(a.path): a `.py`/`.ts` file in a clangd/roslyn-rooted MIXED repo gets its OWN backend
+    // (pyright/typescript) instead of the root's — else the query hits the wrong LSP and finds nothing.
+    const backendName = a.backend || BACKEND || backendForPath(a.path) || pickBackend(root);
     // search_symbol degrades gracefully when NO backend resolves (text fallback) instead of hard-erroring —
     // so the grep-rewrite hook can always route an identifier to `vts symbol` (semantic when a backend
     // exists, literal text otherwise) without risking a dead-end error.
