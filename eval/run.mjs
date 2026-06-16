@@ -1039,6 +1039,32 @@ const seForceOk = !seForce.isError && /force/.test(seForce.text) && seR() === "L
 try { fs.rmSync(seDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const symEditOk = sePrevOk && seReplOk && seBeforeOk && seAfterOk && seMissOk && seRefuseOk && seForceOk;
 
+// 53) edit-steer (B+A): a FOCUSED search_symbol result appends an EDIT_STEER pointing at the symbol-edit
+// tools (the moment before the model would Read-the-file-to-Edit) — gated to small result sets,
+// VTS_EDIT_STEER=0 hides it. And discover MEASURES the edit habit (A): a whole-declaration Edit on a code
+// file, with the tokens of that file's prior Read attributed (what a symbol-edit would have skipped).
+const ssSteer = await runTool("search_symbol", { q: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+const ssSteerOk = !ssSteer.isError && /replace_symbol_body/.test(ssSteer.text) && /VTS_EDIT_STEER=0/.test(ssSteer.text);
+process.env.VTS_EDIT_STEER = "0";
+const ssOff = await runTool("search_symbol", { q: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+delete process.env.VTS_EDIT_STEER;
+const ssOffOk = !ssOff.isError && !/replace_symbol_body/.test(ssOff.text);
+const eProj = path.join(os.tmpdir(), `vts-eval-${process.pid}-editdisc`);
+fs.mkdirSync(path.join(eProj, "P--proj"), { recursive: true });
+const ENOW = new Date().toISOString();
+const bigRead = "x ".repeat(2000); // a sizable file read → measurable tokens to attribute
+const declOld = "void Foo::Bar()\n{\n  a();\n  b();\n  c();\n  d();\n  e();\n  f();\n  g();\n}"; // 9 newlines + decl cue
+fs.writeFileSync(path.join(eProj, "P--proj", "t.jsonl"),
+  JSON.stringify({ type: "assistant", cwd: eProj, timestamp: ENOW, message: { role: "assistant", content: [{ type: "tool_use", id: "r1", name: "Read", input: { file_path: "/proj/src/Thing.cpp" } }] } }) + "\n" +
+  JSON.stringify({ type: "user", cwd: eProj, timestamp: ENOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: bigRead }] } }) + "\n" +
+  JSON.stringify({ type: "assistant", cwd: eProj, timestamp: ENOW, message: { role: "assistant", content: [{ type: "tool_use", id: "e1", name: "Edit", input: { file_path: "/proj/src/Thing.cpp", old_string: declOld, new_string: "void Foo::Bar(){}" } }] } }) + "\n");
+process.env.VTS_CLAUDE_PROJECTS = eProj;
+const discEdit = await runTool("vts_discover", { since: 7 });
+delete process.env.VTS_CLAUDE_PROJECTS;
+const editDiscOk = !discEdit.isError && /1 whole-declaration Edit/.test(discEdit.text) && /skip that read/.test(discEdit.text);
+try { fs.rmSync(eProj, { recursive: true, force: true }); } catch { /* ignore */ }
+const editSteerOk = ssSteerOk && ssOffOk && editDiscOk;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1110,6 +1136,7 @@ const rows = [
   ["enforce v2: symbol-hunt Grep blocks, freeform warns + discover counts Glob", enforceAndDiscoverOk, "true", enforceAndDiscoverOk],
   ["v2.2: find <dir> honored in rewrite + concrete-code Glob blocks → find_files", v22Ok, "true", v22Ok],
   ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
+  ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
