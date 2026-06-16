@@ -65,6 +65,10 @@ process.stdin.on("data", (d) => {
           { name: "keepProp", kind: 7, range: rng, selectionRange: sel },
         ] },
       ] });
+    } else if (msg.method === "textDocument/definition") {
+      // One definition location — lets goto_definition return a non-empty result (e.g. to exercise the
+      // edit-steer that rides a focused nav result).
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Foo.cpp", range: { start: { line: 41, character: 6 }, end: { line: 41, character: 20 } } }] });
     } else if (msg.method === "textDocument/references") {
       // "Foo"'s name sits at line 4 (its selectionRange) — return one usage there so safe_delete sees a
       // referrer and refuses; any other position (e.g. the find_references guard at line 41) returns none.
