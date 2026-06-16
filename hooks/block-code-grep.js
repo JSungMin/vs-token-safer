@@ -32,6 +32,10 @@ import { fileURLToPath } from "node:url";
 // inside quotes is part of a grep pattern — `grep "FooA|FooB" src/x.cpp` used to split into two
 // non-matching segments and sail through the hook entirely (the top bypass `vts discover` surfaced).
 import { splitSegments } from "../server/shell-split.js";
+// Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
+// MEASURE; the adoption ledger is the live metric the steer is tuned against.
+import { classifyDeclEdit } from "../server/edit-detect.js";
+import { recordEditEvent, readEditLedger } from "../server/edit-ledger.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -300,6 +304,38 @@ function grepNudgeFor(ti) {
       "code-locator subagent." + concrete + " For a JUST-edited / unindexed file or a quick literal peek, " +
       "Grep is fine — carry on. Disable: VTS_ENFORCE=0.";
 }
+
+// ── Edit steering (L1 warn): a whole-DECLARATION edit via the built-in Edit gets a model-visible nudge with
+// a ready symbol-edit call. The token win (skipping the file Read) is already sunk by Edit time, so this
+// can't recover the CURRENT edit — it's a learning signal for the NEXT one, and the adoption ledger measures
+// whether it lands (escalating to a block only if it doesn't; see L2). A sub-declaration tweak isn't flagged.
+function editWarnOn() { const v = String(process.env.VTS_EDIT_WARN ?? "1").toLowerCase(); return !(v === "0" || v === "false" || v === "off"); }
+function editMinLines() { const n = Number(process.env.VTS_EDIT_MIN_LINES); return Number.isFinite(n) && n > 0 ? n : 8; }
+// Best-effort declaration name from a code chunk, so the nudge can name the symbol (a ready call beats a
+// vague hint — the SkillOpt "actionable artifact" principle). null when no name is confidently found.
+function declSymbolName(chunk) {
+  const c = String(chunk || "");
+  let m;
+  if ((m = c.match(/\b(?:class|struct|enum|interface|namespace)\s+([A-Za-z_]\w*)/))) return m[1];
+  if ((m = c.match(/\b(?:def|function|func|fn)\s+([A-Za-z_]\w*)/))) return m[1];
+  if ((m = c.match(/^[^\n=;]*?\b([A-Za-z_]\w*)\s*\([^;{)]*\)\s*(?:const)?\s*\{?\s*$/m))) return m[1]; // a signature line
+  return null;
+}
+function editNudgeFor(toolName, ti) {
+  const ce = classifyDeclEdit(toolName, ti, editMinLines());
+  const pairs = toolName === "MultiEdit" && Array.isArray(ti.edits) ? ti.edits : [ti];
+  let name = null;
+  for (const e of pairs) { name = declSymbolName(ce.replaceDecl ? e.old_string : e.new_string); if (name) break; }
+  const sym = name ? `symbol="${name}"` : "symbol=<name>";
+  if (ce.replaceDecl) {
+    return KO
+      ? `[vs-token-safer] 선언을 *통째* 교체하네요. 파일을 통째로 Read해서 Edit하는 대신 이름으로 편집하세요 — replace_symbol_body ${sym} body=<새 선언 전체> (preview 기본, apply=true 기록; 파일 Read 생략·토큰 절약). 선언 일부만 고치는 거면 Edit 그대로 OK. 끄기: VTS_EDIT_WARN=0.`
+      : `[vs-token-safer] This replaces a WHOLE declaration. Instead of Read-the-file-then-Edit, edit by name — replace_symbol_body ${sym} body=<the full new declaration> (preview by default, apply=true writes; skips the file Read, saves tokens). A sub-declaration tweak? Built-in Edit is fine. Disable: VTS_EDIT_WARN=0.`;
+  }
+  return KO
+    ? `[vs-token-safer] 새 선언을 *추가*하네요. 앵커를 Read할 필요 없이 이름 옆에 삽입하세요 — insert_after_symbol ${sym} text=<추가할 선언> (또는 insert_before_symbol; preview 기본, apply=true 기록). 끄기: VTS_EDIT_WARN=0.`
+    : `[vs-token-safer] This ADDS a new declaration. Insert it next to an anchor by name (no Read needed for the anchor) — insert_after_symbol ${sym} text=<the new declaration> (or insert_before_symbol; preview by default, apply=true writes). Disable: VTS_EDIT_WARN=0.`;
+}
 // enforcement v2 (A+) + v2.1: a Grep-TOOL pattern HUNTING A NAMED SYMBOL is escalated from warn to BLOCK —
 // a semantic tool is strictly better (smaller, exact, no regex false positives — `void.*Foo\(` also matches
 // `SetActiveFoo`), and the reroute is search_text/search_symbol (same regex, token-capped → no wrong/missing
@@ -460,6 +496,31 @@ process.stdin.on("end", () => {
   // First-use setup nudge: if the plugin was never configured, append a pointer to setup on whatever
   // message we emit (the user is already mid-grep, exactly when configuring helps).
   const setup = notSetUp() ? SETUP_LINE : "";
+
+  // Edit / MultiEdit — L1 steer: a whole-DECLARATION edit (replace or add) gets a model-visible nudge with a
+  // ready symbol-edit call, and is recorded in the adoption ledger. Non-blocking (the read is already sunk;
+  // forcing a redo here recovers nothing — see the asymmetry note). L2 escalates to a block on the safe
+  // insert subset once the streak shows the nudge is being ignored.
+  if (toolName === "Edit" || toolName === "MultiEdit") {
+    if (editWarnOn()) {
+      const ce = classifyDeclEdit(toolName, ti, editMinLines());
+      if (ce.file && (ce.replaceDecl || ce.insertDecl)) {
+        const led = recordEditEvent("builtin-warn");
+        // L2: once whole-decl edits have ignored the nudge enough times in a row, BLOCK the SAFE subset — a
+        // pure insert of a new declaration (insert_after_symbol cleanly adds it without needing the old body,
+        // so the reroute can't corrupt). A replace stays warn-only (riskier to force). VTS_EDIT_BLOCK_AFTER=0
+        // disables escalation; VTS_GREP_BLOCK=0 also holds it to warn (shares the master block switch).
+        const after = Number(process.env.VTS_EDIT_BLOCK_AFTER);
+        const threshold = Number.isFinite(after) && after >= 0 ? after : 5;
+        if (grepBlockOn() && threshold > 0 && led.streak >= threshold && ce.insertDecl && !ce.replaceDecl) {
+          process.stderr.write(editNudgeFor(toolName, ti) + " (escalated to a block: the nudge was ignored " + led.streak + "× — use insert_after_symbol / insert_before_symbol, or VTS_EDIT_BLOCK_AFTER=0 to disable.)" + setup + "\n");
+          process.exit(2); // block — route the safe insert to a symbol-edit
+        }
+        emitWarn(editNudgeFor(toolName, ti) + setup);
+      }
+    }
+    process.exit(0);
+  }
 
   // Grep TOOL — enforcement v2 (A+): a clear SYMBOL HUNT is BLOCKED (semantic tool is strictly better);
   // everything else stays warn-only (Grep is the sanctioned fallback for freeform text / just-edited files).

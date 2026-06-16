@@ -305,6 +305,8 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_REWRITE` | `1` | `0`이면 훅이 바꿔치기 대신 Bash 코드-grep을 차단. |
 | — | `VTS_GREP_BLOCK` | `1` | `0`이면 **Grep/Glob 도구** 격상을 차단에서 경고로 되돌림. |
 | — | `VTS_EDIT_STEER` | `1` | `0`이면 포커스된 `search_symbol`/`goto_definition` 결과에 붙는 심볼편집 도구 안내 한 줄을 숨김. `VTS_EDIT_STEER_MAX`(`10`)는 안내가 붙는 결과 크기 상한. |
+| — | `VTS_EDIT_WARN` | `1` | `0`이면 built-in Edit/MultiEdit가 **선언 통째**를 교체/추가할 때 뜨는 모델 가시 넛지를 끔(`replace_symbol_body`/`insert_after_symbol` 안내). 선언 일부 수정은 넛지 안 함. |
+| — | `VTS_EDIT_BLOCK_AFTER` | `5` | 넛지를 무시한 선언-통째 편집이 연속 이만큼 쌓이면 **안전한 insert**(새 선언)를 `insert_after_symbol`로 차단; `0`이면 에스컬레이션 끔(`VTS_GREP_BLOCK=0`도 warn으로 묶음). replace는 항상 warn 유지. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | 면제할 실행 파일 콤마 목록 (설정의 `excludeCommands`도). |
 | — | `VTS_COMPACT_VCS` | `1` | `0`이면 읽기 전용 `git`/`p4`의 압축 래퍼 우회를 멈춤. |
 | `lang` | `VTS_LANG` | auto | 훅 메시지 언어: `ko` / `en` (OS 로케일에서 자동 감지). |

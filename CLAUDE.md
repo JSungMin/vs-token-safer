@@ -70,13 +70,25 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set;
-  ALSO MEASURES THE EDIT HABIT — `wholeDeclEdit` flags a built-in Edit/MultiEdit whose `old_string` is a
-  whole declaration on a code file (≥`VTS_EDIT_MIN_LINES`+decl cue), and attributes that file's PRIOR Read
-  tokens [`reads`/`readUse` Read↔Edit correlation in `scanBypasses`] = the read a symbol-edit would've
-  skipped → `edit habit:` line). STEER (B, not a rewrite — Edit-rewrite is unsafe [partial≠whole-decl] and
-  too late [read already sunk], so steer EARLIER+SOFTER): `EDIT_STEER` is appended to a FOCUSED
-  `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result — the moment before the model would
-  Read-the-file-to-Edit — pointing at the symbol-edit tools; `VTS_EDIT_STEER=0` hides it. Eval guard 53.
+  ALSO MEASURES THE EDIT HABIT — `classifyDeclEdit` (server/edit-detect.js, SHARED with the enforcement hook)
+  flags a built-in Edit/MultiEdit whose `old_string` is a whole declaration (replace → `replaceDecl`) OR whose
+  `new_string` is (add → `insertDecl`) on a code file (≥`VTS_EDIT_MIN_LINES`+decl cue), and attributes that
+  file's PRIOR Read tokens [`reads`/`readUse` Read↔Edit correlation in `scanBypasses`, read counted ONCE] = the
+  read a symbol-edit would've skipped → `edit habit:` line; ALSO `editUnreached` = how many had NO prior vts
+  search on that file [`searchUse`/`searchedBn` basename match] = the fraction the search-result steer CAN'T
+  reach. Measured 30d: 1284 whole-decl edits, ~468k tok read-first, 1194/1284 (93%) search-unreachable). STEER
+  is THREE layers, soft→hard (Edit-rewrite impossible: cross-tool `updatedInput` can't switch Edit→MCP, and the
+  read is sunk by Edit time so a block recovers nothing — only a LEARNING signal): (B) `EDIT_STEER` on a FOCUSED
+  `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result (`VTS_EDIT_STEER=0` hides); (L1) the
+  grep-block hook now also matches `Edit|MultiEdit` — a whole-decl replace/insert gets a MODEL-VISIBLE
+  `emitWarn` with a READY symbol-edit call (`replace_symbol_body`/`insert_after_symbol`, `declSymbolName`
+  best-effort names it), `VTS_EDIT_WARN=0` off; (L2) once the adoption ledger's ignore-`streak` hits
+  `VTS_EDIT_BLOCK_AFTER` (5), a SAFE insert (`insertDecl && !replaceDecl` — `insert_after_symbol` can't corrupt)
+  is BLOCKED (exit 2); a replace stays warn. ADOPTION LEDGER (server/edit-ledger.js, `~/.vs-token-safer/
+  edit-adoption.json`, `VTS_EDIT_LEDGER` override): hook records `builtin-warn` (streak++), core.js records
+  `symbol-edit` on every symbol-edit dispatch (streak→0); `hooks/edit-report.js` (SessionStart) re-injects the
+  adoption % as a goal = the SkillOpt-style measure→re-inject loop (static skill can't self-improve, a
+  re-injected live metric can). Eval guards 53 (steer+discover) + 54 (L1/L2 hook); `eval/test-edit-steer.mjs`.
   `find_files`/`search_text` write a recovery TEE file (`VTS_TEE_DIR`, default on-truncate) when a result is
   capped so the full set is recoverable without re-running; a capped `search_symbol`/`find_references`
   ("… N more") tees too (`teeOverflow` — the rows are already in memory, no re-query). The ledger
