@@ -304,6 +304,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_ENFORCE` | `1` | `0`이면 Bash 코드-grep 통과 (탈출구). |
 | — | `VTS_REWRITE` | `1` | `0`이면 훅이 바꿔치기 대신 Bash 코드-grep을 차단. |
 | — | `VTS_GREP_BLOCK` | `1` | `0`이면 **Grep/Glob 도구** 격상을 차단에서 경고로 되돌림. |
+| — | `VTS_EDIT_STEER` | `1` | `0`이면 포커스된 `search_symbol`/`goto_definition` 결과에 붙는 심볼편집 도구 안내 한 줄을 숨김. `VTS_EDIT_STEER_MAX`(`10`)는 안내가 붙는 결과 크기 상한. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | 면제할 실행 파일 콤마 목록 (설정의 `excludeCommands`도). |
 | — | `VTS_COMPACT_VCS` | `1` | `0`이면 읽기 전용 `git`/`p4`의 압축 래퍼 우회를 멈춤. |
 | `lang` | `VTS_LANG` | auto | 훅 메시지 언어: `ko` / `en` (OS 로케일에서 자동 감지). |

@@ -305,6 +305,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_ENFORCE` | `1` | `0` lets Bash code-grep through (escape hatch). |
 | — | `VTS_REWRITE` | `1` | `0` makes the hook block a Bash code-grep instead of rewriting it. |
 | — | `VTS_GREP_BLOCK` | `1` | `0` reverts the **Grep/Glob tool** escalation from block to warn-only. |
+| — | `VTS_EDIT_STEER` | `1` | `0` hides the one-line hint (on a focused `search_symbol`/`goto_definition` result) pointing at the symbol-edit tools. `VTS_EDIT_STEER_MAX` (`10`) caps the result size that gets it. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt (also `excludeCommands` in config). |
 | — | `VTS_COMPACT_VCS` | `1` | `0` stops rerouting read-only `git`/`p4` to the compacted wrapper. |
 | `lang` | `VTS_LANG` | auto | Hook message language: `ko` / `en` (auto-detects from OS locale). |
