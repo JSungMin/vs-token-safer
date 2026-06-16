@@ -14,6 +14,8 @@ import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
+import { classifyDeclEdit } from "./edit-detect.js";
+import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
@@ -314,24 +316,9 @@ function matchBypass(name, input) {
   }
   return null;
 }
-// A built-in Edit/MultiEdit whose replaced text is a WHOLE declaration on a code file — the case the
-// symbol-edit tools (replace_symbol_body / insert_* / safe_delete) address. Heuristic, for MEASUREMENT only
-// (discover): a multi-line old_string (≥ VTS_EDIT_MIN_LINES) that carries a declaration cue. Write is a new
-// file (not a symbol replace) and a tiny tweak isn't worth a symbol-edit, so both are skipped. Returns
-// { file } so the scan can attribute the file's prior Read (the token the symbol-edit would have skipped).
-const DECL_HINT = /\b(class|struct|enum|interface|namespace|template|def|function|func|fn|public|private|protected|static|void|virtual|override|async)\b|\)\s*(const)?\s*\{?\s*$/m;
-function wholeDeclEdit(name, input) {
-  if (!input) return null;
-  const file = String(input.file_path || "").replace(/\\/g, "/");
-  if (!DISCOVER_CODE_EXT.test(file)) return null;
-  const minLines = envInt("VTS_EDIT_MIN_LINES", 8);
-  const chunks = [];
-  if (name === "Edit") chunks.push(String(input.old_string || ""));
-  else if (name === "MultiEdit" && Array.isArray(input.edits)) for (const e of input.edits) chunks.push(String(e.old_string || ""));
-  else return null;
-  for (const c of chunks) if ((c.match(/\n/g) || []).length >= minLines && DECL_HINT.test(c)) return { file: file.toLowerCase() };
-  return null;
-}
+// Whole-declaration edit detection (replace + insert) lives in edit-detect.js, SHARED with the enforcement
+// hook so the set we MEASURE here matches the set the hook STEERS. Discover counts an edit when its replaced
+// text is a whole declaration (replace_symbol_body territory) OR its added text is (insert_after/before).
 // Shared transcript scan: find bypassed code searches and (always, cheaply) harvest the source-file
 // paths their results contained. discoverReport formats this; autoLearn feeds the harvest straight into
 // the warm-set so the loop closes without a human in it.
@@ -372,11 +359,15 @@ function scanBypasses(a = {}) {
   const missed = []; let rawTokTotal = 0; let lines = 0; const MAX_LINES = 300000;
   // Edit-habit measurement (A): count whole-declaration Edits on code files, and attribute the tokens of a
   // PRIOR Read of that same file — that read is what a symbol-edit (edit-by-name) would have skipped.
-  let editCount = 0, editReadTok = 0;
-  const reads = new Map();   // normalized file → tokens of its most recent Read result (per transcript)
-  const readUse = new Map(); // Read tool_use_id → normalized file (its result carries the size)
+  let editCount = 0, editReadTok = 0, editUnreached = 0; // editUnreached: whole-decl edits with NO prior vts
+  // search on that file → the EDIT_STEER (which only rides a search_symbol/goto result) could never have
+  // reached them. A high fraction is the case for a harder lever (a warn on the Edit itself).
+  const reads = new Map();      // normalized file → tokens of its most recent Read result (per transcript)
+  const readUse = new Map();    // Read tool_use_id → normalized file (its result carries the size)
+  const searchUse = new Map();  // vts search/goto/refs tool_use id → true (its result carries the file:line)
+  const searchedBn = new Set(); // basenames seen in a prior vts search/goto/refs RESULT → steer-reachable
   outer: for (const { p } of files) {
-    cand.clear(); reads.clear(); readUse.clear(); // a tool_use and its result always share one transcript → bound per file
+    cand.clear(); reads.clear(); readUse.clear(); searchUse.clear(); searchedBn.clear(); // tool_use+result share one transcript → bound per file
     let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
     for (const line of txt.split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -393,12 +384,18 @@ function scanBypasses(a = {}) {
         if (b && b.type === "tool_use") {
           const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
           if (b.name === "Read" && b.input && b.input.file_path) readUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
-          else { const we = wholeDeclEdit(b.name, b.input); if (we) { editCount++; if (reads.has(we.file)) { editReadTok += reads.get(we.file); reads.delete(we.file); } } } // attribute a read ONCE (a re-Read re-adds it) — no double-count when several edits follow one read
+          else if (/(?:search_symbol|goto_definition|find_references)$/.test(String(b.name || ""))) searchUse.set(b.id, true);
+          else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; if (reads.has(ce.file)) { editReadTok += reads.get(ce.file); reads.delete(ce.file); } if (!searchedBn.has(path.basename(ce.file))) editUnreached++; } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
         }
         else if (b && b.type === "tool_result" && readUse.has(b.tool_use_id)) {
           const f = readUse.get(b.tool_use_id); readUse.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
           reads.set(f, tok(o)); // most recent Read of this file → the token a later symbol-edit would skip
+        }
+        else if (b && b.type === "tool_result" && searchUse.has(b.tool_use_id)) {
+          searchUse.delete(b.tool_use_id);
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o))) searchedBn.add(path.basename(pm[0]).toLowerCase()); // files a prior steer-carrying search surfaced
         }
         else if (b && b.type === "tool_result" && cand.has(b.tool_use_id)) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
@@ -422,7 +419,7 @@ function scanBypasses(a = {}) {
       }
     }
   }
-  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok };
+  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -439,9 +436,12 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok } = r;
+  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached } = r;
   // A: surface the edit habit alongside the search bypasses — whole-declaration Edits that could edit by name.
-  const editLine = editCount ? `\n  edit habit: ${editCount} whole-declaration Edit(s) on code; ~${editReadTok.toLocaleString()} tok went to reading those files first — replace_symbol_body / insert_after_symbol / insert_before_symbol / safe_delete edit by NAME and skip that read.` : "";
+  // editUnreached = those with no prior vts search on the file → the EDIT_STEER (search-result-only) can't
+  // reach them; a high fraction is the evidence for a harder lever (a warn on the Edit itself).
+  const editLine = editCount ? `\n  edit habit: ${editCount} whole-declaration Edit(s) on code; ~${editReadTok.toLocaleString()} tok went to reading those files first — replace_symbol_body / insert_after_symbol / insert_before_symbol / safe_delete edit by NAME and skip that read.` +
+    `\n    of those, ${editUnreached}/${editCount} had NO prior vts search on that file → the search-result steer can't reach them (the case for a warn-on-Edit if this fraction stays high).` : "";
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
   const learnRoot = resolveRoot(a);
@@ -1400,6 +1400,7 @@ export async function runTool(name, a = {}) {
       const c = await getClient(root, backendName);
       const r = await resolveSymbolForEdit(c, root, backendName, a);
       if (r.error) return err(`${name}: ${r.error}`);
+      try { recordEditEvent("symbol-edit"); } catch { /* best-effort: adoption ledger feeds the edit-steer loop */ }
       const apply = a.apply === true || a.apply === "true";
       const rng = r.ds.range;
       const ambl = r.ambiguous > 1 ? ` (⚠ ${r.ambiguous} symbols named "${a.symbol}"; editing the first — pass line=<0-based> to disambiguate)` : "";

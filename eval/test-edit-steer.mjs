@@ -20,6 +20,7 @@ process.env.VTS_INCLUDE_GRAPH = tmp("ig.json");
 process.env.VTS_CONFIG_FILE = tmp("cfg.json"); fs.writeFileSync(process.env.VTS_CONFIG_FILE, "{}");
 process.env.VTS_SAVINGS_FILE = tmp("sv.json");
 process.env.VTS_TEE_DIR = tmp("tee");
+process.env.VTS_EDIT_LEDGER = tmp("edl.json"); // isolate the adoption ledger from the user's real one
 process.env.VTS_LANG = "en";
 const { runTool, disposeClients } = await import("../server/core.js");
 
@@ -70,6 +71,8 @@ const useRead = (id, file) => ({ type: "tool_use", id, name: "Read", input: { fi
 const resRead = (id, body) => ({ type: "tool_result", tool_use_id: id, content: body });
 const useEdit = (file, oldStr, name = "Edit") => ({ type: "tool_use", id: u(), name, input: name === "MultiEdit" ? { file_path: file, edits: [{ old_string: oldStr, new_string: "x" }] } : { file_path: file, old_string: oldStr, new_string: "x" } });
 const useWrite = (file, body) => ({ type: "tool_use", id: u(), name: "Write", input: { file_path: file, content: body } });
+const useSearch = (id) => ({ type: "tool_use", id, name: "mcp__plugin_vs-token-safer_vs-search__search_symbol", input: { q: "X" } });
+const resSearch = (id, body) => ({ type: "tool_result", tool_use_id: id, content: body });
 // Build an isolated transcript dir, run discover scoped to it, parse the edit-habit line.
 let dirN = 0;
 async function editHabit(lines) {
@@ -81,7 +84,8 @@ async function editHabit(lines) {
   delete process.env.VTS_CLAUDE_PROJECTS;
   fs.rmSync(base, { recursive: true, force: true });
   const m = r.text.match(/edit habit: (\d+) whole-declaration Edit\(s\) on code; ~([\d,]+) tok/);
-  return m ? { count: Number(m[1]), readTok: Number(m[2].replace(/,/g, "")) } : { count: 0, readTok: 0 };
+  const mu = r.text.match(/of those, (\d+)\/\d+ had NO prior vts search/);
+  return m ? { count: Number(m[1]), readTok: Number(m[2].replace(/,/g, "")), unreached: mu ? Number(mu[1]) : 0 } : { count: 0, readTok: 0, unreached: 0 };
 }
 const RT = tok(BIG); // expected tokens for one BIG read
 // 1 read + 1 whole-decl edit on the same file → count 1, read attributed once.
@@ -111,6 +115,12 @@ check("A: MultiEdit whole-decl → counted", a8.count === 1);
 // Write (a new file, not a symbol replace) → not counted.
 const a9 = await editHabit([ev("assistant", [useWrite("/src/New.cpp", DECL)])]);
 check("A: Write → not counted", a9.count === 0);
+// reachability: edit with NO prior vts search on the file → steer-unreachable (the user's search-less flow).
+const a10 = await editHabit([ev("assistant", [useEdit("/src/Thing.cpp", DECL)])]);
+check("A: edit, no prior search → unreached 1/1", a10.count === 1 && a10.unreached === 1);
+// a prior vts search whose RESULT named the file → steer-reachable → NOT counted as unreached.
+const a11 = await editHabit([ev("assistant", [useSearch("s1")]), ev("user", [resSearch("s1", "FooThing @ /proj/src/Thing.cpp:10")]), ev("assistant", [useEdit("/src/Thing.cpp", DECL)])]);
+check("A: search result named the file → reachable → unreached 0", a11.count === 1 && a11.unreached === 0);
 
 await disposeClients();
 console.log("vs-token-safer — edit-steer + edit-habit verification\n");
