@@ -107,6 +107,15 @@ const EMPTY_HINT =
   "match. search_symbol matches DEFINITIONS, not every reference. Looking for something in a LOG? Logs " +
   "aren't indexed — use gamedev-log.";
 const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
+// Appended to a FOCUSED symbol/definition result: the model just located a declaration, the moment right
+// BEFORE it would Read the whole file to Edit it. Point it at the symbol-edit tools, which edit by NAME and
+// skip that read — the token win lives here (upstream of Edit), not at the Edit call. Additive, one line,
+// only on small result sets (a 60-hit search isn't an edit precursor). `VTS_EDIT_STEER=0` hides it.
+const EDIT_STEER =
+  "\n↪ Going to CHANGE one of these? Edit by NAME — replace_symbol_body (whole body) / insert_after_symbol / " +
+  "insert_before_symbol / safe_delete (preview by default, apply=true writes). It skips reading the file into " +
+  "context. (VTS_EDIT_STEER=0 to hide.)";
+const editSteerOn = () => process.env.VTS_EDIT_STEER !== "0" && process.env.VTS_EDIT_STEER !== "false";
 
 // First-use setup nudge: if the plugin has never been configured (no config file), prepend a one-time
 // pointer to setup the FIRST time a search/nav tool runs in a process. Once per process (not per call) so
@@ -305,6 +314,24 @@ function matchBypass(name, input) {
   }
   return null;
 }
+// A built-in Edit/MultiEdit whose replaced text is a WHOLE declaration on a code file — the case the
+// symbol-edit tools (replace_symbol_body / insert_* / safe_delete) address. Heuristic, for MEASUREMENT only
+// (discover): a multi-line old_string (≥ VTS_EDIT_MIN_LINES) that carries a declaration cue. Write is a new
+// file (not a symbol replace) and a tiny tweak isn't worth a symbol-edit, so both are skipped. Returns
+// { file } so the scan can attribute the file's prior Read (the token the symbol-edit would have skipped).
+const DECL_HINT = /\b(class|struct|enum|interface|namespace|template|def|function|func|fn|public|private|protected|static|void|virtual|override|async)\b|\)\s*(const)?\s*\{?\s*$/m;
+function wholeDeclEdit(name, input) {
+  if (!input) return null;
+  const file = String(input.file_path || "").replace(/\\/g, "/");
+  if (!DISCOVER_CODE_EXT.test(file)) return null;
+  const minLines = envInt("VTS_EDIT_MIN_LINES", 8);
+  const chunks = [];
+  if (name === "Edit") chunks.push(String(input.old_string || ""));
+  else if (name === "MultiEdit" && Array.isArray(input.edits)) for (const e of input.edits) chunks.push(String(e.old_string || ""));
+  else return null;
+  for (const c of chunks) if ((c.match(/\n/g) || []).length >= minLines && DECL_HINT.test(c)) return { file: file.toLowerCase() };
+  return null;
+}
 // Shared transcript scan: find bypassed code searches and (always, cheaply) harvest the source-file
 // paths their results contained. discoverReport formats this; autoLearn feeds the harvest straight into
 // the warm-set so the loop closes without a human in it.
@@ -343,8 +370,13 @@ function scanBypasses(a = {}) {
   const PATH_RE = /([A-Za-z]:)?[\w./\\-]+\.(?:c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/g;
   const cand = new Map(); // tool_use_id → {tool,q}
   const missed = []; let rawTokTotal = 0; let lines = 0; const MAX_LINES = 300000;
+  // Edit-habit measurement (A): count whole-declaration Edits on code files, and attribute the tokens of a
+  // PRIOR Read of that same file — that read is what a symbol-edit (edit-by-name) would have skipped.
+  let editCount = 0, editReadTok = 0;
+  const reads = new Map();   // normalized file → tokens of its most recent Read result (per transcript)
+  const readUse = new Map(); // Read tool_use_id → normalized file (its result carries the size)
   outer: for (const { p } of files) {
-    cand.clear(); // a tool_use and its result always share one transcript → bound the map per file
+    cand.clear(); reads.clear(); readUse.clear(); // a tool_use and its result always share one transcript → bound per file
     let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
     for (const line of txt.split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -358,7 +390,16 @@ function scanBypasses(a = {}) {
       const content = e && e.message && e.message.content;
       if (!Array.isArray(content)) continue;
       for (const b of content) {
-        if (b && b.type === "tool_use") { const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m); }
+        if (b && b.type === "tool_use") {
+          const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
+          if (b.name === "Read" && b.input && b.input.file_path) readUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
+          else { const we = wholeDeclEdit(b.name, b.input); if (we) { editCount++; if (reads.has(we.file)) { editReadTok += reads.get(we.file); reads.delete(we.file); } } } // attribute a read ONCE (a re-Read re-adds it) — no double-count when several edits follow one read
+        }
+        else if (b && b.type === "tool_result" && readUse.has(b.tool_use_id)) {
+          const f = readUse.get(b.tool_use_id); readUse.delete(b.tool_use_id);
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          reads.set(f, tok(o)); // most recent Read of this file → the token a later symbol-edit would skip
+        }
         else if (b && b.type === "tool_result" && cand.has(b.tool_use_id)) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
@@ -381,7 +422,7 @@ function scanBypasses(a = {}) {
       }
     }
   }
-  return { missed, rawTokTotal, learned, filesCount: files.length, all, since };
+  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -398,7 +439,9 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, learned, filesCount: fc, all, since } = r;
+  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok } = r;
+  // A: surface the edit habit alongside the search bypasses — whole-declaration Edits that could edit by name.
+  const editLine = editCount ? `\n  edit habit: ${editCount} whole-declaration Edit(s) on code; ~${editReadTok.toLocaleString()} tok went to reading those files first — replace_symbol_body / insert_after_symbol / insert_before_symbol / safe_delete edit by NAME and skip that read.` : "";
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
   const learnRoot = resolveRoot(a);
@@ -417,7 +460,7 @@ function discoverReport(a = {}) {
   const caught = (() => { const s = readSavings(); return Math.max(0, (s.rawTok || 0) - (s.outTok || 0)); })();
   const rate = caught + rawTokTotal > 0 ? (100 * caught / (caught + rawTokTotal)).toFixed(1) : "—";
   const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts`;
-  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + learnLine;
+  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + learnLine;
   const byTool = {};
   for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
   const toolLine = Object.entries(byTool).sort((x, y) => y[1] - x[1]).map(([t, n]) => `${t}×${n}`).join(", ");
@@ -427,7 +470,7 @@ function discoverReport(a = {}) {
     `  ${missed.length} code search(es) bypassed vts (${toolLine})\n` +
     `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}\n` +
     `  biggest:\n${top}\n` +
-    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${learnLine}`;
+    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${learnLine}`;
 }
 
 // ---- LSP client pool (one per root+backend; reused across calls in a process) ----
@@ -1263,7 +1306,8 @@ export async function runTool(name, a = {}) {
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
       }
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), max);
-      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max));
+      const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
+      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max) + symEdit);
     }
     if (name === "find_references") {
       const c = await getClient(root, backendName);
@@ -1313,7 +1357,8 @@ export async function runTool(name, a = {}) {
       const c = await getClient(root, backendName);
       const locs = (await c.definition(a.path, Number(a.line), Number(a.character))) || [];
       try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
-      return finishOut(locs, backendAdvisory(backendName, root) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)"));
+      const defEdit = editSteerOn() && (Array.isArray(locs) ? locs.length : !!locs) ? EDIT_STEER : ""; // landed on a decl → edit precursor
+      return finishOut(locs, backendAdvisory(backendName, root) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)") + defEdit);
     }
     if (name === "hover") {
       if (!a.path || a.line == null || a.character == null) return err("hover needs path, line, character (0-based position).");
