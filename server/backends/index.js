@@ -15,6 +15,12 @@ import { resolveBinJs } from "../resolve-bin.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
+// config-file fallback for an engine-cmd override: env (VTS_*_CMD) wins, then the config key a `vts setup`
+// click persists (e.g. clangdCmd — so "point vts at an installed clangd" survives restart without editing
+// the user's OS env), then the default binary name. Read once at module load (settings apply at startup).
+let _fileCfg = {};
+try { _fileCfg = JSON.parse(fs.readFileSync(process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json"), "utf8")) || {}; } catch { /* none */ }
+const cfgCmd = (envName, key, def) => env(envName) || (_fileCfg[key] ? String(_fileCfg[key]) : "") || def;
 
 // clangd ≥ this is recommended for large Unreal projects. Older clangd (notably the 19.1.x bundled with
 // Visual Studio) can DEADLOCK indexing real UE translation units in LSP-server mode — clangd --check
@@ -169,7 +175,7 @@ export const BACKENDS = {
   // C/C++ via clangd (LLVM). Needs compile_commands.json (Unreal: generate via UBT
   // `-mode=GenerateClangDatabase`, or CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). LIVE-TARGET.
   clangd: {
-    cmd: env("VTS_CLANGD_CMD", "clangd"),
+    cmd: cfgCmd("VTS_CLANGD_CMD", "clangdCmd", "clangd"),
     args: (root) => {
       const ov = splitArgs(env("VTS_CLANGD_ARGS"));
       if (ov) return ov;
