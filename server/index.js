@@ -23,8 +23,9 @@ const TOOLS = [
     name: "search_symbol",
     description:
       "Search symbol DECLARATIONS by name/substring across the project via the language server's index " +
-      "(clangd for C++, Roslyn for C#) — NOT grep. Returns a token-capped `kind name @ file:line` list, " +
-      "no source bodies. Use this instead of Bash grep/rg for finding a class/function/type/variable.",
+      "(clangd C/C++, Roslyn C#/.NET, tsserver JS/TS, pyright Python — auto-detected) — NOT grep. Returns a " +
+      "token-capped `kind name @ file:line` list, no source bodies. Use this instead of Bash grep/rg for " +
+      "finding a class/function/type/variable in any of those languages.",
     inputSchema: {
       type: "object",
       properties: {

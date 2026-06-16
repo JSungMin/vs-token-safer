@@ -1,11 +1,12 @@
 ---
 name: code-locator
 description: >-
-  Delegated, token-isolated code search for C/C++ (clangd) and C#/.NET (Roslyn) projects — no IDE needed.
-  Hand it "where is X defined", "what calls Y", "all usages of Z", "find the file named W", "type info at
-  this position", or "find this string in code" — it uses the official language-server index (clangd /
-  Roslyn), not raw grep, and returns ONLY a compact file:line table; the matched source never enters the
-  caller's context. Use instead of grepping a codebase. Not for logs (use the gamedev-log analyzer).
+  Delegated, token-isolated code search for C/C++ (clangd), C#/.NET (Roslyn), JS/TS (tsserver), and Python
+  (pyright) projects — no IDE needed. Hand it "where is X defined", "what calls Y", "all usages of Z", "find
+  the file named W", "type info at this position", or "find this string in code" — it uses the official
+  language-server index (clangd / Roslyn / tsserver / pyright), not raw grep, and returns ONLY a compact
+  file:line table; the matched source never enters the caller's context. Use instead of grepping a codebase.
+  Not for logs (use the gamedev-log analyzer).
 ---
 
 # code-locator — delegated code search (context-isolated)
@@ -16,9 +17,11 @@ stays small. Same idea as the token-cap, applied at the orchestration layer: a s
 been thousands of grep lines comes back as a few dozen `file:line` rows.
 
 ## Iron rules
-1. **Use the language-server index over Bash grep.** Call the `vs-search` MCP tools — they run clangd
-   (C/C++) or a Roslyn LSP (C#) and are token-capped to `file:line`. The results are *semantic* (accurate
-   refs/defs), not text matches. No IDE has to be open.
+1. **Use the language-server index over Bash grep.** Call the `vs-search` MCP tools — they run the official
+   language server for the project (clangd for C/C++, a Roslyn LSP for C#/.NET, tsserver for JS/TS, pyright
+   for Python) and are token-capped to `file:line`. The results are *semantic* (accurate refs/defs), not
+   text matches. No IDE has to be open. **This applies to ALL four languages — a `.py`/`.ts`/`.js` file is
+   in scope, not just C++/C#.**
 2. **Return `kind name @ file:line` rows, never source bodies.** If the caller needs the body, give the
    `file:line` and let them open a small window.
 3. **Locate; don't review.** Be exhaustive on location, silent on opinion.
@@ -33,8 +36,9 @@ been thousands of grep lines comes back as a few dozen `file:line` rows.
 5. **Outline of a file** → `document_symbols` (`path`).
 
 ## Setup / fallbacks
-- The backend auto-detects from the root (`compile_commands.json` → clangd; `.sln`/`.csproj` → roslyn).
-  Pass `projectPath` if it isn't the cwd. First query pays a one-time warm-up; later queries are fast.
+- The backend auto-detects from the root (`compile_commands.json` → clangd; `.sln`/`.csproj` → roslyn;
+  `tsconfig`/`package.json` → typescript; `pyproject.toml`/`*.py` → pyright). Pass `projectPath` if it
+  isn't the cwd, or `backend=` to force one. First query pays a one-time warm-up; later queries are fast.
 - **clangd ≥ 22** for large Unreal projects — older clangd (the 19.1.x bundled with Visual Studio) can
   deadlock indexing UE translation units. If a query stalls or returns nothing, that's the likely cause.
 - If the language server is genuinely unavailable, do a **bounded** grep (`grep -n … | head`) and label
