@@ -34,7 +34,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `$/cancelRequest`; client declares `synchronization` + `workspace.configuration` capabilities.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
-  pyproject/*.py→pyright; strongest build-artifact first). Override via `VTS_CLANGD_CMD/ARGS`,
+  pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses
+  `backendForPath(a.path)` (core.js — ext→backend: .py→pyright, .ts/.js→typescript, .cpp/.h→clangd, .cs→
+  roslyn) BEFORE `pickBackend(root)`, so a `.py`/`.ts` file inside a clangd-rooted UE/C++ tree gets pyright/
+  typescript instead of clangd (else the query hits the wrong LSP, finds nothing, model abandons vts).
+  Precedence: explicit `a.backend` > `VTS_BACKEND` > `backendForPath(a.path)` > `pickBackend(root)`. Eval guard 55.
+  Override via `VTS_CLANGD_CMD/ARGS`,
   `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
   shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.
   `findProjectRoot(start)` — bounded walk UP from a file to the nearest project marker (compile_commands/
