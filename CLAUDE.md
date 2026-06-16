@@ -87,9 +87,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result (`VTS_EDIT_STEER=0` hides); (L1) the
   grep-block hook now also matches `Edit|MultiEdit` — a whole-decl replace/insert gets a MODEL-VISIBLE
   `emitWarn` with a READY symbol-edit call (`replace_symbol_body`/`insert_after_symbol`, `declSymbolName`
-  best-effort names it), `VTS_EDIT_WARN=0` off; (L2) once the adoption ledger's ignore-`streak` hits
-  `VTS_EDIT_BLOCK_AFTER` (5), a SAFE insert (`insertDecl && !replaceDecl` — `insert_after_symbol` can't corrupt)
-  is BLOCKED (exit 2); a replace stays warn. ADOPTION LEDGER (server/edit-ledger.js, `~/.vs-token-safer/
+  best-effort names it), `VTS_EDIT_WARN=0` off; (L2) OPT-IN escalation, `VTS_EDIT_BLOCK_AFTER` DEFAULT 0=OFF — set ≥1 and once the
+  adoption ledger's ignore-`streak` hits it, a SAFE insert (`insertDecl && !replaceDecl` — `insert_after_symbol`
+  can't corrupt) is BLOCKED ONCE (exit 2) then `resetStreak()` (fire-once, NOT a wall — a permanent block
+  TRAPPED the agent: it fought the wall with Edit retries / code contortions instead of switching, and each
+  blocked attempt re-escalated the streak; live-reproduced on US editing edit-ledger.js); a replace stays warn. ADOPTION LEDGER (server/edit-ledger.js, `~/.vs-token-safer/
   edit-adoption.json`, `VTS_EDIT_LEDGER` override): hook records `builtin-warn` (streak++), core.js records
   `symbol-edit` on every symbol-edit dispatch (streak→0); `hooks/edit-report.js` (SessionStart) re-injects the
   adoption % as a goal = the SkillOpt-style measure→re-inject loop (static skill can't self-improve, a

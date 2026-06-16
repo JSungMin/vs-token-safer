@@ -30,3 +30,11 @@ export function adoptionPct(o = readEditLedger()) {
   const total = (o.builtin || 0) + (o.symbol || 0);
   return total ? Math.round((100 * (o.symbol || 0)) / total) : null;
 }
+// Clear the ignore-streak without touching the counts — used after an L2 block FIRES so it backs off
+// (fire-once, not a persistent wall: a permanent block trapped the agent, which fought it with Edit retries
+// and code contortions instead of switching tools).
+export function resetStreak() {
+  const o = readEditLedger();
+  o.streak = 0;
+  write(o);
+}
