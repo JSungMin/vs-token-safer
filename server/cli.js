@@ -47,6 +47,8 @@ Commands:
                  Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'. reconcile is forced to preview (-n).
   warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
+                 [--genCompileDb dry|apply] — also generate the C++ compile DB in this step (dry-run prints
+                 the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
                  [--graph (30-day ASCII) --daily --history]
