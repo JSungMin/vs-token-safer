@@ -308,7 +308,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_GREP_BLOCK` | `1` | `0` reverts the **Grep/Glob tool** escalation from block to warn-only. |
 | — | `VTS_EDIT_STEER` | `1` | `0` hides the one-line hint (on a focused `search_symbol`/`goto_definition` result) pointing at the symbol-edit tools. `VTS_EDIT_STEER_MAX` (`10`) caps the result size that gets it. |
 | — | `VTS_EDIT_WARN` | `1` | `0` silences the model-visible nudge when a built-in Edit/MultiEdit replaces or adds a **whole declaration** (it points at `replace_symbol_body` / `insert_after_symbol`). Sub-declaration tweaks are never nudged. |
-| — | `VTS_EDIT_BLOCK_AFTER` | `5` | After this many consecutive whole-declaration edits that ignore the nudge, a **safe insert** (a new declaration) is blocked toward `insert_after_symbol`; `0` disables escalation (also held to warn by `VTS_GREP_BLOCK=0`). A replace always stays a warn. |
+| — | `VTS_EDIT_BLOCK_AFTER` | `0` (off) | **Opt-in.** Set ≥1 to escalate the warn to a one-time **block** on a safe insert after that many consecutive ignored nudges (then it resets — fire-once, not a wall). Default off: a persistent block trapped the agent (it fought the wall with Edit retries instead of switching). A replace always stays a warn; `VTS_GREP_BLOCK=0` also holds it to warn. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt (also `excludeCommands` in config). |
 | — | `VTS_COMPACT_VCS` | `1` | `0` stops rerouting read-only `git`/`p4` to the compacted wrapper. |
 | `lang` | `VTS_LANG` | auto | Hook message language: `ko` / `en` (auto-detects from OS locale). |
