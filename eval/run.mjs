@@ -1133,6 +1133,18 @@ const setupGenOk =
   !/Generated compile_commands/.test(suGen.text);            // …but UBT was NOT actually run
 for (const d of [suEng, suGame]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
 
+// 57) vts_setup clangdCmd — the clangd-binary path is a first-class config key (a `vts setup` click can
+// persist it WITHOUT editing the user's OS env), so backends can prefer a user-supplied clangd ≥ 22 over
+// the deadlock-prone VS-bundled 19.1.x. Assert it lands in the config file and is reported as changed.
+const fakeClangd = process.platform === "win32" ? "C:/tools/clangd/bin/clangd.exe" : "/opt/clangd/bin/clangd";
+const suClangd = await runTool("vts_setup", { clangdCmd: fakeClangd });
+let cfPersisted = {};
+try { cfPersisted = JSON.parse(fs.readFileSync(CF, "utf8")) || {}; } catch { /* none */ }
+const setupClangdOk =
+  !suClangd.isError &&
+  /clangdCmd/.test(suClangd.text) &&          // reported as a changed key
+  cfPersisted.clangdCmd === fakeClangd;        // …and actually written to the config file
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1209,6 +1221,7 @@ const rows = [
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
+  ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

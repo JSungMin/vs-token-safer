@@ -33,7 +33,7 @@ export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok"];
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd"];
 
 // ---- per-call project root resolution ----
 // The MCP server is ONE long-lived process serving every repo a session touches, so a single configured

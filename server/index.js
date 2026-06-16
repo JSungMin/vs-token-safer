@@ -296,6 +296,7 @@ const TOOLS = [
         backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto)." },
         maxResults: { type: "number", description: "Default cap on returned locations." },
         genCompileDb: { description: "Generate the C++ compile_commands.json (for clangd semantic search) in this step: `true` = DRY-RUN (prints the exact UBT command, runs nothing); \"apply\" = run UBT now (heavy — indexes engine headers, needs clangd ≥ 22). The DB is parked out-of-tree (~/.vs-token-safer/db/<project>).", "type": ["boolean", "string"] },
+        clangdCmd: { type: "string", description: "Path to the clangd ≥ 22 binary to use (persists to config, no OS-env edit). The VS-bundled clangd 19.1.x deadlocks on Unreal TUs — point this at a current clangd from https://github.com/clangd/clangd/releases. Env VTS_CLANGD_CMD overrides it." },
       },
     },
   },
