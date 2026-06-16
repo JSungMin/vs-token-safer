@@ -54,6 +54,25 @@ A smoke run validated the pipeline end-to-end and taught three things:
   path. A TS-backend ENOENT in one rollout also forced a fallback. Behavioral eval found live bugs — that's
   the point — but they add variance to a small-N run.
 
+## Result: no headroom for warn-wording optimization
+
+Two live runs (4 toy-scenario agents + 12 harder-scenario agents = **16 rollouts**, ~810k tokens) gave a
+clear, negative answer: **`baseline` already hit 100% symbol-edit adoption on every scenario — toy and
+hard.** The candidate variants (`explicit-ready-call`, `cost-framed`) couldn't differentiate (Δ 0pp → gate
+rejects all). A focused rollout agent, once the symbol-edit tools exist and the file is in view, reaches for
+them unprompted; the warn *wording* is not the bottleneck.
+
+So the real-world gap (discover: ~93% of whole-decl edits are search-unreachable, near-zero historical
+adoption) is **not a persuasion problem** the harness can optimize — it's (a) historical data from before
+the tools/steer existed, and (b) attention/context in long real sessions, which a clean single-task rollout
+structurally can't reproduce (the rollout always favors symbol-edit). **Don't spend tokens optimizing the
+warn text** — there's no measurable headroom. The lever is the already-shipped v0.23.0 machinery (live hook
+warn at edit time + L2 block + SessionStart re-injection); let it run and re-measure real-session adoption
+via `vts discover` over time. Revisit only if real adoption stays low — and then the intervention is about
+*attention*, not wording.
+
+The harness did its job: it conclusively ruled out a direction before we sank tokens into it.
+
 ## Honest caveats
 
 - **Fidelity**: scoring is the agent's *self-report* of tools used after a *real* edit (the hook warn does
