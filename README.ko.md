@@ -283,7 +283,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_COMPACT_RESULTS` | `1` | `0`이면 위치당 한 줄 출력으로 복원. |
 | — | `VTS_MAX_BACKENDS` | `2` | 동시에 살아 있는 언어 서버 최대치 (초과분은 LRU 축출). |
 | — | `VTS_BACKEND_IDLE_MS` | `300000` | 이만큼 유휴인 언어 서버는 종료 (`0`이면 끔). |
-| — | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일 / 인자 오버라이드. |
+| `clangdCmd` | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일 (`vts setup --clangdCmd <경로>`로 영속 — VS 번들 19.1.x는 UE에서 교착, ≥ 22 권장) / 인자. |
 | — | `VTS_ROSLYN_DLL` | auto | 특정 `Microsoft.CodeAnalysis.LanguageServer.dll` 경로. |
 | — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | C# LSP 오버라이드. |
 | — | `VTS_TS_CMD` / `VTS_PY_CMD` (+ `_ARGS`) | 번들 | JS/TS · Python LSP 오버라이드. |

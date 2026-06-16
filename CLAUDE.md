@@ -234,7 +234,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
     TU in ~13s and returns symbols.** So it's an upstream clangd 19.x bug, not a vts/glue bug. Fix: use
     clangd ≥ `MIN_CLANGD` (22) — `backends/index.js` probes `clangd --version` and `core.js` prepends a
     one-time advisory if it's older. Isolation proved engine headers (CoreMinimal, GameplayTagContainer)
-    parse fine; only the full game-TU header chain trips 19.x.
+    parse fine; only the full game-TU header chain trips 19.x. The clangd path is a first-class CONFIG key
+    `clangdCmd` (in `CONFIG_KEYS`; `vts_setup`/`vts setup --clangdCmd <path>` persists it, so a setup click
+    survives restart WITHOUT editing the user's OS env) — `backends/index.js` `cfgCmd()` resolves it as
+    `VTS_CLANGD_CMD` env > config `clangdCmd` > `clangd`. Eval guard 57. The `commands/setup.md` flow now
+    presents unmet C++ prereqs (no compile DB / no clangd ≥ 22) as `AskUserQuestion` clickable choices, not a
+    free-text prompt — generate-DB routes to `vts_setup { genCompileDb }`, clangd path to `{ clangdCmd }`.
   - Secondary tuning for cold/large indexes: `VTS_LSP_TIMEOUT_MS` (request timeout), `VTS_LSP_INDEX_WAIT_MS`
     (afterInit waits for `$/progress` index-ready), `VTS_CLANGD_OPEN_CAP` (warm-up open cap).
   - **LATENCY (why it felt slower than a warm IDE like Rider — root-caused on a real 26k-TU UE project, all

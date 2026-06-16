@@ -31,12 +31,22 @@ Steps:
 4. **Apply:** call `vts_setup` with only the keys to change, e.g.
    `vts_setup { "projectPath": "<root>", "backend": "clangd" }`. `vts_setup` reports the detected language
    mix (e.g. `clangd(820), typescript(40)`) and the `prewarmBackends` it chose.
-5. **C++ with no compile DB?** `vts_setup` warns when a clangd-dominant root has no `compile_commands.json`
-   (clangd can't index semantically without it). Offer to generate it **in the same step** — pass
-   `genCompileDb` to `vts_setup`: `true` = **dry-run** (prints the exact UBT `GenerateClangDatabase` command,
-   runs nothing — show it to the user first), `"apply"` = run UBT now (heavy: indexes engine headers, takes
-   minutes, needs **clangd ≥ 22**). The DB is parked out-of-tree (`~/.vs-token-safer/db/<project>`), so git/p4
-   never see it. Always dry-run first and let the user confirm before `apply`.
+5. **Unmet C++ prerequisites → present clickable choices, don't ask in prose.** When the clangd backend
+   is missing `compile_commands.json` and/or a clangd ≥ 22 binary, the user should **click**, not type. Use
+   the **`AskUserQuestion`** tool — one question per missing prerequisite, each with concrete options:
+   - **compile_commands.json missing** → question "Generate the C++ compile database now?" options:
+     - `Dry-run first (Recommended)` → call `vts_setup { genCompileDb: true }` (prints the exact UBT
+       `GenerateClangDatabase` command, runs nothing) — show it, then re-ask to apply.
+     - `Run it now (apply)` → `vts_setup { genCompileDb: "apply" }` (heavy: indexes engine headers, minutes,
+       needs clangd ≥ 22). DB parks out-of-tree (`~/.vs-token-safer/db/<project>`), git/p4 never see it.
+     - `Skip — I'll generate it myself` → leave as-is (text fallback stays active).
+   - **clangd ≥ 22 not on PATH** → question "clangd binary?" options:
+     - `Point vts at an installed clangd` → ask for the path, then `vts_setup { clangdCmd: "<path>" }`
+       (writes `VTS_CLANGD_CMD`).
+     - `I'll install it` → link https://github.com/clangd/clangd/releases (VS-bundled 19.1.x deadlocks on UE).
+     - `Skip for now` → text fallback stays active.
+   Only fall back to a free-text question if `AskUserQuestion` is unavailable. Always dry-run the DB before
+   apply.
 6. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
 
 Notes:
