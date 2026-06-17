@@ -852,6 +852,19 @@ function compactLocationLines(items) {
   }
   return files.map((p) => `  ${p}${suffix(p)}`).join("\n");
 }
+// Factor the longest common DIRECTORY prefix out of a list of absolute-path-led lines, printed once as
+// `under <prefix>/` with relative tails — the same token-saver fmtLocations uses, now applied to the pure
+// path list (find_files) and the text-match list (search_text), which previously repeated the full absolute
+// path on EVERY row (a real benchmark-found drag: find_files ~32%, search_text ~54% reduction; the repeated
+// root prefix was most of the cost). Safe on a `path:line: text` line too — commonDirPrefix splits on "/" and
+// never counts the last segment (the filename + `:line: text`), so only the shared DIR is factored; the full
+// path stays recoverable as `<prefix>/<tail>`. VTS_COMPACT_RESULTS=0 restores the classic per-row shape.
+function factorCommonPrefix(lines) {
+  if (!compactResults() || lines.length < 2) return lines.join("\n");
+  const prefix = commonDirPrefix(lines);
+  if (!prefix) return lines.join("\n");
+  return `under ${prefix}/\n` + lines.map((l) => "  " + l.slice(prefix.length + 1)).join("\n");
+}
 function fmtLocations(locs, max, label) {
   const arr = Array.isArray(locs) ? locs : locs ? [locs] : [];
   const shown = arr.slice(0, max);
@@ -1247,7 +1260,7 @@ export async function runTool(name, a = {}) {
       if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
       let ft = files.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : files.truncated === "scan" ? ` — scan limit hit (narrow projectPath; more exist)` : "";
       if (files.truncated) ft += teeNote("find_files", a.q, root, (n) => findFilesUnder(root, String(a.q), n));
-      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + files.join("\n"));
+      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + factorCommonPrefix(files));
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
@@ -1290,7 +1303,7 @@ export async function runTool(name, a = {}) {
       // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + hits.join("\n") + steer);
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + steer);
     }
     // vts_git / vts_p4 — run the real VCS command and COMPACT its output before it reaches the model. The
     // language-server index can't help here (status/log/diff/opened aren't source symbols), but the raw dump
