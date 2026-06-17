@@ -5,9 +5,25 @@
 // A sub-declaration tweak (a few lines inside a body — e.g. one more item in an array) is NOT a fit and is
 // deliberately ignored; built-in Edit stays correct there.
 const CODE_EXT = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/;
-// A declaration cue: a structural keyword, or a line that ends in `)` / `) {` (a signature/body opener).
-const DECL_HINT = /\b(class|struct|enum|interface|namespace|template|def|function|func|fn|public|private|protected|static|void|virtual|override|async|UFUNCTION|UCLASS|USTRUCT)\b|\)\s*(const)?\s*\{?\s*$/m;
-const isWholeDecl = (s, minLines) => (String(s).match(/\n/g) || []).length >= minLines && DECL_HINT.test(String(s));
+// A real declaration keyword — its presence alone marks a declaration.
+const DECL_KW = /\b(class|struct|enum|interface|namespace|template|def|function|func|fn|public|private|protected|static|void|virtual|override|async|UFUNCTION|UCLASS|USTRUCT)\b/;
+// Control-flow keywords whose header ALSO ends in `) {` — they must NOT count as a declaration opener.
+// (Dogfood-found false positive: an `if (cond) { … }` block edited inside a function body was flagged a
+// whole declaration and suggested `replace_symbol_body symbol="if"` — `if` is not a named symbol.)
+const RESERVED_CALLEE = new Set(["if", "for", "while", "switch", "catch", "return", "sizeof", "do", "else", "case", "with"]);
+// Signature/body opener on one line: `… name(args) {` where `name` is a callable identifier. Used only when
+// no DECL_KW is present, and the callee must be a real name, not a control-flow keyword.
+const SIG_OPENER = /([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const|noexcept|override|final|=>)?\s*\{?\s*$/;
+function isWholeDecl(s, minLines) {
+  const str = String(s);
+  if ((str.match(/\n/g) || []).length < minLines) return false;
+  if (DECL_KW.test(str)) return true;                       // an explicit declaration keyword
+  for (const line of str.split("\n")) {                     // else: a NAMED signature opener (not control flow)
+    const m = SIG_OPENER.exec(line);
+    if (m && !RESERVED_CALLEE.has(m[1])) return true;
+  }
+  return false;
+}
 
 // Classify a built-in edit tool call against the whole-declaration heuristic.
 //   replaceDecl — the text being REPLACED (old_string) is a whole declaration → replace_symbol_body fits.
