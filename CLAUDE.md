@@ -302,6 +302,16 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   appends a one-line gamedev-log pointer (`LOG_STEER`) to ANY tool result whose target is a log; empty
   symbol results carry `EMPTY_HINT` (stale-index + definitions-only + log→gamedev-log), find_files/search_text
   empties carry `LOG_EMPTY_HINT`. Additive text only, never blocks. Mirrors `../rider-mcp-enforcer` proxy steer.
+- **search_text → symbol steer (dogfood-found).** `core.js` `symbolHuntInText(q)` pulls the hunted NAME from a
+  TEXT query that is really a symbol/class usage hunt — a `Foo<Bar>` template arg (the `<Type>` wins), a `::`
+  scope, or the longest CamelCase/snake identifier; null for `TODO|FIXME`/prose. `textSymbolSteer(q,truncated)`
+  appends a one-line nudge to `find_references symbol="X"` / `search_symbol q="X"` (semantic, COMPLETE, no 4s
+  time-box, ~10–20× smaller) — fires only on a CODE scan (`!docs && !path`) when the result was TRUNCATED or the
+  query carries a `<>`/`::` cue (low-noise: a bare-CamelCase text search that completed isn't nagged). The
+  EMPTY-but-timed-out branch also steers AND flags that a `0` from a truncated walk is NOT conclusive (a real 0
+  and an unreached-in-time 0 are indistinguishable — `find_references` resolves which). `VTS_TEXT_STEER=0` off.
+  Born from a live case: the model used `search_text "FindComponentByClass<UMyComp>"` → 8-of-49 time-boxed slice;
+  `find_references` returned all 49 at 19×. Eval guard 58 (`symbolHuntInText` unit + integration).
 
 ## Next (see wiki "Status and TODO")
 P1 DONE: core rename, `index.js`/`sdk.js`/`ensure-deps.mjs`, grep-block `hooks/`, `skills/`+`commands/`,
