@@ -1256,7 +1256,8 @@ const toolsBudgetOk =
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
-  toolsTok <= 2700; // ~2420 now; headroom blocks prose creep
+  toolsTok <= 3000; // ~2899: fold floor was ~2420; +~480 is the deliberate Glama tool-quality re-add
+                    // (side-effect/output-format disclosure + terse param descriptions). Cap blocks prose creep.
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
@@ -1339,7 +1340,7 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
-  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 2700 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3000 tok", toolsBudgetOk, "true", toolsBudgetOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
