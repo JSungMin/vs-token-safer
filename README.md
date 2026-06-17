@@ -4,6 +4,7 @@
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED)](https://code.claude.com/docs/en/plugins)
 [![MCP](https://img.shields.io/badge/MCP-server-1f6feb)](https://modelcontextprotocol.io)
+[![Glama](https://glama.ai/mcp/servers/JSungMin/vs-token-safer/badges/score.svg)](https://glama.ai/mcp/servers/JSungMin/vs-token-safer)
 [![release](https://img.shields.io/github/v/release/JSungMin/vs-token-safer)](https://github.com/JSungMin/vs-token-safer/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/JSungMin/vs-token-safer/pulls)
@@ -312,6 +313,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_GREP_BLOCK` | `1` | `0` reverts the **Grep/Glob tool** escalation from block to warn-only. |
 | — | `VTS_EDIT_STEER` | `1` | `0` hides the one-line hint (on a focused `search_symbol`/`goto_definition` result) pointing at the symbol-edit tools. `VTS_EDIT_STEER_MAX` (`10`) caps the result size that gets it. |
 | — | `VTS_EDIT_WARN` | `1` | `0` silences the model-visible nudge when a built-in Edit/MultiEdit replaces or adds a **whole declaration** (it points at `replace_symbol_body` / `insert_after_symbol`). Sub-declaration tweaks are never nudged. |
+| — | `VTS_TEXT_STEER` | `1` | `0` hides the one-line hint appended to a `search_text` result whose query is really a **symbol/class usage hunt** (a `Foo<Bar>` template arg, `::` scope, or CamelCase/snake identifier) — it points at `find_references` / `search_symbol`, which are semantic and **complete** (no 4s time-box). Fires only when the scan was truncated or the query carries a `<>`/`::` cue. |
 | — | `VTS_EDIT_BLOCK_AFTER` | `0` (off) | **Opt-in.** Set ≥1 to escalate the warn to a one-time **block** on a safe insert after that many consecutive ignored nudges (then it resets — fire-once, not a wall). Default off: a persistent block trapped the agent (it fought the wall with Edit retries instead of switching). A replace always stays a warn; `VTS_GREP_BLOCK=0` also holds it to warn. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt (also `excludeCommands` in config). |
 | — | `VTS_COMPACT_VCS` | `1` | `0` stops rerouting read-only `git`/`p4` to the compacted wrapper. |

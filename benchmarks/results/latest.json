@@ -1,0 +1,169 @@
+{
+  "generatedBy": "benchmarks/run.mjs",
+  "tokenEstimate": "bytes/4",
+  "grepLineCap": 250,
+  "sizes": [
+    10,
+    50,
+    150
+  ],
+  "bySize": {
+    "10": [
+      {
+        "scenario": "find symbol declaration",
+        "grepTok": 439,
+        "grepLines": 23,
+        "grepCapped": false,
+        "vtsTok": 149,
+        "vtsMode": "semantic",
+        "vtsOk": true,
+        "reduction": 0.6605922551252847
+      },
+      {
+        "scenario": "find all references",
+        "grepTok": 439,
+        "grepLines": 23,
+        "grepCapped": false,
+        "vtsTok": 102,
+        "vtsMode": "semantic",
+        "vtsOk": true,
+        "reduction": 0.7676537585421412
+      },
+      {
+        "scenario": "text search ('retry loop')",
+        "grepTok": 399,
+        "grepLines": 21,
+        "grepCapped": false,
+        "vtsTok": 747,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": -0.8721804511278195
+      },
+      {
+        "scenario": "find file by name ('caller')",
+        "grepTok": 132,
+        "grepLines": 20,
+        "grepCapped": false,
+        "vtsTok": 205,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": -0.553030303030303
+      }
+    ],
+    "50": [
+      {
+        "scenario": "find symbol declaration",
+        "grepTok": 1999,
+        "grepLines": 103,
+        "grepCapped": false,
+        "vtsTok": 149,
+        "vtsMode": "semantic",
+        "vtsOk": true,
+        "reduction": 0.9254627313656828
+      },
+      {
+        "scenario": "find all references",
+        "grepTok": 1999,
+        "grepLines": 103,
+        "grepCapped": false,
+        "vtsTok": 302,
+        "vtsMode": "semantic",
+        "vtsOk": true,
+        "reduction": 0.8489244622311156
+      },
+      {
+        "scenario": "text search ('retry loop')",
+        "grepTok": 1959,
+        "grepLines": 101,
+        "grepCapped": false,
+        "vtsTok": 2200,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": -0.12302194997447669
+      },
+      {
+        "scenario": "find file by name ('caller')",
+        "grepTok": 682,
+        "grepLines": 100,
+        "grepCapped": false,
+        "vtsTok": 1005,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": -0.4736070381231672
+      }
+    ],
+    "150": [
+      {
+        "scenario": "find symbol declaration",
+        "grepTok": 4917,
+        "grepLines": 303,
+        "grepCapped": true,
+        "vtsTok": 775,
+        "vtsMode": "text-fallback",
+        "vtsOk": true,
+        "reduction": 0.842383567215782
+      },
+      {
+        "scenario": "find all references",
+        "grepTok": 4917,
+        "grepLines": 303,
+        "grepCapped": true,
+        "vtsTok": 2204,
+        "vtsMode": "semantic",
+        "vtsOk": true,
+        "reduction": 0.5517592027659142
+      },
+      {
+        "scenario": "text search ('retry loop')",
+        "grepTok": 4917,
+        "grepLines": 301,
+        "grepCapped": true,
+        "vtsTok": 2242,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": 0.54403091315843
+      },
+      {
+        "scenario": "find file by name ('caller')",
+        "grepTok": 1883,
+        "grepLines": 300,
+        "grepCapped": true,
+        "vtsTok": 1284,
+        "vtsMode": "filesystem",
+        "vtsOk": true,
+        "reduction": 0.3181093998937865
+      }
+    ]
+  },
+  "costAtMax": {
+    "files": 150,
+    "rows": [
+      {
+        "model": "Haiku 4.5",
+        "price": 1,
+        "grepCost": 0.016634,
+        "vtsCost": 0.006505,
+        "saved": 0.010128999999999999
+      },
+      {
+        "model": "Sonnet 4.x",
+        "price": 3,
+        "grepCost": 0.049902,
+        "vtsCost": 0.019515,
+        "saved": 0.030387
+      },
+      {
+        "model": "Opus 4.x",
+        "price": 15,
+        "grepCost": 0.24950999999999998,
+        "vtsCost": 0.09757500000000001,
+        "saved": 0.151935
+      }
+    ]
+  },
+  "prices": {
+    "Haiku 4.5": 1,
+    "Sonnet 4.x": 3,
+    "Opus 4.x": 15
+  }
+}
