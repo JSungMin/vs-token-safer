@@ -41,7 +41,8 @@ process.stdin.on("data", (d) => {
       }
       send({ jsonrpc: "2.0", id: msg.id, result });
     } else if (msg.method === "textDocument/hover") {
-      send({ jsonrpc: "2.0", id: msg.id, result: { contents: { kind: "plaintext", value: "int Foo(int x)" } } });
+      // 2nd line is a pathological 300-char "type" — fmtHover must trim each line to ≤200 (not just cap lines).
+      send({ jsonrpc: "2.0", id: msg.id, result: { contents: { kind: "plaintext", value: "int Foo(int x)\n" + "T".repeat(300) } } });
     } else if (msg.method === "textDocument/documentSymbol") {
       // Foo (top-level func) with children: a real method (kept), an anonymous callback + a nested local
       // var (both outline noise → hidden by default; shown under VTS_OUTLINE_RAW=1).
