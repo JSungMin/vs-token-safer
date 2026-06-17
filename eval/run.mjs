@@ -1145,6 +1145,72 @@ const setupClangdOk =
   /clangdCmd/.test(suClangd.text) &&          // reported as a changed key
   cfPersisted.clangdCmd === fakeClangd;        // …and actually written to the config file
 
+// 58) search_text → symbol steer — a TEXT query that is really a symbol/class usage hunt (a `Foo<Bar>`
+// template arg, `::` scope, or CamelCase/snake identifier) gets a one-line nudge toward find_references /
+// search_symbol (semantic, complete, no time-box) appended to the result; freeform/keyword text does NOT.
+const { symbolHuntInText } = await import("../server/core.js");
+const huntUnitOk =
+  symbolHuntInText("FindComponentByClass<UMyComp>") === "UMyComp" &&   // template arg is the hunted type
+  symbolHuntInText("MaxWalkSpeed") === "MaxWalkSpeed" &&               // dominant CamelCase identifier
+  !!symbolHuntInText("get_value|set_value") &&                        // snake_case alternation → truthy
+  symbolHuntInText("TODO|FIXME") === null &&                          // ALL-CAPS keyword → no symbol shape
+  symbolHuntInText("just some plain words") === null;                 // prose → null
+// integration: a code scan whose q is a `<Type>` hunt steers; a plain-word q does not.
+const stDir = path.join(os.tmpdir(), `vts-eval-textsteer-${process.pid}`);
+fs.mkdirSync(stDir, { recursive: true });
+fs.writeFileSync(path.join(stDir, "use.cpp"), "auto* w = Owner->Helper<UMyWidget>();\nint plainword = 1;\n");
+const stHunt = await runTool("search_text", { q: "Helper<UMyWidget>", projectPath: stDir });
+const stPlain = await runTool("search_text", { q: "plainword", projectPath: stDir });
+const textSteerOk =
+  huntUnitOk &&
+  /find_references symbol="UMyWidget"/.test(stHunt.text) &&   // symbol hunt → steer with the right name
+  !/find_references/.test(stPlain.text);                       // plain word → no steer
+try { fs.rmSync(stDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 59) edit-warn control-flow exclusion — a multi-line `if (…) {` / `for (…) {` block edited INSIDE a
+// function body must NOT be classified as a whole declaration (dogfood-found false positive: it suggested
+// `replace_symbol_body symbol="if"`, which is not a named symbol). A real function/class decl still counts.
+const { classifyDeclEdit } = await import("../server/edit-detect.js");
+const ifBlock = "if (Pawn && Pawn->IsValid())\n{\n    DoA();\n    DoB();\n    DoC();\n    DoD();\n    DoE();\n    DoF();\n}";
+const forBlock = "for (int i = 0; i < n; ++i)\n{\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n}";
+// control-flow block whose BODY contains a DECL_KW token (`(void)` cast / `static` local) — the construct is
+// still control flow (decided by the FIRST line), so it must NOT count as a whole declaration (v0.26.2 fix;
+// the v0.26.1 fix only guarded the signature-opener branch and these still false-positived).
+const ifVoid = "if (Pawn && Pawn->IsValid())\n{\n    (void)Pawn;\n    DoA();\n    DoB();\n    DoC();\n    DoD();\n    DoE();\n}";
+const ifStatic = "if (ready)\n{\n    static int n = 0;\n    n++;\n    n++;\n    n++;\n    n++;\n    n++;\n}";
+const realFn = "void UMyClass::DoWork(int x)\n{\n    int a = x;\n    a += 1;\n    a += 2;\n    a += 3;\n    a += 4;\n    a += 5;\n    Helper(a);\n}";
+const ctrlFlowExclusionOk =
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifBlock, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: forBlock, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifVoid, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifStatic, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: realFn, new_string: "x" }).replaceDecl === true;
+
+// 60) outline-hunt Grep steer — a declaration-KEYWORD alternation (`^(function|const|export)`) is the model
+// enumerating a file's STRUCTURE, not hunting one named symbol → warn pointing at document_symbols (warn-ONLY:
+// keyword alts are FP-prone so never blocked). Was previously invisible (no code path/glob → no warn at all,
+// a top measured bypass). A CamelCase/snake identifier means a specific symbol → the symbol-hunt block path
+// owns it (not this); an ALL-CAPS keyword alt (TODO|FIXME) is neither → stays silent (no false steer).
+const oWarn = (p, extra) => nudgeCtx(runHook({ tool_name: "Grep", tool_input: { pattern: p, ...(extra || {}) } }));
+const outlineWarn = oWarn("^(function|const|export)", { path: "server/core.js" });
+const outlineSteerOk =
+  /document_symbols/.test(outlineWarn) && /server\/core\.js/.test(outlineWarn) && // keyword-alt + path → document_symbols warn naming the file
+  /document_symbols/.test(oWarn("^(function|const|async function|export)")) &&     // multi-word branch ("async function") reduced to its keyword
+  /document_symbols/.test(oWarn("^(export|import)")) &&                            // import is a structure keyword (kw≥2)
+  /document_symbols/.test(oWarn("^[ \\t]*(function|const)")) &&                    // anchor+charclass+group glued to 1st branch, per-branch cleanup
+  /document_symbols/.test(oWarn("^(function|const)$")) &&                          // trailing $ anchor stripped
+  // a keyword-only alternation that the symbol-hunt cue (`\bclass\b`) would otherwise BLOCK is steered to the
+  // outline path FIRST (it carries no specific identifier → it's an outline, not a named hunt).
+  /document_symbols/.test(oWarn("^(class|struct|enum)")) &&
+  /document_symbols/.test(oWarn("^(def|class)")) &&
+  // FP-safe: ALL-CAPS / prose / control-flow keyword alternations do NOT steer.
+  (() => { const r = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO|FIXME" } }); return r.status === 0 && !/document_symbols/.test(r.out + r.err); })() &&
+  (() => { const r = runHook({ tool_name: "Grep", tool_input: { pattern: "error|warning|info" } }); return r.status === 0 && !/document_symbols/.test(r.out + r.err); })() &&
+  // CamelCase / snake alternation stays a symbol-hunt BLOCK (owned by isSymbolHuntGrep, excluded from outline).
+  (() => { const r = runHook({ tool_name: "Grep", tool_input: { pattern: "MaxWalkSpeed|MaxExcessSpeed" } }); return r.status === 2 && !/document_symbols/.test(r.err); })() &&
+  // malformed (nested paren) → 2nd branch fails the exact keyword match → kw<2 → no steer, no crash.
+  (() => { const r = runHook({ tool_name: "Grep", tool_input: { pattern: "^(function|const(nested))" } }); return r.status === 0; })();
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1222,6 +1288,9 @@ const rows = [
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
+  ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
+  ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
+  ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
