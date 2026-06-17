@@ -51,7 +51,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   code-modification primitive: by-name resolves the decl via `c.symbol` [exact-name-then-`path`-endsWith
   ranking], `didOpen`s it, queries references at `location.range.start`; no indexed decl → `scanTextUnder`
   literal-usage fallback. Discover showed name-driven usage hunts = the top bypass; this collapses the
-  locate→position→refs dance that pushed the model to grep), `goto_definition`, `hover`, `document_symbols`,
+  locate→position→refs dance that pushed the model to grep), `goto_definition` (a `kind` param folds in
+  `type_definition`/`implementation`/`declaration` via `lsp.js gotoByKind` → 3 more LSP nav requests, NO new
+  MCP tools), `hover`, `document_symbols`, `diagnostics` (compiler/linter errors+warnings for a file as a
+  token-capped `file:line:col severity [code]: msg` list, sorted error→hint + count summary — the compact
+  alternative to reading raw build output; `lsp.js diagnosticsFor` stores publishDiagnostics PER-uri since
+  `notified` only keeps the last, waits briefly for the first publish after didOpen; eval guard 63),
   `rename` (LSP; preview by default, `apply=true` writes); SYMBOL-LEVEL EDITING (Serena-parity, the mutating
   set — all preview-by-default, `apply=true` writes): `replace_symbol_body` / `insert_after_symbol` /
   `insert_before_symbol` / `safe_delete` — `resolveSymbolForEdit` (core.js) resolves a declaration by NAME via
