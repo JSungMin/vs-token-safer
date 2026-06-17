@@ -1145,6 +1145,28 @@ const setupClangdOk =
   /clangdCmd/.test(suClangd.text) &&          // reported as a changed key
   cfPersisted.clangdCmd === fakeClangd;        // …and actually written to the config file
 
+// 58) search_text → symbol steer — a TEXT query that is really a symbol/class usage hunt (a `Foo<Bar>`
+// template arg, `::` scope, or CamelCase/snake identifier) gets a one-line nudge toward find_references /
+// search_symbol (semantic, complete, no time-box) appended to the result; freeform/keyword text does NOT.
+const { symbolHuntInText } = await import("../server/core.js");
+const huntUnitOk =
+  symbolHuntInText("FindComponentByClass<UMyComp>") === "UMyComp" &&   // template arg is the hunted type
+  symbolHuntInText("MaxWalkSpeed") === "MaxWalkSpeed" &&               // dominant CamelCase identifier
+  !!symbolHuntInText("get_value|set_value") &&                        // snake_case alternation → truthy
+  symbolHuntInText("TODO|FIXME") === null &&                          // ALL-CAPS keyword → no symbol shape
+  symbolHuntInText("just some plain words") === null;                 // prose → null
+// integration: a code scan whose q is a `<Type>` hunt steers; a plain-word q does not.
+const stDir = path.join(os.tmpdir(), `vts-eval-textsteer-${process.pid}`);
+fs.mkdirSync(stDir, { recursive: true });
+fs.writeFileSync(path.join(stDir, "use.cpp"), "auto* w = Owner->Helper<UMyWidget>();\nint plainword = 1;\n");
+const stHunt = await runTool("search_text", { q: "Helper<UMyWidget>", projectPath: stDir });
+const stPlain = await runTool("search_text", { q: "plainword", projectPath: stDir });
+const textSteerOk =
+  huntUnitOk &&
+  /find_references symbol="UMyWidget"/.test(stHunt.text) &&   // symbol hunt → steer with the right name
+  !/find_references/.test(stPlain.text);                       // plain word → no steer
+try { fs.rmSync(stDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1222,6 +1244,7 @@ const rows = [
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
+  ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
