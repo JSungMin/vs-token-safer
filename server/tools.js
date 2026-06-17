@@ -33,24 +33,24 @@ export const TOOLS = [
         line: { type: "number", description: "0-based line." },
         character: { type: "number", description: "0-based column." },
         includeDeclaration: { type: "boolean", description: "Include the declaration." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
     },
   },
   {
     name: "goto_definition",
-    description: "Definition of the symbol at a 0-based position (semantic). → token-capped `file:line`.",
+    description: "Definition of the symbol at a 0-based position (semantic, read-only). → token-capped `file:line` (empty if it can't resolve). For all usages instead, use find_references.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Source file containing the symbol." },
         line: { type: "number", description: "0-based line of the symbol position." },
         character: { type: "number", description: "0-based character/column of the symbol position." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["path", "line", "character"],
     },
@@ -64,22 +64,22 @@ export const TOOLS = [
         path: { type: "string", description: "Source file." },
         line: { type: "number", description: "0-based line." },
         character: { type: "number", description: "0-based character/column." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
       },
       required: ["path", "line", "character"],
     },
   },
   {
     name: "document_symbols",
-    description: "Outline one file (classes/functions/types) → `kind name @ file:line`. Cheaper than reading it.",
+    description: "Outline one file — its classes/functions/types as a token-capped `kind name :line` list (the file is named once in the header; read-only, capped at maxResults). Cheaper than reading the whole file to see its structure.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File to outline." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["path"],
     },
@@ -97,9 +97,9 @@ export const TOOLS = [
         character: { type: "number", description: "0-based character/column of the symbol." },
         newName: { type: "string", description: "New name for the symbol." },
         apply: { type: "boolean", description: "Write the edits to disk (default false = preview only)." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["path", "line", "character", "newName"],
     },
@@ -108,7 +108,8 @@ export const TOOLS = [
     name: "replace_symbol_body",
     description:
       "Replace a whole declaration (signature + body) by NAMING it — the outline gives the exact span, so no " +
-      "Read-the-file + line-counting for an exact-match Edit. PREVIEW by default; apply=true writes.",
+      "Read-the-file + line-counting for an exact-match Edit. PREVIEW by default returns the affected " +
+      "`file:line`; apply=true OVERWRITES the declaration on disk.",
     inputSchema: {
       type: "object",
       properties: {
@@ -117,9 +118,9 @@ export const TOOLS = [
         path: { type: "string", description: "File holding the symbol (pins the outline; else resolved via the index)." },
         line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
         apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["symbol", "body"],
     },
@@ -128,7 +129,7 @@ export const TOOLS = [
     name: "insert_after_symbol",
     description:
       "Insert text after a named declaration (e.g. a sibling function/method) — outline gives the point, no " +
-      "Read needed. PREVIEW by default; apply=true writes.",
+      "Read needed. PREVIEW by default returns the affected `file:line`; apply=true WRITES to the file on disk.",
     inputSchema: {
       type: "object",
       properties: {
@@ -137,9 +138,9 @@ export const TOOLS = [
         path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
         line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
         apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["symbol", "text"],
     },
@@ -148,7 +149,8 @@ export const TOOLS = [
     name: "insert_before_symbol",
     description:
       "Insert text before a named declaration (e.g. an import/attribute/decorator above it). PREVIEW by " +
-      "default; apply=true writes.",
+      "default returns the affected `file:line`; apply=true WRITES to the file on disk. Use instead of " +
+      "Read-then-Edit to add a declaration.",
     inputSchema: {
       type: "object",
       properties: {
@@ -157,9 +159,9 @@ export const TOOLS = [
         path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
         line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
         apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["symbol", "text"],
     },
@@ -177,9 +179,9 @@ export const TOOLS = [
         line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
         force: { type: "boolean", description: "Delete even if references remain (default false = refuse when referenced)." },
         apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
-        projectPath: { type: "string" },
-        backend: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["symbol"],
     },
@@ -188,13 +190,13 @@ export const TOOLS = [
     name: "find_files",
     description:
       "Find files by name (substring or glob like *Manager.cpp) — replaces Bash `find -name`. → token-capped " +
-      "file list. No backend needed.",
+      "file list; walk-bounded (skips node_modules/Intermediate/Binaries, time-boxed). Read-only, no backend needed.",
     inputSchema: {
       type: "object",
       properties: {
         q: { type: "string", description: "Filename substring or glob (* ? supported)." },
-        projectPath: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["q"],
     },
@@ -211,8 +213,8 @@ export const TOOLS = [
         q: { type: "string", description: "String or regular expression to find." },
         path: { type: "string", description: "Search ONE file (any extension auto-included; relative or absolute)." },
         glob: { type: "string", description: "Only files matching this basename glob (e.g. *.md) — any extension it covers." },
-        projectPath: { type: "string" },
-        maxResults: { type: "number" },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        maxResults: { type: "number", description: "Result cap (default 60)." },
         docs: { type: "boolean", description: "With no path/glob, widen the sweep to docs/config text (md/json/yaml/…), not just source." },
       },
       required: ["q"],
