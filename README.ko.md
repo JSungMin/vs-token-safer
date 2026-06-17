@@ -14,6 +14,10 @@
 > 토큰 상한이 걸린 채 돌아옵니다. 여기에 수십 MB짜리 에디터 로그를 대화에 쏟아붓지 않고 읽어 주는 형제
 > 플러그인이 따라옵니다. 둘 다 단순 방식보다 토큰을 약 99% 덜 씁니다. **로컬 전용, IDE 불필요.**
 
+<p align="center">
+  <img src="docs/vts-demo.gif" alt="vs-token-safer 데모 — grep은 소스를 컨텍스트에 쏟아붓지만, 언어 서버 인덱스는 토큰 상한이 걸린 file:line만 돌려줍니다" width="760">
+</p>
+
 ```text
 # Claude가 코드를 grep하려 하면 → 훅이 그 자리에서 인덱스 질의로 바꿔치기:
 $ grep -rn "SpawnActor" Source/**/*.cpp
