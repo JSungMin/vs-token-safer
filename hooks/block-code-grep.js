@@ -313,12 +313,14 @@ function editWarnOn() { const v = String(process.env.VTS_EDIT_WARN ?? "1").toLow
 function editMinLines() { const n = Number(process.env.VTS_EDIT_MIN_LINES); return Number.isFinite(n) && n > 0 ? n : 8; }
 // Best-effort declaration name from a code chunk, so the nudge can name the symbol (a ready call beats a
 // vague hint — the SkillOpt "actionable artifact" principle). null when no name is confidently found.
+const RESERVED_CALLEE = /^(?:if|for|while|switch|catch|return|sizeof|do|else|case|with)$/;
 function declSymbolName(chunk) {
   const c = String(chunk || "");
   let m;
   if ((m = c.match(/\b(?:class|struct|enum|interface|namespace)\s+([A-Za-z_]\w*)/))) return m[1];
   if ((m = c.match(/\b(?:def|function|func|fn)\s+([A-Za-z_]\w*)/))) return m[1];
-  if ((m = c.match(/^[^\n=;]*?\b([A-Za-z_]\w*)\s*\([^;{)]*\)\s*(?:const)?\s*\{?\s*$/m))) return m[1]; // a signature line
+  // a signature line — but a control-flow header (`if (…) {`, `for (…) {`) also matches it; never name those.
+  if ((m = c.match(/^[^\n=;]*?\b([A-Za-z_]\w*)\s*\([^;{)]*\)\s*(?:const)?\s*\{?\s*$/m)) && !RESERVED_CALLEE.test(m[1])) return m[1];
   return null;
 }
 function editNudgeFor(toolName, ti) {

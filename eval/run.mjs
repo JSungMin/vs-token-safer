@@ -1167,6 +1167,18 @@ const textSteerOk =
   !/find_references/.test(stPlain.text);                       // plain word → no steer
 try { fs.rmSync(stDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 59) edit-warn control-flow exclusion — a multi-line `if (…) {` / `for (…) {` block edited INSIDE a
+// function body must NOT be classified as a whole declaration (dogfood-found false positive: it suggested
+// `replace_symbol_body symbol="if"`, which is not a named symbol). A real function/class decl still counts.
+const { classifyDeclEdit } = await import("../server/edit-detect.js");
+const ifBlock = "if (Pawn && Pawn->IsValid())\n{\n    DoA();\n    DoB();\n    DoC();\n    DoD();\n    DoE();\n    DoF();\n}";
+const forBlock = "for (int i = 0; i < n; ++i)\n{\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n}";
+const realFn = "void UMyClass::DoWork(int x)\n{\n    int a = x;\n    a += 1;\n    a += 2;\n    a += 3;\n    a += 4;\n    a += 5;\n    Helper(a);\n}";
+const ctrlFlowExclusionOk =
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifBlock, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: forBlock, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: realFn, new_string: "x" }).replaceDecl === true;
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1245,6 +1257,7 @@ const rows = [
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
   ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
+  ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

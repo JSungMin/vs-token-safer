@@ -77,7 +77,12 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set;
   ALSO MEASURES THE EDIT HABIT — `classifyDeclEdit` (server/edit-detect.js, SHARED with the enforcement hook)
   flags a built-in Edit/MultiEdit whose `old_string` is a whole declaration (replace → `replaceDecl`) OR whose
-  `new_string` is (add → `insertDecl`) on a code file (≥`VTS_EDIT_MIN_LINES`+decl cue), and attributes that
+  `new_string` is (add → `insertDecl`) on a code file (≥`VTS_EDIT_MIN_LINES`+decl cue). CONTROL-FLOW EXCLUSION
+  (dogfood-found FP): a `) {` opener also matches `if/for/while/switch/catch (…) {`, so `isWholeDecl` now only
+  counts the opener when the callee identifier is NOT a reserved control-flow keyword (else a multi-line
+  `if(…){…}` block edited inside a body was flagged a whole decl → suggested `replace_symbol_body symbol="if"`,
+  not a named symbol); the hook's `declSymbolName` likewise refuses a reserved keyword as the symbol name. Eval
+  guard 59. It attributes that
   file's PRIOR Read tokens [`reads`/`readUse` Read↔Edit correlation in `scanBypasses`, read counted ONCE] = the
   read a symbol-edit would've skipped → `edit habit:` line; ALSO `editUnreached` = how many had NO prior vts
   search on that file [`searchUse`/`searchedBn` basename match] = the fraction the search-result steer CAN'T
