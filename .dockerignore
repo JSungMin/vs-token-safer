@@ -1,0 +1,18 @@
+# The Docker image only needs server/ (see Dockerfile). Keep the build context lean + reproducible:
+# node_modules are reinstalled in-image, and everything below is irrelevant to running the MCP server.
+.git
+.github
+.omc
+**/node_modules
+**/.cache
+eval
+benchmarks
+skills
+commands
+agents
+hooks
+docs
+*.md
+*.log
+.claude-plugin
+.vscode
