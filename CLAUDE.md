@@ -71,7 +71,13 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   p4 opened/status/reconcile→by action+depot-dir, changes→terse. The rtk slice under our roof + ledger;
   the grep-block hook reroutes a single read-only `git status|log|diff` / `p4 opened|status|changes|reconcile`
   here via `buildVcsRewrite` — never blocks, `VTS_COMPACT_VCS=0` disables. `git grep` stays a CODE search.
-  CLI `vts git/p4` are full arg passthrough → run in cwd, no `--projectPath`); `vts_warmup`, `vts_setup`,
+  CLI `vts git/p4` are full arg passthrough → run in cwd, no `--projectPath`). MCP-SURFACE FOLD: the 9 cold
+  admin/meta tools (`vts_git`/`vts_p4`/`vts_setup`/`vts_config`/`vts_savings`/`vts_savings_reset`/`vts_discover`/
+  `vts_warmup`/`vts_gen_compile_db`) are NO LONGER advertised individually — they're folded behind ONE
+  `vts_admin{op,params}` MCP tool (index.js maps `vts_admin`→`runTool("vts_"+op,params)`; hot search/nav/edit
+  tools stay first-class so the model still reaches for them). core.js runTool + the CLI keep the individual
+  `vts_*` names UNCHANGED (the grep-block hook still reroutes git/p4 to the CLI, not this tool); eval guard 62.
+  The folded ops: `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set;
