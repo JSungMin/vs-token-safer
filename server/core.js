@@ -885,6 +885,29 @@ function fmtLocations(locs, max, label) {
 }
 export { compactLocationLines, commonDirPrefix };
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
+// LSP DiagnosticSeverity. Diagnostics (compiler/linter errors+warnings) as a token-capped
+// `file:line:col severity [code]: message` list, sorted error→hint then by line, with a count summary —
+// the compact alternative to reading raw build/compiler output. Messages are trimmed (trimMatchLine).
+const DIAG_SEV = { 1: "error", 2: "warning", 3: "info", 4: "hint" };
+function fmtDiagnostics(diags, file, max) {
+  const arr = Array.isArray(diags) ? diags : [];
+  if (!arr.length) return "  (no diagnostics — clean)";
+  const fileRel = String(file).replace(/\\/g, "/");
+  const sorted = arr.slice().sort((a, b) => (a.severity || 9) - (b.severity || 9) || ((a.range && a.range.start ? a.range.start.line : 0) - (b.range && b.range.start ? b.range.start.line : 0)));
+  const shown = sorted.slice(0, max);
+  const body = shown.map((d) => {
+    const ln = (d.range && d.range.start ? d.range.start.line : 0) + 1;
+    const col = (d.range && d.range.start ? d.range.start.character : 0) + 1;
+    const sev = DIAG_SEV[d.severity] || "diag";
+    const code = d.code !== undefined && d.code !== null && d.code !== "" ? ` [${d.code}]` : "";
+    return `  ${fileRel}:${ln}:${col} ${sev}${code}: ${trimMatchLine(String(d.message || "").replace(/\s+/g, " "))}`;
+  }).join("\n");
+  const counts = {};
+  for (const d of arr) { const s = DIAG_SEV[d.severity] || "diag"; counts[s] = (counts[s] || 0) + 1; }
+  const summary = ["error", "warning", "info", "hint", "diag"].filter((k) => counts[k]).map((k) => `${counts[k]} ${k}`).join(", ");
+  const more = arr.length - shown.length;
+  return `${summary}:\n` + body + (more > 0 ? `\n… ${more} more.` : "");
+}
 function fmtHover(h) {
   if (!h || !h.contents) return "(no hover info)";
   let c = h.contents;
@@ -1451,10 +1474,21 @@ export async function runTool(name, a = {}) {
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
       const c = await getClient(root, backendName);
-      const locs = (await c.definition(a.path, Number(a.line), Number(a.character))) || [];
+      c.didOpen(a.path, lang); // re-read the file so the position resolves against current disk text
+      const KIND_LABEL = { definition: "definition", type_definition: "type definition", implementation: "implementation", declaration: "declaration" };
+      const kind = KIND_LABEL[String(a.kind || "definition")] ? String(a.kind || "definition") : "definition";
+      const label = KIND_LABEL[kind];
+      const locs = (await c.gotoByKind(kind, a.path, Number(a.line), Number(a.character))) || [];
       try { recordQueryResults(root, (Array.isArray(locs) ? locs : [locs]).filter(Boolean).map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
       const defEdit = editSteerOn() && (Array.isArray(locs) ? locs.length : !!locs) ? EDIT_STEER : ""; // landed on a decl → edit precursor
-      return finishOut(locs, backendAdvisory(backendName, root) + `definition of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, "definition(s)") + defEdit);
+      return finishOut(locs, backendAdvisory(backendName, root) + `${label} of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, `${label}(s)`) + defEdit);
+    }
+    if (name === "diagnostics") {
+      if (!a.path) return err("diagnostics needs path (the file to check for errors/warnings).");
+      const c = await getClient(root, backendName);
+      c.didOpen(a.path, lang); // parse the file so the server publishes its diagnostics
+      const diags = (await c.diagnosticsFor(a.path)) || [];
+      return finishOut(diags, backendAdvisory(backendName, root) + `diagnostics for ${a.path} (backend: ${backendName}):\n` + fmtDiagnostics(diags, a.path, max));
     }
     if (name === "hover") {
       if (!a.path || a.line == null || a.character == null) return err("hover needs path, line, character (0-based position).");
