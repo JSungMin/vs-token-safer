@@ -311,6 +311,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_GREP_BLOCK` | `1` | `0`이면 **Grep/Glob 도구** 격상을 차단에서 경고로 되돌림. |
 | — | `VTS_EDIT_STEER` | `1` | `0`이면 포커스된 `search_symbol`/`goto_definition` 결과에 붙는 심볼편집 도구 안내 한 줄을 숨김. `VTS_EDIT_STEER_MAX`(`10`)는 안내가 붙는 결과 크기 상한. |
 | — | `VTS_EDIT_WARN` | `1` | `0`이면 built-in Edit/MultiEdit가 **선언 통째**를 교체/추가할 때 뜨는 모델 가시 넛지를 끔(`replace_symbol_body`/`insert_after_symbol` 안내). 선언 일부 수정은 넛지 안 함. |
+| — | `VTS_TEXT_STEER` | `1` | `0`이면 `search_text` 쿼리가 실은 **심볼/클래스 사용처 헌트**(`Foo<Bar>` 템플릿 인자, `::` 스코프, CamelCase/snake 식별자)일 때 붙는 한 줄 힌트를 끔 — `find_references`/`search_symbol`로 안내(시맨틱·**완전**·4s 타임박스 없음). 스캔이 잘렸거나 쿼리에 `<>`/`::` 단서가 있을 때만 발화. |
 | — | `VTS_EDIT_BLOCK_AFTER` | `0` (꺼짐) | **옵트인.** ≥1로 두면 넛지를 연속 이만큼 무시했을 때 안전한 insert를 **1회 차단**(그 후 리셋 — 영구 벽 아님). 기본 꺼짐: 영구 차단이 에이전트를 가둠(전환 대신 Edit 재시도로 벽과 싸움). replace는 항상 warn; `VTS_GREP_BLOCK=0`도 warn으로 묶음. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | 면제할 실행 파일 콤마 목록 (설정의 `excludeCommands`도). |
 | — | `VTS_COMPACT_VCS` | `1` | `0`이면 읽기 전용 `git`/`p4`의 압축 래퍼 우회를 멈춤. |
