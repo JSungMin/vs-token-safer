@@ -124,6 +124,37 @@ const EMPTY_HINT =
   "match. search_symbol matches DEFINITIONS, not every reference. Looking for something in a LOG? Logs " +
   "aren't indexed — use gamedev-log.";
 const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
+// search_text → symbol steer (dogfood-found): a TEXT query that is really a SYMBOL/CLASS usage hunt — a
+// template arg `Foo<Bar>`, a `::` scope, or a dominant CamelCase/snake identifier — is answered better by
+// find_references / search_symbol: the LSP index is COMPLETE (no 4s time-box) and ~10–20× smaller. The
+// model reached for search_text on `FindComponentByClass<UMyComp>` and got an 8-of-49 time-boxed slice;
+// find_references returned all 49 at 19× compaction. Pull the most likely target NAME: a `<Type>` template
+// arg wins (that's what's being hunted), else the longest CamelCase/snake identifier. Returns null when the
+// query carries no symbol-shaped token (`TODO|FIXME`, freeform prose) → no steer, no noise.
+export function symbolHuntInText(q) {
+  const s = String(q || "");
+  if (!s || s.length > 200) return null;
+  const tmpl = /<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>/.exec(s);
+  if (tmpl) return tmpl[1];
+  const ids = s.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || [];
+  const cand = ids.filter((w) => /[a-z][A-Z]/.test(w) || /[a-z0-9]_[a-z]/.test(w));
+  if (!cand.length) return null;
+  return cand.sort((a, b) => b.length - a.length)[0];
+}
+const textSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_TEXT_STEER ?? "1"));
+// Build the one-line steer, or "" — fires only on a clear symbol hunt that would actually benefit: the
+// scan was TRUNCATED (completeness now matters) OR the query carries a `<>`/`::` code cue. A bare CamelCase
+// text search that completed fine isn't nagged.
+function textSymbolSteer(q, truncated) {
+  if (!textSteerOn()) return "";
+  const sym = symbolHuntInText(q);
+  if (!sym) return "";
+  const strong = /::|<|>/.test(String(q));
+  if (!truncated && !strong) return "";
+  return truncated
+    ? `\n↪ "${sym}" looks like a symbol and this text scan was TRUNCATED. find_references symbol="${sym}" is semantic + COMPLETE (no time-box) and ~10–20× smaller; search_symbol q="${sym}" for the declaration.`
+    : `\n↪ Hunting where "${sym}" is declared/used? find_references symbol="${sym}" / search_symbol q="${sym}" use the LSP index — semantic and token-capped, unlike a text scan.`;
+}
 // Appended to a FOCUSED symbol/definition result: the model just located a declaration, the moment right
 // BEFORE it would Read the whole file to Edit it. Point it at the symbol-edit tools, which edit by NAME and
 // skip that read — the token win lives here (upstream of Edit), not at the Edit call. Additive, one line,
@@ -1246,10 +1277,20 @@ export async function runTool(name, a = {}) {
         scopeLabel = docs ? "text+docs" : "text; for symbols prefer search_symbol";
       }
       const hits = runScan(max);
-      if (!hits.length) return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}.` + LOG_EMPTY_HINT);
+      if (!hits.length) {
+        // 0 matches but the 4s walk TIMED OUT before finishing → not genuinely absent, just unreached (this
+        // is exactly how a usage hunt on a giant tree returns an empty/partial slice). Say so, and steer a
+        // symbol hunt to find_references (semantic, walks no tree, complete).
+        const toNote = hits.truncated === "time" ? " — but the 4s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here)" : "";
+        const emptySteer = (!docs && !a.path && hits.truncated) ? textSymbolSteer(a.q, true) : "";
+        return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer);
+      }
       let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
       if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + hits.join("\n"));
+      // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
+      // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
+      const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + hits.join("\n") + steer);
     }
     // vts_git / vts_p4 — run the real VCS command and COMPACT its output before it reaches the model. The
     // language-server index can't help here (status/log/diff/opened aren't source symbols), but the raw dump
