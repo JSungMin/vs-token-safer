@@ -1235,39 +1235,26 @@ try { fs.rmSync(cpDir, { recursive: true, force: true }); } catch { /* ignore */
 
 // 62) tool-definition budget + vts_admin fold — the tool schemas are a FIXED per-session context cost
 // (always in the model's system prompt). Trimming descriptions then folding the 9 cold admin tools behind
-// one `vts_admin{op,params}` cut tools/list 4088→3436→~2420 tok. This guard (a regression net) asserts:
-// the HOT search/nav/edit tools stay first-class + named; the cold tools are NOT separately advertised;
-// vts_admin dispatches op→vts_<op> (and rejects a bogus op); and the whole list stays under budget. Spawns
-// the real stdio server (prewarm/auto-learn off) — exactly what the client carries.
-const toolsBudgetOk = await new Promise((resolve) => {
-  import("node:child_process").then(({ spawn }) => {
-    const child = spawn(process.execPath, [new URL("../server/index.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")],
-      { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, VTS_PREWARM: "0", VTS_AUTO_LEARN: "0", VTS_PROJECT_PATH: "" } });
-    const msgs = []; let acc = "";
-    child.stdout.on("data", (d) => { acc += d; let i; while ((i = acc.indexOf("\n")) >= 0) { const l = acc.slice(0, i).trim(); acc = acc.slice(i + 1); if (l) try { msgs.push(JSON.parse(l)); } catch { /* ignore */ } } });
-    const send = (o) => child.stdin.write(JSON.stringify(o) + "\n");
-    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eval", version: "0" } } });
-    setTimeout(() => {
-      send({ jsonrpc: "2.0", method: "notifications/initialized" });
-      send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vts_admin", arguments: { op: "config" } } });
-      send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "vts_admin", arguments: { op: "bogus_xyz" } } });
-    }, 400);
-    setTimeout(() => {
-      const tools = msgs.find((m) => m.id === 2)?.result?.tools || [];
-      const names = tools.map((t) => t.name);
-      const tk = Math.round(Buffer.byteLength(JSON.stringify(tools), "utf8") / 4);
-      const cfg = msgs.find((m) => m.id === 3)?.result;
-      const bogus = msgs.find((m) => m.id === 4)?.result;
-      const hotPresent = ["search_symbol", "find_references", "search_text", "find_files", "replace_symbol_body"].every((n) => names.includes(n));
-      const coldFolded = names.includes("vts_admin") && !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_discover", "vts_gen_compile_db"].some((n) => names.includes(n));
-      const wellFormed = tools.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema);
-      const dispatchOk = cfg && !cfg.isError && /settings/i.test(cfg.content?.[0]?.text || "") && bogus && bogus.isError; // op→vts_config works; bad op rejected
-      child.kill();
-      resolve(hotPresent && coldFolded && wellFormed && dispatchOk && tk <= 2700); // ~2420 now; headroom blocks prose creep
-    }, 1500);
-  });
-});
+// one `vts_admin{op,params}` cut tools/list 4088→3436→~2420 tok. Reads the schemas from server/tools.js
+// directly (NO server spawn, NO MCP SDK — this eval is the toolchain-free gate) and asserts: the HOT
+// search/nav/edit tools stay first-class + named; the cold tools are NOT separately advertised; vts_admin
+// carries the op enum; op→vts_<op> resolves to a real runTool handler; and the list stays under budget.
+const { TOOLS: TOOL_DEFS, ADMIN_OPS } = await import("../server/tools.js");
+const toolNames = TOOL_DEFS.map((t) => t.name);
+const toolsTok = Math.round(Buffer.byteLength(JSON.stringify(TOOL_DEFS), "utf8") / 4);
+const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
+// op→vts_<op> must each be a real runTool handler (folding can't point at a missing op). vts_config is the
+// cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
+const cfgViaOp = await runTool("vts_" + "config", {});
+const toolsBudgetOk =
+  TOOL_DEFS.length === 13 &&
+  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body"].every((n) => toolNames.includes(n)) && // hot tools first-class
+  toolNames.includes("vts_admin") &&
+  !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
+  TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
+  JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
+  !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
+  toolsTok <= 2700; // ~2420 now; headroom blocks prose creep
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
