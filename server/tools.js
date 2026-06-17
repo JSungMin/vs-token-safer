@@ -41,18 +41,33 @@ export const TOOLS = [
   },
   {
     name: "goto_definition",
-    description: "Definition of the symbol at a 0-based position (semantic, read-only). → token-capped `file:line` (empty if it can't resolve). For all usages instead, use find_references.",
+    description: "Jump from the symbol at a 0-based position to its definition (semantic, read-only). `kind` picks which: definition (default) | type_definition (the type of an expression) | implementation (concrete impls of an interface/abstract/virtual) | declaration. → token-capped `file:line` (empty if it can't resolve). For all usages instead, use find_references.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Source file containing the symbol." },
         line: { type: "number", description: "0-based line of the symbol position." },
         character: { type: "number", description: "0-based character/column of the symbol position." },
+        kind: { type: "string", description: "definition (default) | type_definition | implementation | declaration." },
         projectPath: { type: "string", description: "Project root (default cwd)." },
         backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
         maxResults: { type: "number", description: "Result cap (default 60)." },
       },
       required: ["path", "line", "character"],
+    },
+  },
+  {
+    name: "diagnostics",
+    description: "Compiler/linter errors + warnings for ONE file (semantic, via the language server) → a token-capped `file:line:col severity [code]: message` list, sorted error→hint with a count summary. The compact alternative to reading raw build/compiler output. Read-only; empty = clean.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Source file to check." },
+        projectPath: { type: "string", description: "Project root (default cwd)." },
+        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
+        maxResults: { type: "number", description: "Max diagnostics returned (default 60)." },
+      },
+      required: ["path"],
     },
   },
   {

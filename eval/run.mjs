@@ -1251,15 +1251,38 @@ const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
 // cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
 const cfgViaOp = await runTool("vts_" + "config", {});
 const toolsBudgetOk =
-  TOOL_DEFS.length === 13 &&
+  TOOL_DEFS.length === 14 && // 12 hot search/nav/edit + diagnostics + vts_admin
   ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
   !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
-  toolsTok <= 3000; // ~2899: fold floor was ~2420; +~480 is the deliberate Glama tool-quality re-add
-                    // (side-effect/output-format disclosure + terse param descriptions). Cap blocks prose creep.
+  toolsTok <= 3200; // ~3030: fold floor ~2420 + Glama tool-quality re-add (~480) + the diagnostics tool +
+                    // goto `kind` (~130). Cap still blocks prose creep.
+
+// 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
+// `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
+// didOpen) for a "diag"-named file, none for a clean one; the goto kinds route to the matching LSP method.
+const lspDir = path.join(os.tmpdir(), `vts-eval-lsp-${process.pid}`);
+fs.mkdirSync(lspDir, { recursive: true });
+fs.writeFileSync(path.join(lspDir, "with_diag.cpp"), "int main(){return 0;}\n");
+fs.writeFileSync(path.join(lspDir, "clean.cpp"), "int ok(){return 1;}\n");
+const dg = await runTool("diagnostics", { path: path.join(lspDir, "with_diag.cpp"), projectPath: lspDir, backend: "clangd" });
+const dgClean = await runTool("diagnostics", { path: path.join(lspDir, "clean.cpp"), projectPath: lspDir, backend: "clangd" });
+const gImpl = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "implementation", projectPath: lspDir, backend: "clangd" });
+const gType = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "type_definition", projectPath: lspDir, backend: "clangd" });
+const gDef = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, projectPath: lspDir, backend: "clangd" });
+const lspGlueOk =
+  // diagnostics: summary + sorted error-before-warning + file:line:col + [code] + message
+  !dg.isError && /1 error, 1 warning/.test(dg.text) && /:5:3 error \[E001\]: use of undeclared/.test(dg.text) &&
+  dg.text.indexOf("E001") < dg.text.indexOf("unused variable") &&
+  !dgClean.isError && /no diagnostics/.test(dgClean.text) &&
+  // goto kinds route to the right LSP method (distinct mock locations) with the right label
+  !gImpl.isError && /implementation of/.test(gImpl.text) && /Impl\.cpp:101/.test(gImpl.text) &&
+  !gType.isError && /type definition of/.test(gType.text) && /Type\.cpp:201/.test(gType.text) &&
+  !gDef.isError && /Foo\.cpp:42/.test(gDef.text) && /^definition of .*clean\.cpp/.test(gDef.text);
+try { fs.rmSync(lspDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
@@ -1342,7 +1365,8 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
-  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3000 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3200 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["LSP glue: diagnostics tool + goto kinds (typeDef/impl/decl)", lspGlueOk, "true", lspGlueOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
