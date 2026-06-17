@@ -12,6 +12,7 @@
     "eval:steer": "node eval/test-edit-steer.mjs",
     "eval:skillopt": "node eval/skillopt/selftest.mjs",
     "test": "npm run eval && npm run eval:steer && npm run eval:skillopt",
+    "bench": "node benchmarks/run.mjs",
     "bump": "node scripts/bump.mjs"
   },
   "devDependencies": {

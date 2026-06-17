@@ -1211,6 +1211,28 @@ const outlineSteerOk =
   // malformed (nested paren) → 2nd branch fails the exact keyword match → kw<2 → no steer, no crash.
   (() => { const r = runHook({ tool_name: "Grep", tool_input: { pattern: "^(function|const(nested))" } }); return r.status === 0; })();
 
+// 61) common-prefix factoring for find_files + search_text — both previously repeated the full absolute path
+// on EVERY row (benchmark-found: find_files ~32%, search_text ~54% reduction). factorCommonPrefix prints the
+// shared directory once as `under <prefix>/` with relative tails, the same token-saver fmtLocations uses.
+const cpDir = path.join(os.tmpdir(), `vts-eval-prefix-${process.pid}`);
+fs.mkdirSync(path.join(cpDir, "sub"), { recursive: true });
+fs.writeFileSync(path.join(cpDir, "sub", "alpha.ts"), "const NEEDLE_one = 1;\n");
+fs.writeFileSync(path.join(cpDir, "sub", "beta.ts"), "const NEEDLE_two = 2;\n");
+const cpFiles = await runTool("find_files", { q: ".ts", projectPath: cpDir });
+const cpText = await runTool("search_text", { q: "NEEDLE", projectPath: cpDir });
+const cpAbs = new RegExp(cpDir.replace(/\\/g, "/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/sub/alpha\\.ts");
+process.env.VTS_COMPACT_RESULTS = "0";
+const cpOff = await runTool("find_files", { q: ".ts", projectPath: cpDir });
+delete process.env.VTS_COMPACT_RESULTS;
+const prefixFactoringOk =
+  // find_files: one `under <prefix>/` header + relative tails (alpha.ts/beta.ts), not the full path per row.
+  !cpFiles.isError && /under .*sub\//.test(cpFiles.text) && /\n {2}alpha\.ts\b/.test(cpFiles.text) && /\n {2}beta\.ts\b/.test(cpFiles.text) &&
+  // search_text: same factoring, tails keep `:line: text`.
+  !cpText.isError && /under .*sub\//.test(cpText.text) && /\n {2}alpha\.ts:1: /.test(cpText.text) &&
+  // VTS_COMPACT_RESULTS=0 → classic per-row (no `under` header, full absolute path on each line).
+  !cpOff.isError && !/under .*sub\//.test(cpOff.text) && cpAbs.test(cpOff.text);
+try { fs.rmSync(cpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1291,6 +1313,7 @@ const rows = [
   ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
+  ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
