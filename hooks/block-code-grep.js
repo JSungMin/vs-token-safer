@@ -357,6 +357,55 @@ function isSymbolHuntGrep(ti) {
   if (pat.includes("|") && /[a-z][A-Z]|[a-z][a-z0-9]*_[a-z]/.test(pat)) return true;        // (3) CamelCase/snake alternation
   return false;
 }
+// An OUTLINE hunt (vs a symbol hunt): an alternation built mostly of declaration KEYWORDS — `^(function|
+// const|async function|export|//\s*----)`, `^(void|class|struct)` — is the model enumerating the
+// DECLARATION STRUCTURE of a file, not hunting one named symbol. The right tool is `document_symbols` (the
+// token-capped, noise-filtered outline), not search_text. WARN-only, never block: keyword alternations are
+// FP-prone (`const` in config, `export` in shell), and document_symbols needs a target file the grep may not
+// name. Distinct from isSymbolHuntGrep — a CamelCase/snake_case identifier means a SPECIFIC symbol (that path
+// handles it), so it's excluded here. Measured: `^(function|const|...|//\s*----)` was a top bypass that the
+// hook didn't even warn on (no code path/glob → invisible). VTS_GREP_BLOCK has no bearing (warn-only).
+const OUTLINE_KW = /^(?:function|func|fn|def|class|struct|enum|interface|namespace|module|const|let|var|type|typedef|using|import|export|require|package|public|private|protected|static|async|void|template|impl|trait|proc|sub|abstract|final|override|virtual|extends|implements|pub)$/;
+// Reduce one alternation branch to the bare keyword it carries: strip a leading regex anchor (`^`), a
+// group-open (`(` / `(?:`), a whitespace matcher (`\s*`, `[ \t]*`), and a trailing `)`, then take the LAST
+// word (so `async function` / `export const` → `function` / `const`). The first branch of `^\s*(function|…)`
+// arrives glued to the anchor+group; without this it failed the keyword test and a 2-branch outline was
+// missed (real-case test: `^[ \t]*(function|const)`, `^(export|import)`).
+function outlineKeywordOf(branch) {
+  const s = String(branch).trim()
+    .replace(/^\^/, "")                                    // ^ anchor
+    .replace(/^\((?:\?:)?/, "")                            // ( or (?:
+    .replace(/^(?:\\s[*+?]?|\[[^\]]*\][*+?]?|\s)+/, "")    // \s* / [ \t]* / literal whitespace
+    .replace(/^\((?:\?:)?/, "")                            // a group-open that followed the whitespace
+    .replace(/[)$\s]+$/, "")                               // trailing ), $ anchor, whitespace (any order)
+    .trim();
+  const words = s.split(/\s+/).filter(Boolean);
+  return words.length ? words[words.length - 1] : s;
+}
+function isOutlineHuntGrep(ti) {
+  const pat = String(ti.pattern || "");
+  if (!pat.includes("|") || pat.length > 200) return false;
+  if (/[a-z][A-Z]|[a-z][a-z0-9]*_[a-z]/.test(pat)) return false; // a CamelCase/snake id → a specific symbol, not an outline
+  const branches = pat.split("|").map(outlineKeywordOf).filter(Boolean);
+  if (branches.length < 2) return false;
+  const kw = branches.filter((b) => OUTLINE_KW.test(b)).length;
+  return kw >= 2; // ≥2 declaration-keyword branches → a structure/outline hunt → document_symbols
+}
+function outlineNudgeFor(ti) {
+  const p = ti.path ? String(ti.path) : "";
+  const call = p && p.length <= 120
+    ? (KO ? ` 바로 쓸 수 있는 토큰캡 호출: document_symbols path="${p}".` : ` Equivalent token-capped call: document_symbols path="${p}".`)
+    : (KO ? ` 바로 쓸 수 있는 토큰캡 호출: document_symbols path="<파일>".` : ` Equivalent token-capped call: document_symbols path="<file>".`);
+  return KO
+    ? "[vs-token-safer] 선언 키워드(function/const/class/…)로 파일 구조를 훑고 있네요. 그건 '아웃라인' 요청이라 " +
+      "document_symbols가 정확합니다 — 언어 서버가 클래스/함수/메서드/필드 구조를 file:line으로 주고, 익명 콜백·중첩 " +
+      "로컬 노이즈를 걸러 토큰캡됩니다 (정규식이 주석·문자열을 긁는 거짓양성도 없음)." + call +
+      " 그냥 텍스트 확인이면 Grep 그대로 OK. 끄기: VTS_ENFORCE=0."
+    : "[vs-token-safer] Scanning a file's structure by declaration keyword (function/const/class/…). That's an " +
+      "OUTLINE request → document_symbols is exact — the language server returns the class/function/method/field " +
+      "structure as file:line, noise-filtered (anonymous callbacks / nested locals hidden) and token-capped (no " +
+      "regex false positives over comments/strings)." + call + " For a quick text peek, Grep is fine. Disable: VTS_ENFORCE=0.";
+}
 // Don't block a search explicitly aimed at non-code (a doc/asset glob or path) even if the pattern looks
 // symbol-ish — the symbol may legitimately be referenced in a .md/.json.
 function notTextLogTarget(ti) {
@@ -531,6 +580,13 @@ process.stdin.on("end", () => {
   // everything else stays warn-only (Grep is the sanctioned fallback for freeform text / just-edited files).
   if (toolName === "Grep") {
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
+    // OUTLINE hunt (declaration-KEYWORD alternation, e.g. `^(function|const|export)`, `^(class|struct|enum)`)
+    // → steer to document_symbols (warn-only; keyword alts are FP-prone so never blocked). Checked BEFORE the
+    // symbol-hunt block ON PURPOSE: a keyword-only alternation carries NO specific identifier, so it's an
+    // outline, not a named-symbol hunt — but `isSymbolHuntGrep` would otherwise BLOCK it via its `\bclass\b`/
+    // `\bstruct\b`/`\benum\b` cue (a mild pre-existing FP). `isOutlineHuntGrep` excludes CamelCase/snake, so a
+    // real named hunt (`MaxWalkSpeed|MaxExcessSpeed`, `class Foo|struct Bar`) still falls through to the block.
+    else if (isOutlineHuntGrep(ti) && notTextLogTarget(ti)) emitWarn(outlineNudgeFor(ti) + setup);
     else if (grepBlockOn() && isSymbolHuntGrep(ti) && notTextLogTarget(ti)) {
       process.stderr.write(grepBlockMsg(ti) + setup + "\n");
       process.exit(2); // block — route the symbol hunt to search_symbol / search_text
