@@ -87,16 +87,21 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | `insert_before_symbol` | `vts insert-before` | Insert text before a declaration (e.g. an import/attribute). |
 | `safe_delete` | `vts safe-delete` | Delete a declaration — **refuses while it's still referenced** unless `force=true`. |
 
-**Version control (output compaction, read-only)**
+**Admin / meta — one MCP tool `vts_admin {op, params}`** (folded to keep the per-session tool-definition
+cost small; the CLI keeps the bare subcommands):
 
-| Tool | CLI | Does |
+| `op` | CLI | Does |
 | --- | --- | --- |
-| `vts_git` | `vts git` | Run a read-only `git status/log/diff` and group/dedup/cap the output. Mutating subcommands refused. |
-| `vts_p4` | `vts p4` | Same for Perforce `opened/status/changes/reconcile`. |
+| `git` / `p4` | `vts git` / `vts p4` | Run a read-only `git status/log/diff` or Perforce `opened/status/changes/reconcile`, output grouped/deduped/capped. Mutating subcommands refused. |
+| `setup` / `config` | `vts setup` / `vts config` | Configure / show settings (projectPath, backend, maxResults, clangdCmd, genCompileDb). |
+| `savings` / `savings_reset` | `vts savings` | Token-savings ledger (graph/daily/history) / clear it. |
+| `warmup` | `vts warmup` | Pre-build the language-server index. |
+| `discover` | `vts discover` | Find code searches that bypassed vts (missed savings). |
+| `gen_compile_db` | `vts gen-compile-db` | Generate the Unreal clangd compile DB (UBT). |
 
-Plus `vts_warmup`, `vts_setup`, `vts_config`, `vts_savings`, `vts_savings_reset`, `vts_discover`,
-`vts_gen_compile_db`. Or hand a whole "where is X / what calls Y / find file W" lookup to the
-**`code-locator` subagent** — it searches in its own context and returns only the `file:line` table.
+e.g. `vts_admin {op:"git", params:{argv:["status","-s"]}}`. Or hand a whole "where is X / what calls Y /
+find file W" lookup to the **`code-locator` subagent** — it searches in its own context and returns only
+the `file:line` table.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame
@@ -260,7 +265,7 @@ cd vs-token-safer/server && npm install && npm link   # provides `vts`
 <summary><b>Setup command &amp; updating</b></summary>
 
 Settings live in `~/.vs-token-safer/config.json` (read at startup — `/reload-plugins` after changes).
-Configure via `/vs-token-safer:setup` (guided), `vts_setup`/`vts_config` tools, or `vts setup
+Configure via `/vs-token-safer:setup` (guided), `vts_admin {op:"setup"}` / `{op:"config"}`, or `vts setup
 --projectPath <root> --backend clangd`. Backend auto-detects from the root. Precedence: **env (`VTS_*`) >
 config file > default.**
 
