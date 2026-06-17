@@ -14,6 +14,10 @@
 > never source bodies.** Plus a sibling plugin that reads tens-of-MB editor logs without dumping them into
 > the conversation. Both cost ~99% fewer tokens than the naive approach. **Local-only. No IDE required.**
 
+<p align="center">
+  <img src="docs/vts-demo.gif" alt="vs-token-safer demo — grep dumps source into context; the language-server index returns a token-capped file:line list" width="760">
+</p>
+
 ```text
 # Claude tries to grep code → the hook REWRITES it to the indexed query, in place:
 $ grep -rn "SpawnActor" Source/**/*.cpp
