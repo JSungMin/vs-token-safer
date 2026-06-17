@@ -891,7 +891,10 @@ function fmtHover(h) {
   if (Array.isArray(c)) c = c.map((x) => (typeof x === "string" ? x : x.value || "")).join("\n");
   else if (typeof c === "object") c = c.value || "";
   c = String(c).replace(/```[a-z]*\n?/gi, "").trim();
-  const lines = c.split(/\r?\n/).filter(Boolean).slice(0, 8);
+  // Cap BOTH dimensions: ≤8 lines AND ≤200 chars/line (trimMatchLine). The 8-line cap alone left a
+  // pathological single huge line uncapped — a complex TS/C++ hover can be one multi-thousand-char type
+  // signature/union. Trim each line so "a few lines, no walls" holds even then.
+  const lines = c.split(/\r?\n/).filter(Boolean).slice(0, 8).map(trimMatchLine);
   return lines.join("\n") || "(no hover info)";
 }
 // document symbols (hierarchical DocumentSymbol[] or flat SymbolInformation[]) → kind name @ file:line.
