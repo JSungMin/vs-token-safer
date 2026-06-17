@@ -14,11 +14,18 @@ const RESERVED_CALLEE = new Set(["if", "for", "while", "switch", "catch", "retur
 // Signature/body opener on one line: `… name(args) {` where `name` is a callable identifier. Used only when
 // no DECL_KW is present, and the callee must be a real name, not a control-flow keyword.
 const SIG_OPENER = /([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const|noexcept|override|final|=>)?\s*\{?\s*$/;
+// The CONSTRUCT being edited is decided by its FIRST meaningful line, not by a keyword appearing anywhere.
+// A chunk that STARTS with a control-flow header is a control-flow block — even if its body contains a
+// DECL_KW token like a `(void)` cast or a `static` local (the v0.26.1 fix missed these: it only guarded the
+// signature-opener branch, so `if(…){ (void)x; … }` still matched DECL_KW `void` and false-positived).
+const CTRL_FLOW_FIRST = /^\s*(?:\}\s*)?(?:if|for|while|switch|catch|do|else)\b/;
 function isWholeDecl(s, minLines) {
   const str = String(s);
   if ((str.match(/\n/g) || []).length < minLines) return false;
-  if (DECL_KW.test(str)) return true;                       // an explicit declaration keyword
-  for (const line of str.split("\n")) {                     // else: a NAMED signature opener (not control flow)
+  const first = str.split("\n").find((l) => l.trim()) || "";  // first non-blank line = the construct edited
+  if (CTRL_FLOW_FIRST.test(first)) return false;              // a control-flow block, never a whole declaration
+  if (DECL_KW.test(str)) return true;                         // an explicit declaration keyword
+  for (const line of str.split("\n")) {                       // else: a NAMED signature opener (not control flow)
     const m = SIG_OPENER.exec(line);
     if (m && !RESERVED_CALLEE.has(m[1])) return true;
   }
