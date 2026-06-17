@@ -810,13 +810,21 @@ function backendAdvisory(backendName, root) {
 const locLine = (uri, range) => `${fromUri(uri).replace(/\\/g, "/")}:${(range.start.line + 1)}`;
 function fmtSymbols(syms, max) {
   const shown = syms.slice(0, max);
-  const body = shown.map((s) => {
+  const more = syms.length - shown.length;
+  const tail = more > 0 ? `\n… ${more} more (raise maxResults or narrow the query).` : "";
+  const rows = shown.map((s) => {
     const kind = SYMBOL_KIND[s.kind] || `k${s.kind}`;
     const container = s.containerName ? ` (in ${s.containerName})` : "";
-    return `${kind} ${s.name}${container}  @ ${locLine(s.location.uri, s.location.range)}`;
-  }).join("\n");
-  const more = syms.length - shown.length;
-  return body + (more > 0 ? `\n… ${more} more (raise maxResults or narrow the query).` : "");
+    return { head: `${kind} ${s.name}${container}`, loc: locLine(s.location.uri, s.location.range) };
+  });
+  // Factor the common directory prefix out of the `@ path:line` tails (same token-saver as find_references /
+  // find_files): a project-wide symbol search repeats the long absolute root on every row. Printed once as
+  // `under <prefix>/`; full path recoverable as `<prefix>/<tail>`. VTS_COMPACT_RESULTS=0 → classic per-row.
+  if (compactResults() && rows.length > 1) {
+    const prefix = commonDirPrefix(rows.map((r) => r.loc));
+    if (prefix) return `under ${prefix}/\n` + rows.map((r) => `  ${r.head}  @ ${r.loc.slice(prefix.length + 1)}`).join("\n") + tail;
+  }
+  return rows.map((r) => `${r.head}  @ ${r.loc}`).join("\n") + tail;
 }
 // Output-cap v2 (caveman "collapse repetition"): a refs-heavy result repeats the same long path on every
 // line. Collapse it — one line per FILE with all its line numbers joined, then factor a common DIRECTORY
@@ -896,7 +904,7 @@ function fmtHover(h) {
 // `callback` or `registerCallback`. Only applied at depth>0 (see walk) — a top-level entry is always a
 // real declaration, whatever its name/kind.
 const OUTLINE_NOISE = /\(\)\s*callback$|^<[^>]*>$/i;
-function fmtDocSymbols(syms, max, file) {
+function fmtDocSymbols(syms, max) {
   const raw = process.env.VTS_OUTLINE_RAW === "1" || process.env.VTS_OUTLINE_RAW === "true";
   const maxDepth = envInt("VTS_OUTLINE_DEPTH", 4);
   const rows = [];
@@ -918,8 +926,9 @@ function fmtDocSymbols(syms, max, file) {
       }
       const r = s.range || (s.location && s.location.range);
       const ln = r ? r.start.line + 1 : 1;
-      const loc = s.location ? fromUri(s.location.uri).replace(/\\/g, "/") : file;
-      rows.push(`${SYMBOL_KIND[s.kind] || `k${s.kind}`} ${parent ? parent + "::" : ""}${s.name}  @ ${loc}:${ln}`);
+      // Single-file outline → the path is constant (named once in the caller's "outline of <file>" header),
+      // so emit only the line number, not the full path repeated on every row (was ~path×rows of pure waste).
+      rows.push(`${SYMBOL_KIND[s.kind] || `k${s.kind}`} ${parent ? parent + "::" : ""}${s.name}  :${ln}`);
       if (s.children && depth < maxDepth) walk(s.children, (parent ? parent + "::" : "") + s.name, depth + 1, s.kind);
     }
   };
@@ -1457,7 +1466,7 @@ export async function runTool(name, a = {}) {
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
-      return finishOut(syms, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max, a.path.replace(/\\/g, "/")));
+      return finishOut(syms, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max));
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");
