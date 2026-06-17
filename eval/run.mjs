@@ -1173,10 +1173,17 @@ try { fs.rmSync(stDir, { recursive: true, force: true }); } catch { /* ignore */
 const { classifyDeclEdit } = await import("../server/edit-detect.js");
 const ifBlock = "if (Pawn && Pawn->IsValid())\n{\n    DoA();\n    DoB();\n    DoC();\n    DoD();\n    DoE();\n    DoF();\n}";
 const forBlock = "for (int i = 0; i < n; ++i)\n{\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n    sum += i;\n}";
+// control-flow block whose BODY contains a DECL_KW token (`(void)` cast / `static` local) — the construct is
+// still control flow (decided by the FIRST line), so it must NOT count as a whole declaration (v0.26.2 fix;
+// the v0.26.1 fix only guarded the signature-opener branch and these still false-positived).
+const ifVoid = "if (Pawn && Pawn->IsValid())\n{\n    (void)Pawn;\n    DoA();\n    DoB();\n    DoC();\n    DoD();\n    DoE();\n}";
+const ifStatic = "if (ready)\n{\n    static int n = 0;\n    n++;\n    n++;\n    n++;\n    n++;\n    n++;\n}";
 const realFn = "void UMyClass::DoWork(int x)\n{\n    int a = x;\n    a += 1;\n    a += 2;\n    a += 3;\n    a += 4;\n    a += 5;\n    Helper(a);\n}";
 const ctrlFlowExclusionOk =
   classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifBlock, new_string: "x" }).replaceDecl === false &&
   classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: forBlock, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifVoid, new_string: "x" }).replaceDecl === false &&
+  classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: ifStatic, new_string: "x" }).replaceDecl === false &&
   classifyDeclEdit("Edit", { file_path: "a.cpp", old_string: realFn, new_string: "x" }).replaceDecl === true;
 
 await disposeClients();
