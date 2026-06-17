@@ -1233,11 +1233,12 @@ const prefixFactoringOk =
   !cpOff.isError && !/under .*sub\//.test(cpOff.text) && cpAbs.test(cpOff.text);
 try { fs.rmSync(cpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
-// 62) tool-definition budget — the 21 tool schemas are a FIXED per-session context cost (always in the
-// model's system prompt). Trimming the verbose descriptions cut tools/list ~4088→~3436 tok; this guard
-// asserts it stays lean (a regression net so prose can't creep back) AND that every tool still has a
-// non-empty description + schema (trimming must not gut routing). Spawns the real stdio server (prewarm/
-// auto-learn off so no backend child) and reads tools/list — exactly what the client carries.
+// 62) tool-definition budget + vts_admin fold — the tool schemas are a FIXED per-session context cost
+// (always in the model's system prompt). Trimming descriptions then folding the 9 cold admin tools behind
+// one `vts_admin{op,params}` cut tools/list 4088→3436→~2420 tok. This guard (a regression net) asserts:
+// the HOT search/nav/edit tools stay first-class + named; the cold tools are NOT separately advertised;
+// vts_admin dispatches op→vts_<op> (and rejects a bogus op); and the whole list stays under budget. Spawns
+// the real stdio server (prewarm/auto-learn off) — exactly what the client carries.
 const toolsBudgetOk = await new Promise((resolve) => {
   import("node:child_process").then(({ spawn }) => {
     const child = spawn(process.execPath, [new URL("../server/index.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")],
@@ -1246,13 +1247,24 @@ const toolsBudgetOk = await new Promise((resolve) => {
     child.stdout.on("data", (d) => { acc += d; let i; while ((i = acc.indexOf("\n")) >= 0) { const l = acc.slice(0, i).trim(); acc = acc.slice(i + 1); if (l) try { msgs.push(JSON.parse(l)); } catch { /* ignore */ } } });
     const send = (o) => child.stdin.write(JSON.stringify(o) + "\n");
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eval", version: "0" } } });
-    setTimeout(() => { send({ jsonrpc: "2.0", method: "notifications/initialized" }); send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }); }, 400);
+    setTimeout(() => {
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vts_admin", arguments: { op: "config" } } });
+      send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "vts_admin", arguments: { op: "bogus_xyz" } } });
+    }, 400);
     setTimeout(() => {
       const tools = msgs.find((m) => m.id === 2)?.result?.tools || [];
+      const names = tools.map((t) => t.name);
       const tk = Math.round(Buffer.byteLength(JSON.stringify(tools), "utf8") / 4);
-      const wellFormed = tools.length === 21 && tools.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema);
+      const cfg = msgs.find((m) => m.id === 3)?.result;
+      const bogus = msgs.find((m) => m.id === 4)?.result;
+      const hotPresent = ["search_symbol", "find_references", "search_text", "find_files", "replace_symbol_body"].every((n) => names.includes(n));
+      const coldFolded = names.includes("vts_admin") && !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_discover", "vts_gen_compile_db"].some((n) => names.includes(n));
+      const wellFormed = tools.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema);
+      const dispatchOk = cfg && !cfg.isError && /settings/i.test(cfg.content?.[0]?.text || "") && bogus && bogus.isError; // op→vts_config works; bad op rejected
       child.kill();
-      resolve(wellFormed && tk <= 3700); // current ~3436; budget gives headroom but blocks prose regressions
+      resolve(hotPresent && coldFolded && wellFormed && dispatchOk && tk <= 2700); // ~2420 now; headroom blocks prose creep
     }, 1500);
   });
 });
@@ -1338,7 +1350,7 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
-  ["tool-definition budget: 21 tools, schemas + non-empty descs ≤ 3700 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 2700 tok", toolsBudgetOk, "true", toolsBudgetOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

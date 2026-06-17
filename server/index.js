@@ -235,87 +235,48 @@ const TOOLS = [
     },
   },
   {
-    name: "vts_git",
+    // vts_admin folds the 9 RARELY-reflexive admin/meta tools behind ONE schema to cut the fixed
+    // per-session tool-definition cost (the hot search/nav/edit tools stay first-class so the model still
+    // reaches for them over grep/Edit). index.js maps vts_admin{op,params} → runTool("vts_"+op, params);
+    // core.js + the CLI keep the individual vts_* implementations unchanged (the grep-block hook still
+    // reroutes git/p4 to the CLI, not this tool).
+    name: "vts_admin",
     description:
-      "Run a READ-ONLY git command, output COMPACTED/token-capped (status by change-type+dir, log one line/" +
-      "commit, diff per-file diffstat). Mutating subcommands REFUSED. Use instead of raw `git status/log/diff`.",
+      "vs-token-safer admin/meta operations (rarely needed reflexively) — set `op` and put that op's args in " +
+      "`params`:\n" +
+      "  • setup {projectPath,backend,maxResults,genCompileDb,clangdCmd} — configure (writes config; /reload-plugins after)\n" +
+      "  • config {} — show effective settings · savings {graph,daily,history} — tokens saved (local) · savings_reset {} — clear it\n" +
+      "  • discover {since,all,learn,projectPath} — find code searches that BYPASSED vts (missed savings)\n" +
+      "  • warmup {projectPath,backend} — pre-build the index so later searches are fast\n" +
+      "  • gen_compile_db {projectPath,apply,inTree,engineRoot,target,…} — generate the UE clangd compile DB\n" +
+      "  • git {argv|args,projectPath} · p4 {argv|args,projectPath} — run a READ-ONLY VCS command, output compacted (mutating REFUSED)",
     inputSchema: {
       type: "object",
       properties: {
-        argv: { type: "array", items: { type: "string" }, description: 'Git subcommand + flags, e.g. ["status","-s"] or ["log","--oneline"].' },
-        args: { type: "string", description: 'Alternative to argv: the subcommand as one string, e.g. "status -s".' },
-        projectPath: { type: "string", description: "Repo root to run in (default: configured projectPath or cwd)." },
-        maxResults: { type: "number" },
+        op: { type: "string", enum: ["setup", "config", "savings", "savings_reset", "discover", "warmup", "gen_compile_db", "git", "p4"], description: "Which admin operation (see the description)." },
+        params: { type: "object", description: 'Arguments for the op, e.g. {"argv":["status"]} for git, {"since":30} for discover, {"projectPath":"…"} for setup.' },
       },
+      required: ["op"],
     },
-  },
-  {
-    name: "vts_p4",
-    description:
-      "Run a READ-ONLY p4 command, output COMPACTED/token-capped (opened/status/reconcile/changes grouped by " +
-      "action+depot dir; reconcile forced to -n). Mutating subcommands REFUSED. Use instead of raw `p4 opened`.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        argv: { type: "array", items: { type: "string" }, description: 'p4 subcommand + flags, e.g. ["opened"] or ["changes","-m","50"].' },
-        args: { type: "string", description: 'Alternative to argv: the subcommand as one string, e.g. "opened".' },
-        projectPath: { type: "string", description: "Workspace root to run in (default: configured projectPath or cwd)." },
-        maxResults: { type: "number" },
-      },
-    },
-  },
-  {
-    name: "vts_setup",
-    description:
-      "Configure vs-token-safer (projectPath/backend/maxResults) → ~/.vs-token-safer/config.json; " +
-      "/reload-plugins after. Can also generate the C++ compile DB in this step (genCompileDb).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        projectPath: { type: "string", description: "Default project root." },
-        backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto)." },
-        maxResults: { type: "number", description: "Default cap on returned locations." },
-        genCompileDb: { description: "Generate the C++ compile DB here: `true` = DRY-RUN (print the UBT command); \"apply\" = run UBT (heavy, needs clangd ≥ 22). Parked out-of-tree (~/.vs-token-safer/db).", "type": ["boolean", "string"] },
-        clangdCmd: { type: "string", description: "Path to a clangd ≥ 22 binary (persists to config). VS-bundled clangd 19.x deadlocks on Unreal TUs. Env VTS_CLANGD_CMD overrides." },
-      },
-    },
-  },
-  {
-    name: "vts_config",
-    description: "Show current effective vs-token-safer settings + config-file path.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "vts_savings",
-    description: "Report how many tokens you've saved vs forwarding raw index responses (local, cumulative). Optional graph/daily/history breakdowns + an estimated USD value.",
-    inputSchema: { type: "object", properties: { graph: { type: "boolean", description: "Show a 30-day ASCII graph of saved tokens." }, daily: { type: "boolean", description: "Show a day-by-day breakdown (last 14)." }, history: { type: "boolean", description: "Show the most recent runs." } } },
-  },
-  {
-    name: "vts_savings_reset",
-    description: "Clear the local savings ledger.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "vts_discover",
-    description: "Scan local Claude Code transcripts (read-only) for code searches that BYPASSED vts (grep/rg/find or the Grep tool) and report the tokens they spent — where text search still slips past vts.",
-    inputSchema: { type: "object", properties: { since: { type: "number", description: "Look back this many days (default 7)." }, all: { type: "boolean", description: "Scan all projects, all time (ignore the since window)." }, learn: { type: "boolean", description: "Feed the files those bypassed searches hit into the warm-set query-history (front-loads them in prewarm). Only files under projectPath are attributed." }, projectPath: { type: "string", description: "Scope the scan to transcript entries that ran under this root, and attribute learned files to it (default for learn: configured projectPath or cwd)." } } },
-  },
-  {
-    name: "vts_warmup",
-    description: "Pre-build the language-server index (IDE-style) so later searches are fast. Spawns + warms the backend without running a query.",
-    inputSchema: { type: "object", properties: { projectPath: { type: "string" }, backend: { type: "string", enum: ["clangd", "roslyn", "typescript", "pyright"] } } },
-  },
-  {
-    name: "vts_gen_compile_db",
-    description: "Generate compile_commands.json for an Unreal project (clangd semantic index) via UBT GenerateClangDatabase. DRY-RUN by default (prints the command); apply=true runs it (minutes, needs the UE build env). DB + .cache/ land out-of-tree (~/.vs-token-safer/db) so git/p4 never see them; inTree=true uses the project root.",
-    inputSchema: { type: "object", properties: { projectPath: { type: "string", description: "Unreal project root (has the .uproject)." }, apply: { type: "boolean", description: "false (default) = print the command; true = run UBT." }, inTree: { type: "boolean", description: "true = DB at the project root (VCS-ignore-guarded) instead of out-of-tree." }, engineRoot: { type: "string", description: "UE engine root. Default: VTS_UE_ROOT or a walk-up." }, target: { type: "string", description: "UBT target (default <Project>Editor)." }, platform: { type: "string", description: "default Win64." }, config: { type: "string", description: "default Development." }, compiler: { type: "string", description: "default VisualCpp (for clang-cl targets)." } } },
   },
 ];
 
 const server = new Server({ name: "vs-search", version: "0.1.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+// vts_admin is an MCP-surface alias that folds the 9 cold admin/meta tools behind one schema (token-cap of
+// the fixed tool-definition cost). Translate vts_admin{op,params} → the real vts_<op> tool here; everything
+// else (the hot search/nav/edit tools) dispatches by name unchanged. core.js / the CLI never see vts_admin.
+const ADMIN_OPS = new Set(["setup", "config", "savings", "savings_reset", "discover", "warmup", "gen_compile_db", "git", "p4"]);
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { text, isError } = await runTool(req.params.name, req.params.arguments || {});
+  let name = req.params.name;
+  let args = req.params.arguments || {};
+  if (name === "vts_admin") {
+    const op = String(args.op || "");
+    if (!ADMIN_OPS.has(op)) return { isError: true, content: [{ type: "text", text: `vts_admin: unknown op "${op}". One of: ${[...ADMIN_OPS].join(", ")}.` }] };
+    name = "vts_" + op;
+    args = args.params && typeof args.params === "object" ? args.params : {};
+  }
+  const { text, isError } = await runTool(name, args);
   return { isError, content: [{ type: "text", text }] };
 });
 

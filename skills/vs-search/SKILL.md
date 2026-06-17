@@ -22,7 +22,7 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
   - The outline supplies the exact span, so you skip reading the whole file into context. Preview by default; `apply=true` writes. Use the built-in Edit for a sub-declaration tweak (a few lines inside a body); use these when the unit is the whole declaration.
 - Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
 - File by name (substring or glob) → `find_files`  (args: `q`, `projectPath`). Replaces `find -name`.
-- Show/adjust config → `vts_config` / `vts_setup`. Token savings → `vts_savings`. Pre-warm → `vts_warmup`.
+- Admin/meta (rarely needed reflexively) → `vts_admin` with an `op`: `config`/`setup` (settings), `savings`/`savings_reset` (token ledger), `warmup` (pre-build the index), `discover` (find searches that bypassed vts), `gen_compile_db` (UE clangd DB), `git`/`p4` (read-only VCS, output compacted). Put the op's args in `params`, e.g. `vts_admin {op:"git", params:{argv:["status"]}}`. (CLI keeps the bare subcommands: `vts setup`, `vts git`, …)
 - **Log file** (`.log`/`.jsonl`, or a `Logs/` dir) → NOT a vs-search tool. The language-server index covers
   source, not logs — use **gamedev-log** (`/gamedev-log-analyzer:logs`). vts-search results aimed at a log
   carry a one-line pointer there.
