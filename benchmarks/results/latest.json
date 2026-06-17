@@ -34,20 +34,20 @@
         "grepTok": 399,
         "grepLines": 21,
         "grepCapped": false,
-        "vtsTok": 747,
+        "vtsTok": 420,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": -0.8721804511278195
+        "reduction": -0.05263157894736836
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 132,
         "grepLines": 20,
         "grepCapped": false,
-        "vtsTok": 205,
+        "vtsTok": 59,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": -0.553030303030303
+        "reduction": 0.553030303030303
       }
     ],
     "50": [
@@ -76,20 +76,20 @@
         "grepTok": 1959,
         "grepLines": 101,
         "grepCapped": false,
-        "vtsTok": 2200,
+        "vtsTok": 1228,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": -0.12302194997447669
+        "reduction": 0.3731495661051557
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 682,
         "grepLines": 100,
         "grepCapped": false,
-        "vtsTok": 1005,
+        "vtsTok": 199,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": -0.4736070381231672
+        "reduction": 0.7082111436950147
       }
     ],
     "150": [
@@ -118,20 +118,20 @@
         "grepTok": 4917,
         "grepLines": 301,
         "grepCapped": true,
-        "vtsTok": 2242,
+        "vtsTok": 1256,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.54403091315843
+        "reduction": 0.7445596908684158
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 1883,
         "grepLines": 300,
         "grepCapped": true,
-        "vtsTok": 1284,
+        "vtsTok": 298,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.3181093998937865
+        "reduction": 0.8417419012214551
       }
     ]
   },
@@ -142,22 +142,22 @@
         "model": "Haiku 4.5",
         "price": 1,
         "grepCost": 0.016634,
-        "vtsCost": 0.006505,
-        "saved": 0.010128999999999999
+        "vtsCost": 0.004533,
+        "saved": 0.012101
       },
       {
         "model": "Sonnet 4.x",
         "price": 3,
         "grepCost": 0.049902,
-        "vtsCost": 0.019515,
-        "saved": 0.030387
+        "vtsCost": 0.013599,
+        "saved": 0.036303
       },
       {
         "model": "Opus 4.x",
         "price": 15,
         "grepCost": 0.24950999999999998,
-        "vtsCost": 0.09757500000000001,
-        "saved": 0.151935
+        "vtsCost": 0.067995,
+        "saved": 0.18151499999999998
       }
     ]
   },
