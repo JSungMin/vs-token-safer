@@ -22,10 +22,8 @@ const TOOLS = [
   {
     name: "search_symbol",
     description:
-      "Search symbol DECLARATIONS by name/substring across the project via the language server's index " +
-      "(clangd C/C++, Roslyn C#/.NET, tsserver JS/TS, pyright Python — auto-detected) — NOT grep. Returns a " +
-      "token-capped `kind name @ file:line` list, no source bodies. Use this instead of Bash grep/rg for " +
-      "finding a class/function/type/variable in any of those languages.",
+      "Find a symbol DECLARATION (class/function/type/variable) by name/substring — semantic index, not grep. " +
+      "→ token-capped `kind name @ file:line`, no bodies. Use instead of grep/rg to locate a symbol.",
     inputSchema: {
       type: "object",
       properties: {
@@ -40,19 +38,17 @@ const TOOLS = [
   {
     name: "find_references",
     description:
-      "Find every call site / usage of a symbol (semantic, via the language server) — NOT a text grep. " +
-      "THE tool to reach for when MODIFYING code: pass `symbol` (just the name, e.g. \"SpawnActor\") and it " +
-      "resolves the declaration and returns all references in one call — no need to know a line/column. " +
-      "(A 0-based path+line+character position also works, to disambiguate an overload.) Returns a " +
-      "token-capped `file:line` list, no bodies. Prefer this over grepping a name to find its uses.",
+      "Every usage/call site of a symbol (semantic, not a text grep). THE tool for editing code: pass " +
+      "`symbol` (just the name) → it resolves the decl + returns all refs in one call, no line/column needed " +
+      "(a 0-based path+line+character also works, to disambiguate an overload). → token-capped `file:line`.",
     inputSchema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "Symbol NAME to find references of — resolved via the index (no position needed). The usual way to find call sites when editing." },
-        path: { type: "string", description: "Source file containing the symbol (with line/character for an exact position; or alongside `symbol` to disambiguate an overload)." },
-        line: { type: "number", description: "0-based line of the symbol position." },
-        character: { type: "number", description: "0-based character/column of the symbol position." },
-        includeDeclaration: { type: "boolean", description: "Include the declaration in the results." },
+        symbol: { type: "string", description: "Symbol NAME — resolved via the index, no position needed (the usual way when editing)." },
+        path: { type: "string", description: "Source file (with line/character for an exact position; or with `symbol` to disambiguate)." },
+        line: { type: "number", description: "0-based line." },
+        character: { type: "number", description: "0-based column." },
+        includeDeclaration: { type: "boolean", description: "Include the declaration." },
         projectPath: { type: "string" },
         backend: { type: "string" },
         maxResults: { type: "number" },
@@ -61,9 +57,7 @@ const TOOLS = [
   },
   {
     name: "goto_definition",
-    description:
-      "Resolve the definition of the symbol at a 0-based position (semantic, via the language server). " +
-      "Returns a token-capped `file:line` list, no bodies.",
+    description: "Definition of the symbol at a 0-based position (semantic). → token-capped `file:line`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -79,9 +73,7 @@ const TOOLS = [
   },
   {
     name: "hover",
-    description:
-      "Type/signature info for the symbol at a 0-based position (language-server hover). A few plaintext " +
-      "lines, no walls of docs. Use to check a type/overload without opening the file.",
+    description: "Type/signature of the symbol at a 0-based position (hover) — a few lines, no file open.",
     inputSchema: {
       type: "object",
       properties: {
@@ -96,9 +88,7 @@ const TOOLS = [
   },
   {
     name: "document_symbols",
-    description:
-      "Outline a single file: its classes/functions/types as a token-capped `kind name @ file:line` list. " +
-      "Cheaper than reading the whole file to see its structure.",
+    description: "Outline one file (classes/functions/types) → `kind name @ file:line`. Cheaper than reading it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -113,10 +103,8 @@ const TOOLS = [
   {
     name: "rename",
     description:
-      "Semantically rename the symbol at a 0-based position across the whole project (language-server " +
-      "rename — updates every reference, never a text sed). Default is a PREVIEW returning the affected " +
-      "`file:line` list; pass apply=true to write the edits to disk. Use this instead of editing call " +
-      "sites by hand.",
+      "Rename the symbol at a 0-based position project-wide (semantic — every reference, not a sed). " +
+      "PREVIEW by default (affected `file:line`); apply=true writes. Use instead of editing call sites by hand.",
     inputSchema: {
       type: "object",
       properties: {
@@ -135,10 +123,8 @@ const TOOLS = [
   {
     name: "replace_symbol_body",
     description:
-      "Replace a whole declaration (function/method/class body, signature included) by NAMING it — the " +
-      "language-server outline supplies the exact span, so you don't Read the file into context or count " +
-      "lines for an exact-match Edit. Default PREVIEW returns the affected `file:line`; apply=true writes. " +
-      "Token-cheap symbol-level editing instead of read-whole-file-then-Edit.",
+      "Replace a whole declaration (signature + body) by NAMING it — the outline gives the exact span, so no " +
+      "Read-the-file + line-counting for an exact-match Edit. PREVIEW by default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -157,8 +143,8 @@ const TOOLS = [
   {
     name: "insert_after_symbol",
     description:
-      "Insert text on a new line AFTER a named declaration (e.g. add a sibling function/method). The outline " +
-      "supplies the insertion point. Default PREVIEW; apply=true writes. No need to Read the file to find the line.",
+      "Insert text after a named declaration (e.g. a sibling function/method) — outline gives the point, no " +
+      "Read needed. PREVIEW by default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -177,8 +163,8 @@ const TOOLS = [
   {
     name: "insert_before_symbol",
     description:
-      "Insert text on a line BEFORE a named declaration (e.g. add an import/attribute/decorator above it). " +
-      "The outline supplies the insertion point. Default PREVIEW; apply=true writes.",
+      "Insert text before a named declaration (e.g. an import/attribute/decorator above it). PREVIEW by " +
+      "default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -197,8 +183,8 @@ const TOOLS = [
   {
     name: "safe_delete",
     description:
-      "Delete a named declaration — but REFUSE while it's still referenced (so a delete can't silently orphan " +
-      "call sites). Checks references first; lists them and stops unless force=true. Default PREVIEW; apply=true writes.",
+      "Delete a named declaration, but REFUSE while still referenced (lists the refs, stops unless force=true) " +
+      "— a delete can't silently orphan call sites. PREVIEW by default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -217,8 +203,8 @@ const TOOLS = [
   {
     name: "find_files",
     description:
-      "Find files by name (substring or glob like *Manager.cpp) under the project root — token-capped " +
-      "`file` list. The sanctioned replacement for Bash `find -name`. No language server needed.",
+      "Find files by name (substring or glob like *Manager.cpp) — replaces Bash `find -name`. → token-capped " +
+      "file list. No backend needed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -232,18 +218,18 @@ const TOOLS = [
   {
     name: "search_text",
     description:
-      "Raw text/regex search in source (string literals, comments, config keys — things the symbol index " +
-      "can't answer). Bounded and token-capped to `file:line: trimmed-line`. The sanctioned replacement " +
-      "for Bash grep when you genuinely need text, not symbols. Prefer search_symbol for code symbols.",
+      "Raw text/regex search (string literals, comments, config — what the symbol index can't answer). " +
+      "Replaces Bash grep when you need text, not symbols. → token-capped `file:line: line`. For code " +
+      "symbols prefer search_symbol.",
     inputSchema: {
       type: "object",
       properties: {
         q: { type: "string", description: "String or regular expression to find." },
-        path: { type: "string", description: "Search ONE named file (any extension — naming a README.md/.txt/etc auto-includes it; no docs flag needed). Relative to the project root or absolute." },
-        glob: { type: "string", description: "Search only files matching this basename glob (e.g. *.md, *.json) — any extension the glob covers, no docs flag needed." },
+        path: { type: "string", description: "Search ONE file (any extension auto-included; relative or absolute)." },
+        glob: { type: "string", description: "Only files matching this basename glob (e.g. *.md) — any extension it covers." },
         projectPath: { type: "string" },
         maxResults: { type: "number" },
-        docs: { type: "boolean", description: "When NO path/glob is given, widen the project-wide sweep to README/docs/config text (md/txt/json/yaml/…), not just source. Ignored when path/glob targets a file directly." },
+        docs: { type: "boolean", description: "With no path/glob, widen the sweep to docs/config text (md/json/yaml/…), not just source." },
       },
       required: ["q"],
     },
@@ -251,11 +237,8 @@ const TOOLS = [
   {
     name: "vts_git",
     description:
-      "Run a READ-ONLY git command and return its output COMPACTED (token-capped) — for status/log/diff, " +
-      "which the language-server index can't help with but whose raw dump is verbose and repetitive. status " +
-      "groups by change-type + directory; log keeps one line per commit; diff collapses to a per-file +/- " +
-      "diffstat (no hunk bodies). Mutating subcommands (commit/reset/checkout/clean/push/merge/rebase) are " +
-      "REFUSED — this only compacts output; run those directly. Use instead of a raw `git status/log/diff`.",
+      "Run a READ-ONLY git command, output COMPACTED/token-capped (status by change-type+dir, log one line/" +
+      "commit, diff per-file diffstat). Mutating subcommands REFUSED. Use instead of raw `git status/log/diff`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -269,10 +252,8 @@ const TOOLS = [
   {
     name: "vts_p4",
     description:
-      "Run a READ-ONLY Perforce (p4) command and return its output COMPACTED (token-capped) — for opened/" +
-      "status/reconcile/changes, whose raw output is long and repetitive. Groups files by action + depot " +
-      "directory and caps the list. `reconcile` is forced to preview (-n); mutating subcommands (submit/" +
-      "revert/edit/add/delete) are REFUSED — run those directly. Use instead of a raw `p4 opened` etc.",
+      "Run a READ-ONLY p4 command, output COMPACTED/token-capped (opened/status/reconcile/changes grouped by " +
+      "action+depot dir; reconcile forced to -n). Mutating subcommands REFUSED. Use instead of raw `p4 opened`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -286,17 +267,16 @@ const TOOLS = [
   {
     name: "vts_setup",
     description:
-      "Configure vs-token-safer (projectPath, backend, maxResults). Writes ~/.vs-token-safer/config.json; " +
-      "run /reload-plugins after. Precedence: env (VTS_*) > config file > default. Can also generate the " +
-      "C++ compile DB in the same step (genCompileDb).",
+      "Configure vs-token-safer (projectPath/backend/maxResults) → ~/.vs-token-safer/config.json; " +
+      "/reload-plugins after. Can also generate the C++ compile DB in this step (genCompileDb).",
     inputSchema: {
       type: "object",
       properties: {
         projectPath: { type: "string", description: "Default project root." },
         backend: { type: "string", description: "clangd | roslyn | typescript | pyright (default: auto)." },
         maxResults: { type: "number", description: "Default cap on returned locations." },
-        genCompileDb: { description: "Generate the C++ compile_commands.json (for clangd semantic search) in this step: `true` = DRY-RUN (prints the exact UBT command, runs nothing); \"apply\" = run UBT now (heavy — indexes engine headers, needs clangd ≥ 22). The DB is parked out-of-tree (~/.vs-token-safer/db/<project>).", "type": ["boolean", "string"] },
-        clangdCmd: { type: "string", description: "Path to the clangd ≥ 22 binary to use (persists to config, no OS-env edit). The VS-bundled clangd 19.1.x deadlocks on Unreal TUs — point this at a current clangd from https://github.com/clangd/clangd/releases. Env VTS_CLANGD_CMD overrides it." },
+        genCompileDb: { description: "Generate the C++ compile DB here: `true` = DRY-RUN (print the UBT command); \"apply\" = run UBT (heavy, needs clangd ≥ 22). Parked out-of-tree (~/.vs-token-safer/db).", "type": ["boolean", "string"] },
+        clangdCmd: { type: "string", description: "Path to a clangd ≥ 22 binary (persists to config). VS-bundled clangd 19.x deadlocks on Unreal TUs. Env VTS_CLANGD_CMD overrides." },
       },
     },
   },
@@ -317,7 +297,7 @@ const TOOLS = [
   },
   {
     name: "vts_discover",
-    description: "Scan recent Claude Code transcripts (local, read-only) for code searches that BYPASSED vts — Bash grep/rg/find or the Grep tool aimed at source — and report the raw tokens they spent (the missed savings). Use to see where token-heavy text search is still slipping past vts.",
+    description: "Scan local Claude Code transcripts (read-only) for code searches that BYPASSED vts (grep/rg/find or the Grep tool) and report the tokens they spent — where text search still slips past vts.",
     inputSchema: { type: "object", properties: { since: { type: "number", description: "Look back this many days (default 7)." }, all: { type: "boolean", description: "Scan all projects, all time (ignore the since window)." }, learn: { type: "boolean", description: "Feed the files those bypassed searches hit into the warm-set query-history (front-loads them in prewarm). Only files under projectPath are attributed." }, projectPath: { type: "string", description: "Scope the scan to transcript entries that ran under this root, and attribute learned files to it (default for learn: configured projectPath or cwd)." } } },
   },
   {
@@ -327,8 +307,8 @@ const TOOLS = [
   },
   {
     name: "vts_gen_compile_db",
-    description: "Generate compile_commands.json for an Unreal project (so clangd gets a full semantic index) by running UBT GenerateClangDatabase. The user's choice vs staying in no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (takes minutes, needs the UE build env). The DB and clangd's .cache/ index land OUTSIDE the source tree (~/.vs-token-safer/db/<project>) so git/p4 never see them; inTree=true keeps the classic project-root layout (then a VCS-ignore guard protects it).",
-    inputSchema: { type: "object", properties: { projectPath: { type: "string", description: "Unreal project root (contains the .uproject)." }, apply: { type: "boolean", description: "false (default) = print the command only; true = run UBT now." }, inTree: { type: "boolean", description: "true = put the DB at the project root (classic layout, VCS-ignore-guarded) instead of the out-of-tree default." }, engineRoot: { type: "string", description: "UE engine root (contains Engine/Build/BatchFiles/RunUBT). Default: VTS_UE_ROOT or a walk-up from the project." }, target: { type: "string", description: "UBT target (default <ProjectName>Editor)." }, platform: { type: "string", description: "default Win64." }, config: { type: "string", description: "default Development." }, compiler: { type: "string", description: "default VisualCpp (needed for clang-cl targets)." } } },
+    description: "Generate compile_commands.json for an Unreal project (clangd semantic index) via UBT GenerateClangDatabase. DRY-RUN by default (prints the command); apply=true runs it (minutes, needs the UE build env). DB + .cache/ land out-of-tree (~/.vs-token-safer/db) so git/p4 never see them; inTree=true uses the project root.",
+    inputSchema: { type: "object", properties: { projectPath: { type: "string", description: "Unreal project root (has the .uproject)." }, apply: { type: "boolean", description: "false (default) = print the command; true = run UBT." }, inTree: { type: "boolean", description: "true = DB at the project root (VCS-ignore-guarded) instead of out-of-tree." }, engineRoot: { type: "string", description: "UE engine root. Default: VTS_UE_ROOT or a walk-up." }, target: { type: "string", description: "UBT target (default <Project>Editor)." }, platform: { type: "string", description: "default Win64." }, config: { type: "string", description: "default Development." }, compiler: { type: "string", description: "default VisualCpp (for clang-cl targets)." } } },
   },
 ];
 

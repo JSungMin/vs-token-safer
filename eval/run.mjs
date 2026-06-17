@@ -1233,6 +1233,30 @@ const prefixFactoringOk =
   !cpOff.isError && !/under .*sub\//.test(cpOff.text) && cpAbs.test(cpOff.text);
 try { fs.rmSync(cpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 62) tool-definition budget — the 21 tool schemas are a FIXED per-session context cost (always in the
+// model's system prompt). Trimming the verbose descriptions cut tools/list ~4088→~3436 tok; this guard
+// asserts it stays lean (a regression net so prose can't creep back) AND that every tool still has a
+// non-empty description + schema (trimming must not gut routing). Spawns the real stdio server (prewarm/
+// auto-learn off so no backend child) and reads tools/list — exactly what the client carries.
+const toolsBudgetOk = await new Promise((resolve) => {
+  import("node:child_process").then(({ spawn }) => {
+    const child = spawn(process.execPath, [new URL("../server/index.js", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")],
+      { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, VTS_PREWARM: "0", VTS_AUTO_LEARN: "0", VTS_PROJECT_PATH: "" } });
+    const msgs = []; let acc = "";
+    child.stdout.on("data", (d) => { acc += d; let i; while ((i = acc.indexOf("\n")) >= 0) { const l = acc.slice(0, i).trim(); acc = acc.slice(i + 1); if (l) try { msgs.push(JSON.parse(l)); } catch { /* ignore */ } } });
+    const send = (o) => child.stdin.write(JSON.stringify(o) + "\n");
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eval", version: "0" } } });
+    setTimeout(() => { send({ jsonrpc: "2.0", method: "notifications/initialized" }); send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }); }, 400);
+    setTimeout(() => {
+      const tools = msgs.find((m) => m.id === 2)?.result?.tools || [];
+      const tk = Math.round(Buffer.byteLength(JSON.stringify(tools), "utf8") / 4);
+      const wellFormed = tools.length === 21 && tools.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema);
+      child.kill();
+      resolve(wellFormed && tk <= 3700); // current ~3436; budget gives headroom but blocks prose regressions
+    }, 1500);
+  });
+});
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1314,6 +1338,7 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
+  ["tool-definition budget: 21 tools, schemas + non-empty descs ≤ 3700 tok", toolsBudgetOk, "true", toolsBudgetOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
