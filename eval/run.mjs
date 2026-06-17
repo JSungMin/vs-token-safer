@@ -141,7 +141,9 @@ try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ 
 // 12) new read-only tools — hover + document_symbols (mock LSP), find_files + search_text (filesystem).
 const someFile = path.join(process.cwd(), "eval", "run.mjs");
 const hv = await runTool("hover", { path: someFile, line: 0, character: 0, backend: "clangd" });
-const hoverOk = !hv.isError && /Foo/.test(hv.text);
+// hover keeps the signature AND trims a pathological long line to ≤200 chars + "…" (per-line cap, not just
+// the ≤8-line cap) — a complex TS/C++ hover can be one multi-thousand-char type.
+const hoverOk = !hv.isError && /Foo/.test(hv.text) && /…/.test(hv.text) && !/T{250}/.test(hv.text);
 const ds = await runTool("document_symbols", { path: someFile, backend: "clangd" });
 process.env.VTS_OUTLINE_RAW = "1";
 const dsRaw = await runTool("document_symbols", { path: someFile, backend: "clangd" });
