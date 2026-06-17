@@ -81,8 +81,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   (dogfood-found FP): a `) {` opener also matches `if/for/while/switch/catch (…) {`, so `isWholeDecl` now only
   counts the opener when the callee identifier is NOT a reserved control-flow keyword (else a multi-line
   `if(…){…}` block edited inside a body was flagged a whole decl → suggested `replace_symbol_body symbol="if"`,
-  not a named symbol); the hook's `declSymbolName` likewise refuses a reserved keyword as the symbol name. Eval
-  guard 59. It attributes that
+  not a named symbol); the hook's `declSymbolName` likewise refuses a reserved keyword as the symbol name. v0.26.2
+  GENERALIZED it: the construct is decided by the chunk's FIRST meaningful line — a `CTRL_FLOW_FIRST` header
+  short-circuits to false BEFORE the DECL_KW check, so an `if(…){ (void)x; … }` / `if(…){ static int n; … }`
+  block (DECL_KW `void`/`static` in the BODY) no longer false-positives (the v0.26.1 callee guard only covered
+  the signature-opener branch). Eval guard 59. It attributes that
   file's PRIOR Read tokens [`reads`/`readUse` Read↔Edit correlation in `scanBypasses`, read counted ONCE] = the
   read a symbol-edit would've skipped → `edit habit:` line; ALSO `editUnreached` = how many had NO prior vts
   search on that file [`searchUse`/`searchedBn` basename match] = the fraction the search-result steer CAN'T
