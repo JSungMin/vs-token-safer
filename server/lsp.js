@@ -62,6 +62,7 @@ export class LspClient {
     this.notified = new Map(); // server-notification method -> latest params (for late waiters)
     this.openDocs = new Map(); // uri -> last didOpen/didChange version (re-sync stale buffers, spec-correctly)
     this.notifyWaiters = new Map(); // method -> [resolve, …]
+    this.diagnostics = new Map(); // uri -> latest textDocument/publishDiagnostics array (per file, not just last)
     this.buf = Buffer.alloc(0);
     this.stderr = "";
     this._initialized = false;
@@ -128,6 +129,9 @@ export class LspClient {
     else if (msg.method && msg.id === undefined) {
       const params = msg.params ?? null;
       this.notified.set(msg.method, params);
+      // Keep diagnostics PER FILE (notified only holds the last publish, of any uri) so a later
+      // `diagnosticsFor(uri)` can answer from the right file even after other files published.
+      if (msg.method === "textDocument/publishDiagnostics" && params && params.uri) this.diagnostics.set(params.uri, Array.isArray(params.diagnostics) ? params.diagnostics : []);
       const waiters = this.notifyWaiters.get(msg.method);
       if (waiters && waiters.length) {
         const remain = [];
@@ -238,6 +242,9 @@ export class LspClient {
           synchronization: { dynamicRegistration: false, willSave: false, willSaveWaitUntil: false, didSave: false },
           references: { dynamicRegistration: false },
           definition: { dynamicRegistration: false },
+          typeDefinition: { dynamicRegistration: false },
+          implementation: { dynamicRegistration: false },
+          declaration: { dynamicRegistration: false },
           hover: { contentFormat: ["plaintext", "markdown"] },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           rename: { dynamicRegistration: false, prepareSupport: false },
@@ -256,11 +263,29 @@ export class LspClient {
       context: { includeDeclaration },
     });
   }
-  definition(uriOrPath, line, character) {
-    return this.request("textDocument/definition", {
+  definition(uriOrPath, line, character) { return this.gotoByKind("definition", uriOrPath, line, character); }
+  // Definition / type-definition / implementation / declaration share one position-request shape; the kind
+  // just picks the LSP method (textDocument/definition|typeDefinition|implementation|declaration). Folded so
+  // goto_definition can expose all four without four separate MCP tools.
+  gotoByKind(kind, uriOrPath, line, character) {
+    const method = kind === "type_definition" ? "textDocument/typeDefinition"
+      : kind === "implementation" ? "textDocument/implementation"
+        : kind === "declaration" ? "textDocument/declaration"
+          : "textDocument/definition";
+    return this.request(method, {
       textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
       position: { line, character },
     });
+  }
+  // Diagnostics (errors/warnings) for ONE file. The server pushes textDocument/publishDiagnostics after it
+  // parses a didOpen'd file; we store them per-uri (_dispatch) and return the latest, waiting briefly for the
+  // first publish if none arrived yet. Returns [] for a clean file (server publishes an empty array). The
+  // caller didOpens the file first so the parse is triggered.
+  async diagnosticsFor(uriOrPath, timeoutMs = 8000) {
+    const uri = uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath);
+    if (this.diagnostics.has(uri)) return this.diagnostics.get(uri);
+    const p = await this.waitForNotification("textDocument/publishDiagnostics", timeoutMs, (pp) => pp && pp.uri === uri);
+    return (p && Array.isArray(p.diagnostics) ? p.diagnostics : null) || this.diagnostics.get(uri) || [];
   }
   hover(uriOrPath, line, character) {
     return this.request("textDocument/hover", {

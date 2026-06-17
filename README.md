@@ -71,9 +71,10 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | --- | --- | --- |
 | `search_symbol` | `vts symbol` | Find a symbol declaration by name/substring (semantic, not text). |
 | `find_references` | `vts references` | Every call site of a symbol. Takes the **name directly** (`symbol="FooBar"`) — the one to reach for when you change a function/type and must touch every use. |
-| `goto_definition` | `vts definition` | Definition of the symbol at a position. |
+| `goto_definition` | `vts definition` | Jump to the definition at a position. `kind=` also does `type_definition` / `implementation` (concrete impls of an interface/virtual) / `declaration`. |
 | `hover` | `vts hover` | Type/signature at a position. |
 | `document_symbols` | `vts symbols` | Outline a file (classes/functions/types as `file:line`). |
+| `diagnostics` | `vts diagnostics` | Compiler/linter errors + warnings for a file as a token-capped `file:line:col severity: message` list — the compact stand-in for reading raw build output. |
 | `find_files` | `vts files` | Find files by name/glob — token-capped stand-in for `find -name`. |
 | `search_text` | `vts text` | Raw text/regex search — capped stand-in for `grep` (`path=`/`glob=`/`docs=true` to target). |
 

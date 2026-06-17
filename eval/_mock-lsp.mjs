@@ -70,6 +70,21 @@ process.stdin.on("data", (d) => {
       // One definition location — lets goto_definition return a non-empty result (e.g. to exercise the
       // edit-steer that rides a focused nav result).
       send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Foo.cpp", range: { start: { line: 41, character: 6 }, end: { line: 41, character: 20 } } }] });
+    } else if (msg.method === "textDocument/typeDefinition") {
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Type.cpp", range: { start: { line: 200, character: 0 }, end: { line: 200, character: 5 } } }] });
+    } else if (msg.method === "textDocument/implementation") {
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Impl.cpp", range: { start: { line: 100, character: 0 }, end: { line: 100, character: 5 } } }] });
+    } else if (msg.method === "textDocument/declaration") {
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Decl.cpp", range: { start: { line: 300, character: 0 }, end: { line: 300, character: 5 } } }] });
+    } else if (msg.method === "textDocument/didOpen") {
+      // Push diagnostics after a parse, keyed on the uri: a file whose name contains "diag" gets an
+      // error + a warning (out of severity order, to exercise the sort); any other file is clean ([]).
+      const uri = (msg.params && msg.params.textDocument && msg.params.textDocument.uri) || "";
+      const diags = /diag/i.test(uri)
+        ? [{ severity: 2, range: { start: { line: 9, character: 0 }, end: { line: 9, character: 4 } }, message: "unused variable 'x'" },
+          { severity: 1, range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } }, code: "E001", message: "use of undeclared identifier 'foo'" }]
+        : [];
+      send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics: diags } });
     } else if (msg.method === "textDocument/references") {
       // "Foo"'s name sits at line 4 (its selectionRange) — return one usage there so safe_delete sees a
       // referrer and refuses; any other position (e.g. the find_references guard at line 41) returns none.
