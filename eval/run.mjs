@@ -1233,6 +1233,29 @@ const prefixFactoringOk =
   !cpOff.isError && !/under .*sub\//.test(cpOff.text) && cpAbs.test(cpOff.text);
 try { fs.rmSync(cpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 62) tool-definition budget + vts_admin fold — the tool schemas are a FIXED per-session context cost
+// (always in the model's system prompt). Trimming descriptions then folding the 9 cold admin tools behind
+// one `vts_admin{op,params}` cut tools/list 4088→3436→~2420 tok. Reads the schemas from server/tools.js
+// directly (NO server spawn, NO MCP SDK — this eval is the toolchain-free gate) and asserts: the HOT
+// search/nav/edit tools stay first-class + named; the cold tools are NOT separately advertised; vts_admin
+// carries the op enum; op→vts_<op> resolves to a real runTool handler; and the list stays under budget.
+const { TOOLS: TOOL_DEFS, ADMIN_OPS } = await import("../server/tools.js");
+const toolNames = TOOL_DEFS.map((t) => t.name);
+const toolsTok = Math.round(Buffer.byteLength(JSON.stringify(TOOL_DEFS), "utf8") / 4);
+const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
+// op→vts_<op> must each be a real runTool handler (folding can't point at a missing op). vts_config is the
+// cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
+const cfgViaOp = await runTool("vts_" + "config", {});
+const toolsBudgetOk =
+  TOOL_DEFS.length === 13 &&
+  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body"].every((n) => toolNames.includes(n)) && // hot tools first-class
+  toolNames.includes("vts_admin") &&
+  !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
+  TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
+  JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
+  !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
+  toolsTok <= 2700; // ~2420 now; headroom blocks prose creep
+
 await disposeClients();
 // 48) clean teardown (no orphaned child): disposeClients must terminate EVERY spawned language-server
 // child — evicted, swept, mid-warmup, or key-overwritten — via the master registry. A surviving child
@@ -1314,6 +1337,7 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 2700 tok", toolsBudgetOk, "true", toolsBudgetOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
