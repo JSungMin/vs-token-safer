@@ -38,7 +38,9 @@ const lspOk = syms.length === 2 && syms[0].name === "SpawnHandler";
 
 // 2) runTool search_symbol — compact file:line, no bodies.
 const r1 = await runTool("search_symbol", { q: "Spawn", projectPath: process.cwd(), backend: "clangd" });
-const fmtOk = !r1.isError && /class SpawnHandler {2}@ \/proj\/src\/Foo\.cpp:42/.test(r1.text) && !/character|range|"kind"/.test(r1.text);
+// (search_symbol now factors the common dir prefix across rows, so the path may be relative under an
+// `under <prefix>/` header — assert the symbol + its file:line without requiring a contiguous absolute path.)
+const fmtOk = !r1.isError && /class SpawnHandler {2}@ /.test(r1.text) && /Foo\.cpp:42/.test(r1.text) && !/character|range|"kind"/.test(r1.text);
 
 // 3) token cap — a 1000-symbol index response collapses to a capped file:line list.
 const big = await runTool("search_symbol", { q: "ALL", projectPath: process.cwd(), backend: "clangd", maxResults: 60 });
@@ -148,7 +150,7 @@ const docSymOk =
   !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text) &&
   /keepMethod/.test(ds.text) &&                  // real method kept
   /realInner/.test(ds.text) &&                   // real decl inside a hidden wrapper NOT orphaned
-  /func callback {2}@/.test(ds.text) &&          // top-level symbol named 'callback' kept (depth-0, not noise)
+  /func callback {2}:\d/.test(ds.text) &&        // top-level symbol named 'callback' kept (depth-0); path dropped (single-file outline) → `:line`
   !/map\(\) callback/.test(ds.text) && !/localTmp/.test(ds.text) && // anonymous + nested local hidden
   !/noiseKey/.test(ds.text) &&                   // object-literal prop key (kind 7 under a func) hidden
   /keepProp/.test(ds.text) && /Cls/.test(ds.text) && // but a class property (kind 7 under a class) is KEPT
