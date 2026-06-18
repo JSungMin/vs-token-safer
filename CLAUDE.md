@@ -98,7 +98,10 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   `vts_*` names UNCHANGED (the grep-block hook still reroutes git/p4 to the CLI, not this tool); eval guard 62.
   The folded ops: `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
-  buckets), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
+  buckets; ALSO FOLDS IN the bundled gamedev-log-analyzer's ledger [`~/.gamedev-log-analyzer/savings.json`,
+  `VTS_GAMEDEV_SAVINGS_FILE` override] → a `+ gamedev-log-analyzer (logs)` line + a COMBINED total, since its
+  log-compaction saves toward the same goal; the dashboard `/data` does the same via `savings.sources`. Local
+  file read only), `vts_savings_reset`, `vts_discover` (scans `~/.claude/projects/*.jsonl` for code searches that
   BYPASSED vts → missed-token report + catch-rate; `learn=true` feeds their result files into the warm-set;
   ALSO MEASURES THE EDIT HABIT — `classifyDeclEdit` (server/edit-detect.js, SHARED with the enforcement hook)
   flags a built-in Edit/MultiEdit whose `old_string` is a whole declaration (replace → `replaceDecl`) OR whose
@@ -140,13 +143,20 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
 - `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`, string→string, no spawn) for the
   `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic). (No grep compaction here —
   grep reroutes to search_text, which scans + token-caps itself; there is no raw grep output to compact.)
-- `server/viz.js` + `server/serve.js` — LOCAL DASHBOARD (`vts serve`, cbm-style viz but local-only). `viz.js`
-  `buildVizData(root)` assembles the savings ledger + language census + include-graph cache into one model;
-  `renderDashboardHtml()` is a SELF-CONTAINED page (CSS/JS inlined, NO CDN/external `<script src>` → renders
-  offline, no transmission) with a vanilla-JS force-graph (no D3). `serve.js` is node:http ONLY (no express/ws),
-  binds `127.0.0.1` (never 0.0.0.0), routes `/`→html + `/data`→JSON. OPT-IN + CLI-ONLY: started only by
-  `vts serve` (cli.js special-cases it — long-running, not a runTool dispatch), NEVER by the MCP server, so the
-  steady-state package stays a thin stdio client. `VTS_VIZ_MAX_NODES` (200) bounds the graph. Eval guard 72.
+- `server/viz.js` + `server/serve.js` + `server/dashboard.html` + `server/vendor/` — LOCAL DASHBOARD (`vts
+  serve`, cbm-style viz but local-only/zero-transmission). `viz.js` `buildVizData(root)` assembles the savings
+  ledger + language census + include-graph cache into one model; `renderDashboardHtml()` reads the SELF-CONTAINED
+  `dashboard.html` (CSS/JS inlined; **3D graph via Three.js** rendered WebGL). NO CDN — Three.js is VENDORED at
+  `server/vendor/three.module.min.js` (MIT, r160) and served SAME-ORIGIN (`/vendor/...`); the page imports it
+  relative, so nothing leaves the host. `serve.js` is node:http ONLY (no express/ws), binds `127.0.0.1` (never
+  0.0.0.0), routes `/`→html · `/data`→JSON (include graph) · `/callgraph?symbol=&direction=&depth=`→JSON
+  (ON-DEMAND call graph via `core.js buildCallGraph` = LSP callHierarchy live, NOT a persistent semantic DB —
+  the cbm-parity "call graph" view our charter allows) · `/vendor/<allowlisted file>`. The 3D viz has two modes
+  (include graph / call-graph-by-symbol) + highlight filter + metrics overlay. OPT-IN + CLI-ONLY: started only by
+  `vts serve` (cli.js special-cases it — long-running, `--open` launches the browser, `--stop`/SIGINT stop via a
+  pidfile), NEVER by the MCP server, so the steady-state package stays a thin stdio client. Easy open/close via
+  the **`skills/vs-viz`** skill + **`commands/viz.md` / `commands/viz-stop.md`** (`/vs-token-safer:viz[-stop]`).
+  `VTS_VIZ_MAX_NODES` (200) bounds the graph. Eval guards 72 (dashboard + server) + 73 (buildCallGraph + /callgraph).
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`). PER-CALL
   ROOT: `resolveRoot(a)` (core.js) replaces the old single-pin `a.projectPath || PROJECT_PATH || cwd` for
   every query — precedence: explicit `projectPath` > a `path`'s enclosing project (`findProjectRoot`, only
