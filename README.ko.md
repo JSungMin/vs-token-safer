@@ -324,6 +324,9 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | `lang` | `VTS_LANG` | auto | 훅 메시지 언어: `ko` / `en` (OS 로케일에서 자동 감지). |
 | — | `VTS_TEE` / `VTS_TEE_DIR` | `truncate` | 잘린 `find_files`/`search_text` 결과의 복구 파일. |
 | — | `VTS_USD_PER_MTOK` | `3` | 추정값 줄의 $/Mtok 단가 (참고용). |
+| `starMin` | `VTS_STAR_MIN` | `50000` | 누적 절약(토큰)이 이 값을 넘으면 `vts savings`가 한 줄 ⭐ 안내를 덧붙임. |
+| — | `VTS_STAR_NUDGE` | `1` | `0`이면 ⭐ 줄 숨김. 수동 `vts savings` 리포트에서만 표시(검색/편집 흐름엔 안 나옴), 순수 함수 — **네트워크/star 확인 호출 없음**. |
+| — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings`가 30일 그래프를 기본 표시; `0`(또는 `graph:false`)이면 생략해 간결하게. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 트랜스크립트를 찾는 곳. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 컴파일 DB의 소스 트리 밖 보관처. |
 </details>

@@ -325,6 +325,9 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | `lang` | `VTS_LANG` | auto | Hook message language: `ko` / `en` (auto-detects from OS locale). |
 | — | `VTS_TEE` / `VTS_TEE_DIR` | `truncate` | Recovery file for a capped `find_files`/`search_text` result. |
 | — | `VTS_USD_PER_MTOK` | `3` | $/Mtok rate for the estimated-value line (informational). |
+| `starMin` | `VTS_STAR_MIN` | `50000` | Cumulative-saving threshold (tokens) past which `vts savings` appends a one-line ⭐ pointer. |
+| — | `VTS_STAR_NUDGE` | `1` | `0` hides the ⭐ line. Shown ONLY in the manual `vts savings` report (never in the search/edit flow); pure, **no network / no star-status check**. |
+| — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings` shows the 30-day graph by default; `0` (or `graph:false`) omits it for a terse report. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs. |
 </details>

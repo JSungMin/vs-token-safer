@@ -254,6 +254,16 @@ function savingsGraph(s, days = 30) {
     return `  ${k}  ${bar} ${saved ? "~" + saved.toLocaleString() : ""}`;
   }).join("\n");
 }
+// Value-tied star pointer — shown ONLY in this manual `vts savings` report (never in the search/edit flow),
+// and only once the cumulative saving crosses a threshold, so it rides delivered value instead of nagging.
+// NO network and NO star-status check: the plugin stays zero-transmission — we never ask GitHub whether you've
+// starred (that would be an outbound call, breaking PRIVACY.md). A pure function of `saved`. Off: VTS_STAR_NUDGE=0.
+export function starNudgeLine(saved) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_STAR_NUDGE ?? "1"))) return "";
+  const min = parseInt(cfg("VTS_STAR_MIN", "starMin", "50000"), 10) || 50000;
+  if (!(Number(saved) >= min)) return "";
+  return `\n\n⭐ vs-token-safer has saved you ~${Number(saved).toLocaleString()} tokens so far. If it's pulling its weight, a star helps others find it — github.com/JSungMin/vs-token-safer (no tracking; this line is just a thank-you, set VTS_STAR_NUDGE=0 to hide).`;
+}
 function savingsReport(a = {}) {
   const s = readSavings();
   if (!s.runs) return "No savings recorded yet — run a search first.";
@@ -266,7 +276,10 @@ function savingsReport(a = {}) {
     if (byTool.length) body += `\n  by tool: ` + byTool.map(([t, sv, n]) => `${t} ~${sv.toLocaleString()} (${n})`).join(", ");
   }
   const want = (k) => a[k] === true || a[k] === "true";
-  if (want("graph")) body += `\n\nSaved tokens / day (last 30):\n${savingsGraph(s, 30)}`;
+  // Graph shows BY DEFAULT (the at-a-glance trend is the point of the report). Suppress per-call with
+  // graph:false, or globally with VTS_SAVINGS_GRAPH=0 (e.g. to keep a scripted `vts savings` terse).
+  const showGraph = !(a.graph === false || a.graph === "false" || /^(0|false|off|no)$/i.test(String(process.env.VTS_SAVINGS_GRAPH ?? "1")));
+  if (showGraph) body += `\n\nSaved tokens / day (last 30):\n${savingsGraph(s, 30)}`;
   if (want("daily")) {
     const keys = Object.keys(s.days || {}).sort().slice(-14);
     body += `\n\nDaily (last ${keys.length}):\n` + keys.map((k) => { const b = s.days[k]; return `  ${k}  saved ~${(b.rawTok - b.outTok).toLocaleString()}  (${b.runs} run(s))`; }).join("\n");
@@ -274,7 +287,7 @@ function savingsReport(a = {}) {
   if (want("history")) {
     body += `\n\nRecent runs:\n` + (s.history || []).slice().reverse().map((h) => `  ${h.t.replace("T", " ").slice(0, 19)}  ${h.raw.toLocaleString()} → ${h.out.toLocaleString()} tok`).join("\n");
   }
-  return body + `\n\nLedger: ${SAVINGS_FILE}`;
+  return body + starNudgeLine(totalSaved) + `\n\nLedger: ${SAVINGS_FILE}`;
 }
 
 // ---- #4 tee: when find_files/search_text truncates, write the full (bounded) result set to a tee file so

@@ -465,13 +465,14 @@ try { fs.rmSync(capDir, { recursive: true, force: true }); } catch { /* ignore *
 // 28) savings upgrade — graph/daily/history breakdowns render + an estimated USD line. The ledger has runs
 // from the searches above (isolated to SV). Assert the new sections appear on request, not by default.
 const svPlain = await runTool("vts_savings", {});
-const svRich = await runTool("vts_savings", { graph: true, daily: true, history: true });
+const svRich = await runTool("vts_savings", { daily: true, history: true });
+const svNoGraph = await runTool("vts_savings", { graph: false });
 const savingsUpgradeOk =
   !svPlain.isError && /est\. value: ~\$/.test(svPlain.text) &&            // USD line always present
-  !/Saved tokens \/ day/.test(svPlain.text) &&                            // graph NOT shown by default
-  /Saved tokens \/ day \(last 30\)/.test(svRich.text) &&                  // --graph
-  /Daily \(last/.test(svRich.text) &&                                     // --daily
-  /Recent runs:/.test(svRich.text);                                       // --history
+  /Saved tokens \/ day \(last 30\)/.test(svPlain.text) &&                 // graph shown BY DEFAULT now
+  !/Saved tokens \/ day/.test(svNoGraph.text) &&                          // graph:false suppresses it
+  /Daily \(last/.test(svRich.text) &&                                     // --daily (opt-in)
+  /Recent runs:/.test(svRich.text);                                       // --history (opt-in)
 
 // 29) tee-on-truncation — a truncated find_files/search_text writes the full set to a tee file and
 // references it; VTS_TEE=off suppresses it.
@@ -1316,6 +1317,15 @@ try { fs.rmSync(SV, { force: true }); } catch { /* ignore */ }
 try { fs.rmSync(TEE, { recursive: true, force: true }); } catch { /* ignore */ }
 try { fs.rmSync(EDL, { force: true }); } catch { /* ignore */ }
 
+// 64) value-tied star nudge — appears in the `vts savings` report ONLY past a cumulative-saving threshold,
+// is a PURE function of `saved` (no network, no GitHub star-status check → zero-transmission preserved), and
+// VTS_STAR_NUDGE=0 silences it. Shown only in the manual report, never in the search/edit flow.
+const { starNudgeLine } = await import("../server/core.js");
+const starNudgeOk =
+  /⭐/.test(starNudgeLine(60000)) && /github\.com\/JSungMin\/vs-token-safer/.test(starNudgeLine(60000)) && // over threshold → shown with url
+  starNudgeLine(1000) === "" &&                                                                            // under threshold → silent
+  (() => { process.env.VTS_STAR_NUDGE = "0"; const off = starNudgeLine(99999); delete process.env.VTS_STAR_NUDGE; return off === ""; })(); // toggle off
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -1381,6 +1391,7 @@ const rows = [
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
   ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3200 tok", toolsBudgetOk, "true", toolsBudgetOk],
   ["LSP glue: diagnostics tool + goto kinds (typeDef/impl/decl)", lspGlueOk, "true", lspGlueOk],
+  ["star nudge: value-tied, threshold-gated, pure (no network), toggle", starNudgeOk, "true", starNudgeOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
