@@ -70,7 +70,7 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | Tool | CLI | Does |
 | --- | --- | --- |
 | `search_symbol` | `vts symbol` | Find a symbol declaration by name/substring (semantic, not text). |
-| `find_references` | `vts references` | Every call site of a symbol. Takes the **name directly** (`symbol="FooBar"`) — the one to reach for when you change a function/type and must touch every use. `detail=file`/`dir` → a **blast-radius summary** (dependents grouped + ranked) instead of the per-line list. |
+| `find_references` | `vts references` | Every call site of a symbol. Takes the **name directly** (`symbol="FooBar"`) — the one to reach for when you change a function/type and must touch every use. `detail=file`/`dir` → a **blast-radius summary** (dependents grouped + ranked) instead of the per-line list. `direction=callers`/`callees` switches to a **multi-hop call hierarchy** (who *transitively* calls this = blast radius / what it calls) to `depth` hops — built on LSP `callHierarchy`, the semantic call graph, not a text scan. `vts trace-calls` = shorthand for `references --direction callers`. |
 | `read_symbol` | `vts read-symbol` | Return the **source of one named declaration** (its span) — not the whole file. The read-side twin of `replace_symbol_body`: skip Read-ing a 700-line file to see one function. `signatureOnly` trims to the head. |
 | `goto_definition` | `vts definition` | Jump to the definition at a position. `kind=` also does `type_definition` / `implementation` (concrete impls of an interface/virtual) / `declaration`. |
 | `hover` | `vts hover` | Type/signature at a position. |
@@ -103,6 +103,18 @@ cost small; the CLI keeps the bare subcommands):
 e.g. `vts_admin {op:"git", params:{argv:["status","-s"]}}`. Or hand a whole "where is X / what calls Y /
 find file W" lookup to the **`code-locator` subagent** — it searches in its own context and returns only
 the `file:line` table.
+
+**Dashboard — `vts serve`.** A local, interactive view of what vts knows + how much it saved: the
+savings trend, language mix, per-tool savings, and the include-graph fan-in as a force-directed graph.
+
+```bash
+vts serve            # → http://127.0.0.1:8731/  (Ctrl-C to stop; --port N to change)
+```
+
+It's **127.0.0.1-only and serves a fully self-contained page** (CSS/JS inlined, no CDN, no external
+fetch) — nothing leaves the machine, same trust model as the rest of vts. Built on Node's stdlib `http`
+(zero new dependency), and it runs **only when you invoke it** — the MCP server never starts it, so the
+steady-state package stays a thin stdio client.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame

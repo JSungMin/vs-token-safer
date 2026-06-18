@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vs-token-safer · dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0A0A0A;
+  --panel:#171717;
+  --panel-hover:#1F1F1F;
+  --border:#262626;
+  --inner:#2E2E2E;
+  --ink:#EDEDED;
+  --dim:#A1A1A1;
+  --faint:#737373;
+  --accent:#0070F3;
+  --accent-light:#3B8EFF;
+  --hot:#FACC15;
+  --positive:#34D399;
+  --cpp:#F7768E;
+  --tsjs:#38BDF8;
+  --csharp:#A78BFA;
+  --python:#34D399;
+  --mono:ui-monospace,"SF Mono","SFMono-Regular","Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
+}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45;min-height:100vh}
+body{padding:24px}
+.wrap{max-width:1280px;margin:0 auto}
+
+/* Header */
+.hdr{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:16px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.hdr-left{display:flex;align-items:baseline;gap:12px}
+h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
+.hdr-root{font-family:var(--mono);font-size:12px;color:var(--faint);max-width:480px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hdr-badge{font-size:11px;color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:var(--mono);white-space:nowrap}
+
+/* Grid */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.col-12{grid-column:span 12}
+.col-8{grid-column:span 8}
+.col-7{grid-column:span 7}
+.col-5{grid-column:span 5}
+.col-4{grid-column:span 4}
+
+/* Panel */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px;transition:background .12s}
+.panel:hover{background:var(--panel-hover)}
+.panel-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);margin-bottom:12px}
+
+/* Stat strip */
+.stat-strip{display:grid;grid-template-columns:repeat(4,1fr)}
+.stat-cell{padding:16px 20px;border-right:1px solid var(--border)}
+.stat-cell:last-child{border-right:none}
+.stat-label{font-size:12px;color:var(--dim);margin-bottom:6px;font-family:var(--sans)}
+.stat-val{font-size:32px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1}
+.stat-val.accent{color:var(--accent)}
+.stat-val.positive{color:var(--positive)}
+.stat-sub{font-size:12px;color:var(--faint);margin-top:4px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* Bar chart */
+.bar-wrap{position:relative;width:100%;overflow:hidden}
+.bar-wrap svg{display:block;width:100%}
+
+/* Donut */
+.donut-row{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.donut-svg-wrap{flex:0 0 auto}
+.donut-legend{flex:1;min-width:0}
+.legend-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:default}
+.legend-row:last-child{margin-bottom:0}
+.legend-swatch{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.legend-lang{font-size:13px;color:var(--dim);flex:1}
+.legend-count{font-size:13px;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink)}
+
+/* Tool bars */
+.tool-bars{display:flex;flex-direction:column;gap:10px}
+.tool-row{display:flex;align-items:center;gap:8px}
+.tool-label{font-family:var(--mono);font-size:12px;color:var(--dim);text-align:right;width:120px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-track{flex:1;height:14px;background:var(--inner);border-radius:2px;position:relative;overflow:visible}
+.tool-bar{height:14px;border-radius:2px;background:var(--accent);transition:opacity .15s}
+.tool-val{font-family:var(--mono);font-size:11px;color:var(--ink);font-variant-numeric:tabular-nums;margin-left:6px;flex-shrink:0;white-space:nowrap}
+
+/* Graph canvas */
+.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:var(--panel)}
+canvas{display:block;cursor:grab;border-radius:6px}
+canvas:active{cursor:grabbing}
+.graph-label-layer{position:absolute;inset:0;pointer-events:none}
+
+/* Tooltip */
+.tooltip{position:fixed;background:#1F1F1F;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-family:var(--mono);font-size:11px;color:var(--ink);pointer-events:none;opacity:0;transition:opacity .1s;z-index:999;white-space:nowrap}
+
+/* Empty state */
+.empty{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:13px;min-height:120px;font-family:var(--sans)}
+
+/* Focus ring */
+:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+
+/* Reduced motion */
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:1ms!important;transition-duration:1ms!important}
+}
+
+/* Breakpoint */
+@media(max-width:880px){
+  .col-8,.col-7,.col-5,.col-4,.col-12{grid-column:span 12}
+  .stat-strip{grid-template-columns:repeat(2,1fr)}
+  .stat-cell:nth-child(2){border-right:none}
+  .stat-cell:nth-child(3){border-top:1px solid var(--border)}
+  .stat-cell:nth-child(4){border-top:1px solid var(--border)}
+  .graph-canvas-el{height:300px!important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <h1>vs-token-safer</h1>
+      <span class="hdr-root" id="hdrRoot">loading…</span>
+    </div>
+    <span class="hdr-badge">local · 127.0.0.1 · nothing transmitted</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- Row 1: Stat strip -->
+    <div class="col-12 panel" style="padding:0">
+      <div class="stat-strip">
+        <div class="stat-cell">
+          <div class="stat-label">Tokens Saved</div>
+          <div class="stat-val accent" id="statSaved">—</div>
+          <div class="stat-sub" id="statRatio">—</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-label">Compression Ratio</div>
+          <div class="stat-val" id="statRatioVal">—</div>
+          <div class="stat-sub" id="statRatioSub">raw → out</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-label">Est. Cost Saved</div>
+          <div class="stat-val positive" id="statUsd">—</div>
+          <div class="stat-sub">@ $3 / 1M tok</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-label">Total Searches</div>
+          <div class="stat-val" id="statRuns">—</div>
+          <div class="stat-sub">tool invocations</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: 30-day chart -->
+    <div class="col-8 panel">
+      <div class="panel-title">30-Day Token Savings</div>
+      <div class="bar-wrap" id="barChartWrap">
+        <div class="empty" id="barEmpty" style="display:none">No savings data yet — run a search to start</div>
+        <svg id="barSvg" style="display:none" role="img" aria-label="30-day savings bar chart"></svg>
+      </div>
+    </div>
+
+    <!-- Row 2: Language donut -->
+    <div class="col-4 panel">
+      <div class="panel-title">Language Census</div>
+      <div class="donut-row" id="donutRow">
+        <div class="empty" id="donutEmpty">No project files indexed yet</div>
+      </div>
+    </div>
+
+    <!-- Row 3: Per-tool bars -->
+    <div class="col-5 panel">
+      <div class="panel-title">Savings by Tool</div>
+      <div id="toolBars">
+        <div class="empty" id="toolEmpty">No tool data yet</div>
+      </div>
+    </div>
+
+    <!-- Row 3: Include graph -->
+    <div class="col-7 panel" style="padding:16px 18px">
+      <div class="panel-title">Include Graph</div>
+      <div class="graph-wrap" id="graphWrap">
+        <canvas id="graphCanvas" class="graph-canvas-el" style="height:420px;width:100%"></canvas>
+        <div class="empty" id="graphEmpty" style="display:none;position:absolute;inset:0;background:var(--panel)">No include graph — warm up a C++ project first</div>
+      </div>
+    </div>
+
+  </div><!-- /grid -->
+</div><!-- /wrap -->
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ── Helpers ─────────────────────────────────────────────────────────── */
+function fmtTok(n){
+  if(!Number.isFinite(n)||n<=0)return"0";
+  if(n>=1e9)return(n/1e9).toFixed(2).replace(/\.?0+$/,"")+"B";
+  if(n>=1e6)return(n/1e6).toFixed(2).replace(/\.?0+$/,"")+"M";
+  if(n>=1e3)return(n/1e3).toFixed(1).replace(/\.?0+$/,"")+"k";
+  return String(n);
+}
+function fmtUsd(v){
+  if(!Number.isFinite(v)||v<0)return"$0";
+  if(v>=1000)return"$"+(v/1000).toFixed(1)+"k";
+  return"$"+v.toFixed(2);
+}
+function fmtRatio(r){
+  if(!Number.isFinite(r)||r<=0)return"—";
+  return r.toFixed(1)+"×";
+}
+function lerp(a,b,t){return a+(b-a)*t}
+function clamp(x,lo,hi){return Math.max(lo,Math.min(hi,x))}
+function hexToRgb(h){
+  const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);
+  return[r,g,b];
+}
+function lerpColor(c1,c2,t){
+  const a=hexToRgb(c1),b=hexToRgb(c2);
+  return`rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`;
+}
+
+/* ── Count-up animation ──────────────────────────────────────────────── */
+const prefersReducedMotion=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+function countUp(el,target,fmt,dur){
+  if(prefersReducedMotion){el.textContent=fmt(target);return;}
+  const start=performance.now();
+  function frame(now){
+    const t=clamp((now-start)/dur,0,1);
+    const ease=t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    el.textContent=fmt(target*ease);
+    if(t<1)requestAnimationFrame(frame);
+    else el.textContent=fmt(target);
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ── Tooltip ─────────────────────────────────────────────────────────── */
+const tip=document.getElementById("tooltip");
+function showTip(html,x,y){
+  tip.innerHTML=html;
+  tip.style.opacity="1";
+  const vw=window.innerWidth,vh=window.innerHeight;
+  const tw=tip.offsetWidth+16,th=tip.offsetHeight+16;
+  tip.style.left=clamp(x+12,4,vw-tw)+"px";
+  tip.style.top=clamp(y-40,4,vh-th)+"px";
+}
+function hideTip(){tip.style.opacity="0";}
+
+/* ── 30-day Bar Chart ────────────────────────────────────────────────── */
+function renderBars(days){
+  const wrap=document.getElementById("barChartWrap");
+  const svg=document.getElementById("barSvg");
+  const empty=document.getElementById("barEmpty");
+  const maxVal=Math.max(...days.map(d=>d.saved),1);
+  const hasData=days.some(d=>d.saved>0);
+  if(!hasData){empty.style.display="flex";svg.style.display="none";return;}
+  empty.style.display="none";svg.style.display="block";
+
+  const W=wrap.getBoundingClientRect().width||700;
+  const H=160;
+  const PL=4,PR=4,PT=12,PB=28;
+  const cW=W-PL-PR;
+  const cH=H-PT-PB;
+  const n=days.length;
+  const slot=cW/n;
+  const barW=slot*0.70;
+
+  // ref lines at 0, mid, max
+  const refs=[0,0.5,1];
+  let gridLines="";
+  refs.forEach(r=>{
+    const y=PT+cH*(1-r);
+    gridLines+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#2E2E2E" stroke-width="1"/>`;
+  });
+
+  // bars
+  let bars="";
+  let labels="";
+  days.forEach((d,i)=>{
+    const x=PL+i*slot+(slot-barW)/2;
+    const frac=d.saved/maxVal;
+    const bH=Math.max(frac*cH,1);
+    const y=PT+cH-bH;
+    bars+=`<rect class="bar-rect" data-idx="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bH.toFixed(1)}" fill="#0070F3" rx="2" style="cursor:pointer;transition:fill .15s"/>`;
+    if(i%5===0||i===n-1){
+      const lx=PL+i*slot+slot/2;
+      const mm=d.k.slice(5);
+      const day=parseInt(mm.slice(3),10);
+      const mon=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][parseInt(mm.slice(0,2),10)];
+      labels+=`<text x="${lx.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="#737373" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="11">${day} ${mon}</text>`;
+    }
+  });
+
+  // baseline
+  const baseline=`<line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${W-PR}" y2="${(PT+cH).toFixed(1)}" stroke="#262626" stroke-width="1"/>`;
+
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.setAttribute("height",H);
+  svg.innerHTML=gridLines+bars+baseline+labels;
+
+  // hover
+  svg.querySelectorAll(".bar-rect").forEach(r=>{
+    r.addEventListener("mouseenter",function(e){
+      this.setAttribute("fill","#3B8EFF");
+      const i=parseInt(this.dataset.idx,10);
+      const d=days[i];
+      const dt=new Date(d.k);
+      const mon=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][dt.getUTCMonth()];
+      showTip(`${dt.getUTCDate()} ${mon} · ${fmtTok(d.saved)} tok`,e.clientX,e.clientY);
+    });
+    r.addEventListener("mousemove",function(e){showTip(tip.innerHTML,e.clientX,e.clientY);});
+    r.addEventListener("mouseleave",function(){
+      this.setAttribute("fill","#0070F3");
+      hideTip();
+    });
+  });
+}
+
+/* ── Donut Chart ─────────────────────────────────────────────────────── */
+function renderDonut(census){
+  const row=document.getElementById("donutRow");
+  const empty=document.getElementById("donutEmpty");
+  const langs=[
+    {key:"clangd",label:"C++",color:"#F7768E"},
+    {key:"typescript",label:"TS/JS",color:"#38BDF8"},
+    {key:"roslyn",label:"C#",color:"#A78BFA"},
+    {key:"pyright",label:"Python",color:"#34D399"},
+  ];
+  const pieces=langs.filter(l=>(census[l.key]||0)>0).map(l=>({...l,count:census[l.key]||0}));
+  const pieTotal=pieces.reduce((s,p)=>s+p.count,0);
+  if(!pieTotal){
+    if(empty)empty.style.display="flex";
+    return;
+  }
+  if(empty)empty.style.display="none";
+
+  const R=70,r=R*0.62,cx=R,cy=R;
+  const GAP=2;
+  // Build arcs
+  let svgContent="";
+  let angleStart=-Math.PI/2;
+
+  if(pieces.length===1){
+    // Single-segment: two circles (outer fill + inner hole) to avoid degenerate arc
+    const p=pieces[0];
+    svgContent+=`<circle cx="${cx}" cy="${cy}" r="${R}" fill="${p.color}" stroke="#171717" stroke-width="2" style="cursor:pointer;transition:opacity .15s" data-idx="0"/>`;
+    svgContent+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#171717"/>`;
+  }else{
+    pieces.forEach((p,idx)=>{
+      const frac=p.count/pieTotal;
+      const angleSweep=frac*2*Math.PI-GAP/R;
+      const x1=cx+R*Math.cos(angleStart);
+      const y1=cy+R*Math.sin(angleStart);
+      const x2=cx+R*Math.cos(angleStart+angleSweep);
+      const y2=cy+R*Math.sin(angleStart+angleSweep);
+      const xi1=cx+r*Math.cos(angleStart+angleSweep);
+      const yi1=cy+r*Math.sin(angleStart+angleSweep);
+      const xi2=cx+r*Math.cos(angleStart);
+      const yi2=cy+r*Math.sin(angleStart);
+      const lg=angleSweep>Math.PI?1:0;
+      const d=`M${x1.toFixed(3)},${y1.toFixed(3)} A${R},${R},0,${lg},1,${x2.toFixed(3)},${y2.toFixed(3)} L${xi1.toFixed(3)},${yi1.toFixed(3)} A${r},${r},0,${lg},0,${xi2.toFixed(3)},${yi2.toFixed(3)} Z`;
+      svgContent+=`<path d="${d}" fill="${p.color}" stroke="#171717" stroke-width="2" style="cursor:pointer;transition:opacity .15s" data-idx="${idx}"/>`;
+      angleStart+=angleSweep+GAP/R;
+    });
+  }
+
+  // Center text — use pieTotal (actual arc sum), not census.total
+  svgContent+=`<text x="${cx}" y="${cy-4}" text-anchor="middle" fill="#EDEDED" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="20" font-weight="600" font-variant-numeric="tabular-nums">${pieTotal}</text>`;
+  svgContent+=`<text x="${cx}" y="${cy+13}" text-anchor="middle" fill="#737373" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="11">files</text>`;
+
+  // Legend
+  let legendHtml="";
+  pieces.forEach(p=>{
+    legendHtml+=`<div class="legend-row" data-key="${p.key}"><span class="legend-swatch" style="background:${p.color}"></span><span class="legend-lang">${p.label}</span><span class="legend-count">${p.count}</span></div>`;
+  });
+
+  row.innerHTML=`
+    <div class="donut-svg-wrap">
+      <svg width="${R*2}" height="${R*2}" viewBox="0 0 ${R*2} ${R*2}" role="img" aria-label="Language distribution donut">
+        ${svgContent}
+      </svg>
+    </div>
+    <div class="donut-legend">${legendHtml}</div>
+  `;
+
+  // Hover interactions
+  const paths=row.querySelectorAll("path[data-idx]");
+  function dimAll(){paths.forEach(p=>p.style.opacity="0.5");}
+  function resetAll(){paths.forEach(p=>p.style.opacity="1");}
+  paths.forEach((path,i)=>{
+    path.addEventListener("mouseenter",function(e){
+      dimAll();
+      this.style.opacity="1";
+      const p=pieces[i];
+      showTip(`${p.label}: ${p.count} files`,e.clientX,e.clientY);
+    });
+    path.addEventListener("mousemove",function(e){showTip(tip.innerHTML,e.clientX,e.clientY);});
+    path.addEventListener("mouseleave",function(){resetAll();hideTip();});
+  });
+}
+
+/* ── Per-tool Bars ───────────────────────────────────────────────────── */
+function renderTools(tools){
+  const container=document.getElementById("toolBars");
+  const empty=document.getElementById("toolEmpty");
+  if(!tools||!tools.length){
+    if(empty)empty.style.display="flex";
+    return;
+  }
+  if(empty)empty.style.display="none";
+  const maxVal=Math.max(...tools.map(t=>t.saved),1);
+  let html="<div class='tool-bars'>";
+  tools.forEach(t=>{
+    const pct=(t.saved/maxVal)*100;
+    html+=`<div class="tool-row">
+      <div class="tool-label" title="${t.tool}">${t.tool}</div>
+      <div class="tool-track">
+        <div class="tool-bar" style="width:${pct.toFixed(1)}%"></div>
+      </div>
+      <div class="tool-val">${fmtTok(t.saved)}</div>
+    </div>`;
+  });
+  html+="</div>";
+  container.innerHTML=html;
+}
+
+/* ── Force Graph ─────────────────────────────────────────────────────── */
+function renderGraph(graph){
+  const wrap=document.getElementById("graphWrap");
+  const canvas=document.getElementById("graphCanvas");
+  const empty=document.getElementById("graphEmpty");
+
+  if(!graph||!graph.nodes||!graph.nodes.length){
+    empty.style.display="flex";
+    canvas.style.display="none";
+    return;
+  }
+  empty.style.display="none";
+  canvas.style.display="block";
+
+  // Resize canvas to match CSS size
+  function resize(){
+    const rect=wrap.getBoundingClientRect();
+    canvas.width=rect.width*window.devicePixelRatio;
+    canvas.height=canvas.offsetHeight*window.devicePixelRatio;
+  }
+  resize();
+
+  const ctx=canvas.getContext("2d");
+  const dpr=window.devicePixelRatio||1;
+
+  // Node data
+  const nodeMap=new Map();
+  const maxWeight=Math.max(...graph.nodes.map(n=>n.weight),1);
+  const nonZeroWeights=graph.nodes.map(n=>n.weight).filter(w=>w>0).sort((a,b)=>b-a);
+  const rawP90=nonZeroWeights[Math.floor(nonZeroWeights.length*0.1)]||maxWeight;
+  const p90=Math.max(rawP90,maxWeight*0.5);
+
+  const nodes=graph.nodes.map((n,i)=>{
+    const w=n.weight||0;
+    const norm=w/maxWeight;
+    const r=clamp(3+Math.sqrt(w)*2.2,3,22);
+    // Color: low #3F3F46 → mid #0070F3 → hot #FACC15
+    const color=norm<0.5?lerpColor("#3F3F46","#0070F3",norm*2):lerpColor("#0070F3","#FACC15",(norm-0.5)*2);
+    const hot=w>=p90&&w>0;
+    return{id:n.id,label:n.label,weight:w,norm,r,color,hot,
+      x:(0.2+Math.random()*0.6)*canvas.width/dpr,
+      y:(0.2+Math.random()*0.6)*canvas.height/dpr,
+      vx:0,vy:0,pinned:false,idx:i};
+  });
+  nodes.forEach(n=>nodeMap.set(n.id,n));
+
+  // Edge data (only keep valid)
+  const edges=graph.links
+    .map(l=>({src:nodeMap.get(l.source),tgt:nodeMap.get(l.target)}))
+    .filter(e=>e.src&&e.tgt);
+
+  // Build adjacency for hover
+  const adj=new Map();
+  edges.forEach(e=>{
+    if(!adj.has(e.src.idx))adj.set(e.src.idx,new Set());
+    if(!adj.has(e.tgt.idx))adj.set(e.tgt.idx,new Set());
+    adj.get(e.src.idx).add(e.tgt.idx);
+    adj.get(e.tgt.idx).add(e.src.idx);
+  });
+
+  // Sim state
+  let ticks=0;
+  const SETTLE=150;
+  let heat=1;
+  let hoveredIdx=-1;
+  let animId=null;
+
+  const W=()=>canvas.width/dpr;
+  const H=()=>canvas.height/dpr;
+
+  function simulate(){
+    const w=W(),h=H();
+    const alpha=heat*Math.max(0,(SETTLE-ticks)/SETTLE);
+    if(alpha<0.001&&ticks>SETTLE){heat=0;return;}
+
+    // Repulsion
+    for(let i=0;i<nodes.length;i++){
+      for(let j=i+1;j<nodes.length;j++){
+        const a=nodes[i],b=nodes[j];
+        const dx=b.x-a.x,dy=b.y-a.y;
+        const dist=Math.sqrt(dx*dx+dy*dy)||1;
+        const minDist=a.r+b.r+20;
+        if(dist<minDist){
+          const f=(minDist-dist)/dist*0.5*alpha;
+          const fx=dx*f,fy=dy*f;
+          if(!a.pinned){a.vx-=fx;a.vy-=fy;}
+          if(!b.pinned){b.vx+=fx;b.vy+=fy;}
+        }
+      }
+    }
+    // Spring
+    edges.forEach(e=>{
+      const dx=e.tgt.x-e.src.x,dy=e.tgt.y-e.src.y;
+      const dist=Math.sqrt(dx*dx+dy*dy)||1;
+      const ideal=80;
+      const f=(dist-ideal)/dist*0.08*alpha;
+      const fx=dx*f,fy=dy*f;
+      if(!e.src.pinned){e.src.vx+=fx;e.src.vy+=fy;}
+      if(!e.tgt.pinned){e.tgt.vx-=fx;e.tgt.vy-=fy;}
+    });
+    // Center gravity
+    nodes.forEach(n=>{
+      if(n.pinned)return;
+      n.vx+=(w/2-n.x)*0.003*alpha;
+      n.vy+=(h/2-n.y)*0.003*alpha;
+      // Dampen
+      n.vx*=0.88;n.vy*=0.88;
+      n.x+=n.vx;n.y+=n.vy;
+      // Clamp
+      n.x=clamp(n.x,n.r+2,w-n.r-2);
+      n.y=clamp(n.y,n.r+2,h-n.r-2);
+    });
+    ticks++;
+  }
+
+  function draw(){
+    const w=W(),h=H();
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save();
+    ctx.scale(dpr,dpr);
+    ctx.fillStyle="#171717";
+    ctx.fillRect(0,0,w,h);
+
+    const hov=hoveredIdx>=0;
+    const hovAdj=hov?adj.get(hoveredIdx)||new Set():null;
+
+    // Edges
+    edges.forEach(e=>{
+      const isInc=hov&&(e.src.idx===hoveredIdx||e.tgt.idx===hoveredIdx);
+      ctx.beginPath();
+      ctx.moveTo(e.src.x,e.src.y);
+      ctx.lineTo(e.tgt.x,e.tgt.y);
+      if(hov){
+        ctx.strokeStyle=isInc?"#0070F3":"#3A3A3A";
+        ctx.globalAlpha=isInc?0.9:0.15;
+      }else{
+        ctx.strokeStyle="#3A3A3A";
+        ctx.globalAlpha=0.35;
+      }
+      ctx.lineWidth=1;
+      ctx.stroke();
+    });
+    ctx.globalAlpha=1;
+
+    // Nodes
+    nodes.forEach(n=>{
+      const isHov=n.idx===hoveredIdx;
+      const isAdj=hov&&hovAdj&&hovAdj.has(n.idx);
+      const dimmed=hov&&!isHov&&!isAdj;
+
+      ctx.globalAlpha=dimmed?0.15:1;
+      // Ring for hot nodes
+      if(n.hot){
+        ctx.beginPath();
+        ctx.arc(n.x,n.y,n.r+2.5,0,Math.PI*2);
+        ctx.strokeStyle="#FACC15";
+        ctx.lineWidth=1.5;
+        ctx.stroke();
+      }
+      // Fill
+      ctx.beginPath();
+      ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+      ctx.fillStyle=isHov?"#FACC15":n.color;
+      ctx.fill();
+    });
+    ctx.globalAlpha=1;
+
+    // Labels for hot nodes + hovered
+    nodes.forEach(n=>{
+      if(!n.hot&&n.idx!==hoveredIdx)return;
+      const dimmed=hov&&!n.hot&&n.idx!==hoveredIdx;
+      if(dimmed)return;
+      ctx.save();
+      ctx.font=`11px ui-monospace,Menlo,Consolas,monospace`;
+      ctx.textAlign="center";
+      ctx.textBaseline="middle";
+      // Halo
+      ctx.strokeStyle="#171717";
+      ctx.lineWidth=3;
+      ctx.lineJoin="round";
+      ctx.miterLimit=2;
+      ctx.strokeText(n.label,n.x,n.y-n.r-8);
+      ctx.fillStyle="#EDEDED";
+      ctx.fillText(n.label,n.x,n.y-n.r-8);
+      ctx.restore();
+    });
+
+    ctx.restore();
+  }
+
+  function loop(){
+    simulate();
+    draw();
+    animId=requestAnimationFrame(loop);
+  }
+
+  if(prefersReducedMotion){
+    // Run sim to settle synchronously, then draw once; re-draw only on interaction
+    for(let i=0;i<SETTLE;i++)simulate();
+    draw();
+  }else{
+    animId=requestAnimationFrame(loop);
+  }
+
+  // Interaction-triggered redraw (used by reduced-motion path)
+  function scheduleDraw(){if(prefersReducedMotion)draw();}
+
+  // Mouse interaction
+  let dragging=null;
+  let dragOffX=0,dragOffY=0;
+
+  function canvasXY(e){
+    const rect=canvas.getBoundingClientRect();
+    return[(e.clientX-rect.left),(e.clientY-rect.top)];
+  }
+  function nodeAt(cx,cy){
+    for(let i=nodes.length-1;i>=0;i--){
+      const n=nodes[i];
+      const dx=cx-n.x,dy=cy-n.y;
+      if(dx*dx+dy*dy<=n.r*n.r+4)return n;
+    }
+    return null;
+  }
+
+  canvas.addEventListener("mousemove",function(e){
+    const[cx,cy]=canvasXY(e);
+    const n=nodeAt(cx,cy);
+    if(dragging){
+      dragging.x=clamp(cx+dragOffX,dragging.r,W()-dragging.r);
+      dragging.y=clamp(cy+dragOffY,dragging.r,H()-dragging.r);
+      heat=0.3;ticks=0;scheduleDraw();
+    }else{
+      hoveredIdx=n?n.idx:-1;
+      if(n){
+        showTip(n.label,e.clientX,e.clientY);
+        canvas.title="";
+      }else{
+        hideTip();
+      }
+      scheduleDraw();
+    }
+  });
+  canvas.addEventListener("mouseleave",function(){
+    hoveredIdx=-1;
+    if(!dragging)hideTip();
+    scheduleDraw();
+  });
+  canvas.addEventListener("mousedown",function(e){
+    const[cx,cy]=canvasXY(e);
+    const n=nodeAt(cx,cy);
+    if(n){dragging=n;dragOffX=n.x-cx;dragOffY=n.y-cy;n.pinned=true;heat=0.3;ticks=0;}
+  });
+  canvas.addEventListener("mouseup",function(){dragging=null;scheduleDraw();});
+  canvas.addEventListener("dblclick",function(e){
+    const[cx,cy]=canvasXY(e);
+    const n=nodeAt(cx,cy);
+    if(n){n.pinned=false;heat=0.5;ticks=0;scheduleDraw();}
+  });
+
+  // Resize
+  const ro=new ResizeObserver(()=>{resize();});
+  ro.observe(wrap);
+}
+
+/* ── Resize re-render ────────────────────────────────────────────────── */
+let _resizeTimer=null;
+let _lastData=null;
+function onResize(){
+  clearTimeout(_resizeTimer);
+  _resizeTimer=setTimeout(function(){
+    if(!_lastData)return;
+    const s=_lastData.savings||{};
+    renderBars(s.days||[]);
+    renderDonut(_lastData.census||{});
+    renderTools(s.tools||[]);
+    // graph has its own ResizeObserver — no re-render needed here
+  },120);
+}
+window.addEventListener("resize",onResize);
+
+/* ── Main: fetch and render ──────────────────────────────────────────── */
+fetch("/data")
+  .then(r=>{
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    return r.json();
+  })
+  .then(data=>{
+    _lastData=data;
+    // Header
+    const root=data.root||"";
+    document.getElementById("hdrRoot").textContent=root||"(no project root)";
+
+    // Stats
+    const s=data.savings||{};
+    const totalSaved=s.totalSaved||0;
+    const ratio=s.ratio||0;
+    const usd=s.usd||0;
+    const runs=s.runs||0;
+
+    countUp(document.getElementById("statSaved"),totalSaved,fmtTok,600);
+    countUp(document.getElementById("statRatioVal"),ratio,fmtRatio,600);
+    countUp(document.getElementById("statUsd"),usd,fmtUsd,600);
+    countUp(document.getElementById("statRuns"),runs,v=>Math.round(v).toLocaleString(),600);
+
+    document.getElementById("statRatio").textContent=
+      `${fmtTok(s.rawTok||0)} raw → ${fmtTok(s.outTok||0)} out`;
+
+    // Charts
+    renderBars(s.days||[]);
+    renderDonut(data.census||{});
+    renderTools(s.tools||[]);
+    renderGraph(data.graph||{nodes:[],links:[]});
+  })
+  .catch(err=>{
+    // Surface error once in the header badge — leave panel empty-state copy intact
+    const badge=document.querySelector(".hdr-badge");
+    if(badge){badge.textContent=`error: ${err.message}`;badge.style.color="#F7768E";badge.style.borderColor="#F7768E";}
+    ["statSaved","statRatioVal","statUsd","statRuns"].forEach(id=>{
+      document.getElementById(id).textContent="—";
+    });
+    // Show each panel's existing empty-state copy (don't overwrite it)
+    ["barEmpty","donutEmpty","toolEmpty"].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el)el.style.display="flex";
+    });
+    const ge=document.getElementById("graphEmpty");
+    if(ge){ge.style.display="flex";}
+    const bs=document.getElementById("barSvg");
+    if(bs)bs.style.display="none";
+  });
+
+})();
+</script>
+</body>
+</html>

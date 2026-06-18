@@ -987,6 +987,32 @@ function fmtRefSummary(locList, level, max) {
   return head + (factor ? ` under ${factor}/` : "") + ":\n" + body + (more > 0 ? `\n… ${more} more ${level === "dir" ? "dir" : "file"}(s).` : "");
 }
 export { compactLocationLines, commonDirPrefix, fmtRefSummary };
+// ─── call-hierarchy tracing (trace_calls) ───────────────────────────────────
+// Walk the LSP call graph (callHierarchy/incoming|outgoingCalls) to a bounded depth and node count, then
+// token-cap to an indented `file:line` tree. The official engine resolves the edges (real semantic call
+// resolution — overloads, virtual dispatch — not a tree-sitter approximation); we only traverse + format.
+// A CallHierarchyItem's selectionRange is the NAME (better file:line than the whole-body range).
+const callItemLoc = (item) => locLine(item.uri, item.selectionRange || item.range || { start: { line: 0 } });
+const traceKey = (item) => canonFsPath(item.uri) + ":" + (((item.selectionRange || item.range || {}).start || {}).line ?? "?");
+// DFS from `item` following callers (incoming) or callees (outgoing). `visited` breaks cycles AND prevents
+// re-expanding a shared node; `acc` collects {depth,item,cycle} flattened (formatted by indent); `capRef.cap`
+// bounds total nodes (a hot function can have a huge call graph — no silent unbounded walk).
+async function traceFrom(c, item, dir, depth, depthMax, visited, acc, capRef) {
+  if (depth >= depthMax) return;
+  let calls;
+  try { calls = dir === "callees" ? await c.outgoingCalls(item) : await c.incomingCalls(item); } catch { calls = []; }
+  for (const call of (calls || []).filter(Boolean)) {
+    if (acc.length >= capRef.cap) { capRef.truncated = true; return; }
+    const next = dir === "callees" ? call.to : call.from;
+    if (!next || !next.uri) continue;
+    const k = traceKey(next);
+    const cycle = visited.has(k);
+    acc.push({ depth: depth + 1, item: next, cycle });
+    if (cycle) continue;              // already seen → record the edge but don't re-expand (cycle/dedup guard)
+    visited.add(k);
+    await traceFrom(c, next, dir, depth + 1, depthMax, visited, acc, capRef);
+  }
+}
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 // LSP DiagnosticSeverity. Diagnostics (compiler/linter errors+warnings) as a token-capped
 // `file:line:col severity [code]: message` list, sorted error→hint then by line, with a count summary —
@@ -1594,6 +1620,30 @@ export async function runTool(name, a = {}) {
         if (!a.path || a.line == null || a.character == null) return err("find_references needs `symbol` (a name — resolved via the index), or a `path` + `line` + `character` position (0-based). `path` may also accompany `symbol` to disambiguate an overload.");
         pos = { path: a.path, line: Number(a.line), character: Number(a.character) };
         originLabel = `${a.path}:${Number(a.line) + 1}`;
+      }
+      // direction=callers|callees → a MULTI-HOP CALL HIERARCHY instead of flat references (codebase-memory-mcp
+      // trace_path parity, but synthesized from the OFFICIAL LSP callHierarchy — real semantic edges, zero
+      // transmission). Folded into find_references rather than a new tool: it's the transitive superset of
+      // "who uses this", reuses the symbol→position resolution above, and adds no fixed tool-surface cost.
+      const dirRaw = String(a.direction || "").toLowerCase();
+      const traceDir = (dirRaw === "callers" || dirRaw === "incoming") ? "callers" : (dirRaw === "callees" || dirRaw === "outgoing") ? "callees" : null;
+      if (traceDir) {
+        c.didOpen(pos.path, langIdForPath(pos.path, backendName));
+        const depthMax = Math.max(1, Math.min(Number(a.depth) || 2, envInt("VTS_TRACE_MAX_DEPTH", 5)));
+        const nodeCap = Math.min(Number(a.maxResults) || MAX_RESULTS, envInt("VTS_TRACE_MAX_NODES", 80));
+        const cItems = ((await c.prepareCallHierarchy(pos.path, pos.line, pos.character)) || []).filter(Boolean);
+        if (!cItems.length) return finishOut([], backendAdvisory(backendName, root) + `No call-hierarchy anchor for ${originLabel} (backend: ${backendName}) — point at a function/method, or the backend may not support callHierarchy.` + EMPTY_HINT);
+        const acc = []; const visited = new Set(); const capRef = { cap: nodeCap, truncated: false };
+        for (const it of cItems) { visited.add(traceKey(it)); await traceFrom(c, it, traceDir, 0, depthMax, visited, acc, capRef); }
+        const filePaths = acc.map((n) => fromUri(n.item.uri));
+        try { recordQueryResults(root, filePaths); } catch { /* best-effort */ }
+        const noun = traceDir === "callees" ? "callee" : "caller";
+        const tbody = acc.length
+          ? acc.map((n) => `${"  ".repeat(n.depth)}${SYMBOL_KIND[n.item.kind] || "sym"} ${n.item.name}  @ ${callItemLoc(n.item)}${n.cycle ? " (cycle)" : ""}`).join("\n")
+          : `(no ${noun}s found)`;
+        const more = capRef.truncated ? `\n… node cap ${nodeCap} hit (raise maxResults/VTS_TRACE_MAX_NODES or lower depth).` : "";
+        const summary = acc.length ? `\n${acc.length} ${noun} edge(s) across ${new Set(filePaths).size} file(s) (depth ≤ ${depthMax}).` : "";
+        return finishOut(cItems, backendAdvisory(backendName, root) + `${noun}s of ${originLabel} (backend: ${backendName}):\n` + tbody + more + summary);
       }
       const locs = (await c.references(pos.path, pos.line, pos.character, a.includeDeclaration === true)) || [];
       const locList = (Array.isArray(locs) ? locs : [locs]).filter(Boolean);
