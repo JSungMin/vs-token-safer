@@ -731,6 +731,49 @@ export function compileDbAdvisory(root) {
     "search_symbol/find_references/goto/hover are limited, but search_symbol falls back to a literal text " +
     "search and find_files/search_text work fully.";
 }
+// B: when a clangd query comes back EMPTY, say WHY — distinguish (1) the target file isn't in the compile DB
+// at all (its module wasn't built/included) from (2) it IS in the DB but its index shard isn't built yet (the
+// background index is incomplete on a huge tree — the live UE case: a 26k-TU full-engine DB only ~42% indexed,
+// so a real symbol's TU hadn't been indexed → text fallback). Far more actionable than the generic EMPTY_HINT.
+// clangd-only, best-effort, cached (the DB can be 26k entries → parse once per cdbDir). VTS_INDEX_ADVISORY=0 off.
+const _cdbCache = new Map(); // cdbDir → { count, files:Set<canonPath>, mtime }
+function loadCdb(cdbDir) {
+  try {
+    const cc = path.join(cdbDir, "compile_commands.json");
+    const st = fs.statSync(cc);
+    const hit = _cdbCache.get(cdbDir);
+    if (hit && hit.mtime === st.mtimeMs) return hit;
+    const j = JSON.parse(fs.readFileSync(cc, "utf8"));
+    const v = { count: j.length, files: new Set(j.map((e) => canonFsPath(String(e.file || ""))).filter(Boolean)), mtime: st.mtimeMs };
+    _cdbCache.set(cdbDir, v);
+    return v;
+  } catch { return null; }
+}
+function clangdShardCount(cdbDir) {
+  try { let n = 0; for (const f of fs.readdirSync(path.join(cdbDir, ".cache", "clangd", "index"))) if (f.endsWith(".idx")) n++; return n; } catch { return 0; }
+}
+export function clangdIndexAdvisory(backendName, root, targetPath) {
+  if (backendName !== "clangd") return "";
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_INDEX_ADVISORY ?? "1"))) return "";
+  let cdbDir; try { cdbDir = resolveCdbDir(root); } catch { cdbDir = null; }
+  if (!cdbDir) return ""; // the no-DB case is already covered by compileDbAdvisory
+  const db = loadCdb(cdbDir);
+  if (!db) return "";
+  // (1) a file-targeted query whose file isn't in the DB → the module isn't compiled for this target
+  if (targetPath) {
+    const want = canonFsPath(String(targetPath));
+    if (want && !db.files.has(want)) {
+      return `\n⚠ ${path.basename(String(targetPath))} is NOT in compile_commands.json — its module likely isn't built/included in the target. Build the editor target (UBT compiles it + UHT generates *.generated.h), then regenerate the DB (vts_admin {op:"gen_compile_db", params:{apply:true}}).`;
+    }
+  }
+  // (2) the DB covers it, but clangd's background index is incomplete → the symbol's TU may be unindexed
+  const shards = clangdShardCount(cdbDir);
+  if (db.count > 0 && shards < Math.floor(db.count * 0.9)) {
+    const pct = Math.round((shards / db.count) * 100);
+    return `\n⚠ clangd index ~${pct}% complete (${shards.toLocaleString()}/${db.count.toLocaleString()} TUs) — the symbol's translation unit may not be indexed yet (not a definitive 0). Keep the MCP server warm so the background index finishes, or scope the compile DB to your game modules (exclude the engine's ~11k TUs) so it indexes fully + fast.`;
+  }
+  return "";
+}
 // --- opt-in UBT compile-database generation, so the user can CHOOSE: generate compile_commands.json for
 // full semantic clangd, or stay in no-DB text mode. UE-specific; engine root from VTS_UE_ROOT / arg / a
 // shallow walk-up for Engine/Build/BatchFiles. ---
@@ -1508,7 +1551,7 @@ export async function runTool(name, a = {}) {
             return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${why}. Literal text matches instead (file:line of the name, not a semantic decl):\n` + hits.join("\n"));
           }
         }
-        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT);
+        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null));
       }
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), max);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
@@ -1539,8 +1582,9 @@ export async function runTool(name, a = {}) {
           // no indexed decl (ts/py open-files miss, clangd no-DB) → fall back to a literal usage scan so a
           // code-modder still gets every textual hit, clearly labeled as text not semantic.
           const hits = scanTextUnder(root, want, max);
-          if (hits.length) return finishOut(hits, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — literal usage matches instead (file:line of the name, not semantic references):\n` + hits.join("\n"));
-          return finishOut([], backendAdvisory(backendName, root) + `No declaration found for "${want}" (backend: ${backendName}).` + EMPTY_HINT);
+          const idxAdv = clangdIndexAdvisory(backendName, root, a.path || null);
+          if (hits.length) return finishOut(hits, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — literal usage matches instead (file:line of the name, not semantic references):\n` + hits.join("\n") + idxAdv);
+          return finishOut([], backendAdvisory(backendName, root) + `No declaration found for "${want}" (backend: ${backendName}).` + EMPTY_HINT + idxAdv);
         }
         const pp = fromUri(pick.location.uri);
         pos = { path: pp, line: pick.location.range.start.line, character: pick.location.range.start.character };
