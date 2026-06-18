@@ -11,9 +11,10 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 ## Tools (MCP server name: `vs-search`)
 - Symbol / class / function / type / variable → `search_symbol`  (args: `q`, `projectPath`, `backend`, `maxResults`). Never `grep`/`rg` for this.
 - References / usages of a symbol → `find_references`  (args: `path`, `line`, `character` — 0-based — `includeDeclaration`). Semantic, not a text match.
-- Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based).
+- Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based). The `kind` arg picks WHICH: `definition` (default) · `type_definition` (the type of an expression) · `implementation` (concrete impls of an interface/abstract/virtual — "who implements this?") · `declaration`. For every *usage* (not the definition) use `find_references` instead.
 - Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
 - Outline a file (its classes/functions) → `document_symbols`  (args: `path`).
+- Errors / warnings in a file → `diagnostics`  (args: `path`). Token-capped `file:line:col severity: message`, sorted error→hint with a count summary — read this instead of the raw build/compiler output.
 - Rename a symbol project-wide → `rename`  (args: `path`, `line`, `character`, `newName`, `apply`). Semantic (every reference), not a `sed`. Preview by default; `apply=true` writes the edits.
 - **Add / replace / delete a WHOLE declaration → edit it by NAME**, don't Read-the-file-then-Edit:
   - Replace a function/method/class body (signature included) → `replace_symbol_body`  (args: `symbol`, `body`, optional `path`/`line`, `apply`).
@@ -32,8 +33,8 @@ it runs the searches in its own context and returns just the `file:line` table, 
 land in yours.
 
 CLI equivalent (no MCP needed): `vts symbol --q <name> --projectPath <root>`,
-`vts references --path <file> --line N --character N`, `vts definition --path <file> --line N --character N`,
-`vts hover …`, `vts symbols --path <file>`, `vts text --q <pattern>`, `vts files --q <glob>`.
+`vts references --path <file> --line N --character N`, `vts definition --path <file> --line N --character N [--kind implementation]`,
+`vts hover …`, `vts symbols --path <file>`, `vts diagnostics --path <file>`, `vts text --q <pattern>`, `vts files --q <glob>`.
 
 ## Backends & projectPath
 - Backend auto-detects from the project root (strongest build-artifact first): `compile_commands.json`
