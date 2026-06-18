@@ -1386,6 +1386,28 @@ try { fs.rmSync(skDir, { recursive: true, force: true }); } catch { /* ignore */
 // guards 66/68 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 
+// 69) B: clangd index-aware EMPTY advisory — distinguish (1) target file not in compile_commands.json from
+// (2) DB-covered but the background index is incomplete (% shards/TUs). Pure (reads a fixture DB + .cache).
+const { clangdIndexAdvisory } = await import("../server/core.js");
+const ixDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-idxadv`);
+fs.mkdirSync(path.join(ixDir, ".cache", "clangd", "index"), { recursive: true });
+const inDbFile = path.join(ixDir, "InDb.cpp").replace(/\\/g, "/");
+fs.writeFileSync(path.join(ixDir, "compile_commands.json"), JSON.stringify(
+  Array.from({ length: 10 }, (_, i) => ({ directory: ixDir, file: i === 0 ? inDbFile : `${ixDir.replace(/\\/g, "/")}/F${i}.cpp`, command: "clang x" }))));
+fs.writeFileSync(path.join(ixDir, ".cache", "clangd", "index", "a.idx"), "x"); // 1 shard / 10 TUs = 10%
+const advNotClangd = clangdIndexAdvisory("typescript", ixDir, null);                         // non-clangd → ""
+const advNotInDb = clangdIndexAdvisory("clangd", ixDir, path.join(ixDir, "Missing.cpp"));    // not in DB → case (1)
+const advIncomplete = clangdIndexAdvisory("clangd", ixDir, inDbFile);                        // in DB + 10% indexed → case (2)
+process.env.VTS_INDEX_ADVISORY = "0";
+const advOff = clangdIndexAdvisory("clangd", ixDir, path.join(ixDir, "Missing.cpp"));        // toggled off → ""
+delete process.env.VTS_INDEX_ADVISORY;
+const idxAdvOk =
+  advNotClangd === "" &&
+  /NOT in compile_commands\.json/.test(advNotInDb) &&
+  /index ~10% complete \(1\/10 TUs\)/.test(advIncomplete) &&
+  advOff === "";
+try { fs.rmSync(ixDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -1456,6 +1478,7 @@ const rows = [
   ["read_symbol: symbol source span only (not whole file) + miss", readSymbolOk, "true", readSymbolOk],
   ["find_references detail=file|dir: blast-radius summary (ranked)", refSummaryOk, "true", refSummaryOk],
   ["document_symbols scope=directory: signatures-only repo skeleton", skeletonOk, "true", skeletonOk],
+  ["clangd index advisory: file-not-in-DB vs index-incomplete (%), toggle", idxAdvOk, "true", idxAdvOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

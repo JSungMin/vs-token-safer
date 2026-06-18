@@ -331,6 +331,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings` shows the 30-day graph by default; `0` (or `graph:false`) omits it for a terse report. |
 | — | `VTS_P4_EDIT` | `1` | A symbol-edit / `rename` **apply** auto-runs `p4 edit` on a read-only (Perforce) file before writing — symbol edits write via the server, bypassing any built-in Edit/Write p4 hook. Only fires on read-only files (a writable/git repo never invokes p4); `0` disables. |
 | — | `VTS_P4_CMD` | `p4` | Perforce CLI used for the auto-checkout above (`VTS_P4_TIMEOUT_MS`, default 15000, caps it). |
+| — | `VTS_INDEX_ADVISORY` | `1` | On an EMPTY clangd result, append a why-advisory: the file isn't in `compile_commands.json`, or the background index is only N% built. `0` silences it. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs. |
 </details>
@@ -350,6 +351,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | `VTS_ENFORCE=0` lets grep through. |
 | Wrong backend picked | Multiple project files under the root | Pin `VTS_BACKEND=clangd` (or pass `backend` per call). |
 | `-32001 invalid AST` / nothing on a non-C++ file | A `backend` pinned for a C++ repo was reaching another repo's `.js`/`.cs`/`.py` | Fixed in 0.28.4 — the file's own backend now wins on conflict; update the plugin (`/plugin marketplace update`). |
+| clangd finds nothing on a symbol you KNOW exists | The compile DB doesn't cover that module, OR the background index isn't built yet (vts prints which — see `VTS_INDEX_ADVISORY`) | If "not in compile_commands.json": build the editor target + regenerate the DB. If "index N% complete": keep the server warm so indexing finishes, or scope the DB to your game modules (a 26k-TU full-engine DB indexes slowly — exclude `Engine/` for ~8× faster, complete coverage). |
 </details>
 
 ## Status &amp; safety
