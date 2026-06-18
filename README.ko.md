@@ -105,15 +105,22 @@ CLI는 개별 서브커맨드 유지):
 `file:line` 표만 돌려줍니다.
 
 **대시보드 — `vts serve`.** vts가 아는 것 + 얼마나 아꼈는지를 로컬에서 인터랙티브하게: 절감 추이,
-언어 믹스, 도구별 절감, include-graph 팬인을 force-directed 그래프로.
+언어 믹스, 도구별 절감, 그리고 **인터랙티브 3D 그래프**(WebGL / Three.js) — 두 모드: **include 그래프**
+(파일을 include 팬인으로 크기·heat 색상) + **온디맨드 콜그래프**(심볼 입력 → 그 함수의 전이적 caller/callee를
+LSP `callHierarchy`로 라이브 추적, 영속 인덱스 없음). 드래그로 회전, 휠로 줌, 호버로 `file:line`; 하이라이트
+필터 + 노드/엣지 메트릭 오버레이.
+
+가장 쉬운 건 슬래시 커맨드: **`/vs-token-safer:viz`**(열기) · **`/vs-token-safer:viz-stop`**(닫기). 또는 CLI:
 
 ```bash
-vts serve            # → http://127.0.0.1:8731/  (Ctrl-C로 중지; --port N으로 변경)
+vts serve --open     # → http://127.0.0.1:8731/  (브라우저 자동 실행; --port N으로 변경)
+vts serve --stop     # 중지 (또는 프로세스 Ctrl-C)
 ```
 
-**127.0.0.1 전용이고 완전 자가완결 페이지**(CSS/JS 인라인, CDN·외부 fetch 없음)를 서빙합니다 —
-아무것도 머신을 떠나지 않으며, vts의 나머지와 동일한 신뢰 모델입니다. Node 표준 `http`만 사용(새 의존성
-0)하고, **직접 실행할 때만** 뜹니다 — MCP 서버는 절대 띄우지 않아 상시 패키지는 얇은 stdio 클라이언트로 유지됩니다.
+**127.0.0.1 전용이고 완전 자가완결 페이지** — CSS/JS 인라인 + **Three.js를 로컬 번들**(`server/vendor/`,
+same-origin 서빙, CDN 아님)이라 아무것도 머신을 떠나지 않고 네트워크 없이도 렌더됩니다. vts의 나머지와 동일한
+신뢰 모델. Node 표준 `http`만 사용(웹 프레임워크 의존성 0)하고 **직접 실행할 때만** 뜹니다 — MCP 서버는 절대
+띄우지 않아 상시 패키지는 얇은 stdio 클라이언트로 유지됩니다. 3D 그래프는 `VTS_VIZ_MAX_NODES`(200)로 캡됩니다.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame

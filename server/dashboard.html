@@ -82,16 +82,56 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 .tool-bar{height:14px;border-radius:2px;background:var(--accent);transition:opacity .15s}
 .tool-val{font-family:var(--mono);font-size:11px;color:var(--ink);font-variant-numeric:tabular-nums;margin-left:6px;flex-shrink:0;white-space:nowrap}
 
-/* Graph canvas */
-.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:var(--panel)}
-canvas{display:block;cursor:grab;border-radius:6px}
-canvas:active{cursor:grabbing}
-.graph-label-layer{position:absolute;inset:0;pointer-events:none}
+/* ── Graph panel ── */
+.graph-panel{padding:16px 18px}
+
+/* Control bar sits between panel-title and the canvas */
+.graph-ctrl{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;min-height:28px}
+
+/* Segmented mode toggle */
+.seg{display:inline-flex;background:var(--inner);border:1px solid var(--border);border-radius:5px;overflow:hidden;flex-shrink:0}
+.seg-btn{font-family:var(--mono);font-size:11px;color:var(--dim);background:transparent;border:none;padding:4px 10px;cursor:pointer;line-height:1.4;transition:background .1s,color .1s;white-space:nowrap}
+.seg-btn:focus-visible{outline:1px solid var(--accent);outline-offset:-2px}
+.seg-btn.active{background:var(--accent);color:#fff}
+.seg-btn:not(.active):hover{background:#262626;color:var(--ink)}
+
+/* Call-graph row (hidden by default) */
+.cg-row{display:none;align-items:center;gap:6px;flex-wrap:wrap}
+.cg-row.visible{display:flex}
+.cg-input{font-family:var(--mono);font-size:11px;background:var(--inner);border:1px solid var(--border);border-radius:4px;color:var(--ink);padding:3px 8px;outline:none;width:160px;min-width:80px;transition:border-color .12s}
+.cg-input::placeholder{color:var(--faint)}
+.cg-input:focus{border-color:var(--accent)}
+.cg-select{font-family:var(--mono);font-size:11px;background:var(--inner);border:1px solid var(--border);border-radius:4px;color:var(--ink);padding:3px 6px;cursor:pointer;outline:none}
+.cg-select:focus{border-color:var(--accent)}
+.cg-btn{font-family:var(--mono);font-size:11px;background:var(--accent);border:none;border-radius:4px;color:#fff;padding:4px 10px;cursor:pointer;white-space:nowrap;transition:background .1s}
+.cg-btn:hover{background:var(--accent-light)}
+.cg-btn:disabled{background:var(--inner);color:var(--faint);cursor:default}
+.cg-status{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:4px;white-space:nowrap}
+
+/* Highlight filter (always visible) */
+.hl-wrap{display:flex;align-items:center;gap:5px;margin-left:auto}
+.hl-label{font-family:var(--mono);font-size:10px;color:var(--faint);white-space:nowrap}
+.hl-input{font-family:var(--mono);font-size:11px;background:var(--inner);border:1px solid var(--border);border-radius:4px;color:var(--ink);padding:3px 7px;width:110px;outline:none;transition:border-color .12s}
+.hl-input::placeholder{color:var(--faint)}
+.hl-input:focus{border-color:var(--accent)}
+
+/* Graph viewport */
+.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:#08080A;height:480px}
+.graph-wrap canvas{display:block;width:100%;height:100%;cursor:grab;border-radius:6px}
+.graph-wrap canvas:active{cursor:grabbing}
+
+/* Metrics overlay — bottom-left corner of the canvas area */
+.graph-metrics{position:absolute;bottom:10px;left:12px;font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.6;pointer-events:none;z-index:10;text-shadow:0 1px 2px #000}
+
+/* Inline error / empty inside graph-wrap */
+.graph-empty-msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:13px;font-family:var(--sans);background:#08080A;border-radius:6px;text-align:center;padding:20px;z-index:20}
+.graph-cg-err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--faint);font-size:12px;font-family:var(--mono);background:rgba(8,8,10,0.80);border-radius:6px;text-align:center;padding:20px;z-index:20}
+.graph-cg-err.visible{display:flex}
 
 /* Tooltip */
 .tooltip{position:fixed;background:#1F1F1F;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-family:var(--mono);font-size:11px;color:var(--ink);pointer-events:none;opacity:0;transition:opacity .1s;z-index:999;white-space:nowrap}
 
-/* Empty state */
+/* Empty state (2D panels) */
 .empty{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:13px;min-height:120px;font-family:var(--sans)}
 
 /* Focus ring */
@@ -109,7 +149,10 @@ canvas:active{cursor:grabbing}
   .stat-cell:nth-child(2){border-right:none}
   .stat-cell:nth-child(3){border-top:1px solid var(--border)}
   .stat-cell:nth-child(4){border-top:1px solid var(--border)}
-  .graph-canvas-el{height:300px!important}
+  .graph-wrap{height:300px!important}
+  .hl-wrap{margin-left:0}
+  .hl-input{width:90px}
+  .cg-input{width:120px}
 }
 </style>
 </head>
@@ -171,28 +214,68 @@ canvas:active{cursor:grabbing}
     </div>
 
     <!-- Row 3: Per-tool bars -->
-    <div class="col-5 panel">
+    <div class="col-4 panel">
       <div class="panel-title">Savings by Tool</div>
       <div id="toolBars">
         <div class="empty" id="toolEmpty">No tool data yet</div>
       </div>
     </div>
 
-    <!-- Row 3: Include graph -->
-    <div class="col-7 panel" style="padding:16px 18px">
-      <div class="panel-title">Include Graph</div>
+    <!-- Row 3: Graph panel — 3D WebGL centerpiece -->
+    <div class="col-8 panel graph-panel">
+      <div class="panel-title" id="graphPanelTitle">Include Graph · 3D</div>
+
+      <!-- Control bar -->
+      <div class="graph-ctrl" id="graphCtrl">
+        <!-- Mode toggle -->
+        <div class="seg" role="group" aria-label="Graph mode">
+          <button class="seg-btn active" id="modeInclude" aria-pressed="true">Include graph</button>
+          <button class="seg-btn" id="modeCall" aria-pressed="false">Call graph</button>
+        </div>
+
+        <!-- Call-graph controls (shown only in call mode) -->
+        <div class="cg-row" id="cgRow" role="form" aria-label="Call graph query">
+          <input class="cg-input" id="cgSymbol" type="text" placeholder="function or class name" autocomplete="off" spellcheck="false" aria-label="Symbol name">
+          <select class="cg-select" id="cgDir" aria-label="Direction">
+            <option value="both">both</option>
+            <option value="callers">callers</option>
+            <option value="callees">callees</option>
+          </select>
+          <select class="cg-select" id="cgDepth" aria-label="Depth">
+            <option value="1">depth 1</option>
+            <option value="2" selected>depth 2</option>
+            <option value="3">depth 3</option>
+            <option value="4">depth 4</option>
+          </select>
+          <button class="cg-btn" id="cgTrace">Trace</button>
+          <span class="cg-status" id="cgStatus"></span>
+        </div>
+
+        <!-- Highlight filter (always visible) -->
+        <div class="hl-wrap">
+          <span class="hl-label">find</span>
+          <input class="hl-input" id="hlFilter" type="text" placeholder="filter nodes…" autocomplete="off" spellcheck="false" aria-label="Highlight filter">
+        </div>
+      </div>
+
+      <!-- Graph viewport -->
       <div class="graph-wrap" id="graphWrap">
-        <canvas id="graphCanvas" class="graph-canvas-el" style="height:420px;width:100%"></canvas>
-        <div class="empty" id="graphEmpty" style="display:none;position:absolute;inset:0;background:var(--panel)">No include graph — warm up a C++ project first</div>
+        <!-- canvas injected by the module script -->
+        <div class="graph-empty-msg" id="graphEmpty" style="display:none">Include graph builds after the first warm-up — run a search or <code style="font-family:var(--mono);color:var(--ink)">vts warmup</code>.</div>
+        <!-- Inline call-graph error (doesn't tear down the scene) -->
+        <div class="graph-cg-err" id="cgErr"></div>
+        <!-- Metrics overlay -->
+        <div class="graph-metrics" id="graphMetrics"></div>
       </div>
     </div>
 
   </div><!-- /grid -->
 </div><!-- /wrap -->
 
-<!-- Tooltip -->
+<!-- Tooltip (shared) -->
 <div class="tooltip" id="tooltip"></div>
 
+<!-- ── 2D Panels: vanilla JS (no library) ─────────────────────────────── -->
 <script>
 (function(){
 "use strict";
@@ -271,7 +354,6 @@ function renderBars(days){
   const slot=cW/n;
   const barW=slot*0.70;
 
-  // ref lines at 0, mid, max
   const refs=[0,0.5,1];
   let gridLines="";
   refs.forEach(r=>{
@@ -279,7 +361,6 @@ function renderBars(days){
     gridLines+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#2E2E2E" stroke-width="1"/>`;
   });
 
-  // bars
   let bars="";
   let labels="";
   days.forEach((d,i)=>{
@@ -297,14 +378,11 @@ function renderBars(days){
     }
   });
 
-  // baseline
   const baseline=`<line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${W-PR}" y2="${(PT+cH).toFixed(1)}" stroke="#262626" stroke-width="1"/>`;
-
   svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   svg.setAttribute("height",H);
   svg.innerHTML=gridLines+bars+baseline+labels;
 
-  // hover
   svg.querySelectorAll(".bar-rect").forEach(r=>{
     r.addEventListener("mouseenter",function(e){
       this.setAttribute("fill","#3B8EFF");
@@ -342,12 +420,10 @@ function renderDonut(census){
 
   const R=70,r=R*0.62,cx=R,cy=R;
   const GAP=2;
-  // Build arcs
   let svgContent="";
   let angleStart=-Math.PI/2;
 
   if(pieces.length===1){
-    // Single-segment: two circles (outer fill + inner hole) to avoid degenerate arc
     const p=pieces[0];
     svgContent+=`<circle cx="${cx}" cy="${cy}" r="${R}" fill="${p.color}" stroke="#171717" stroke-width="2" style="cursor:pointer;transition:opacity .15s" data-idx="0"/>`;
     svgContent+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#171717"/>`;
@@ -370,11 +446,9 @@ function renderDonut(census){
     });
   }
 
-  // Center text — use pieTotal (actual arc sum), not census.total
   svgContent+=`<text x="${cx}" y="${cy-4}" text-anchor="middle" fill="#EDEDED" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="20" font-weight="600" font-variant-numeric="tabular-nums">${pieTotal}</text>`;
   svgContent+=`<text x="${cx}" y="${cy+13}" text-anchor="middle" fill="#737373" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="11">files</text>`;
 
-  // Legend
   let legendHtml="";
   pieces.forEach(p=>{
     legendHtml+=`<div class="legend-row" data-key="${p.key}"><span class="legend-swatch" style="background:${p.color}"></span><span class="legend-lang">${p.label}</span><span class="legend-count">${p.count}</span></div>`;
@@ -389,14 +463,12 @@ function renderDonut(census){
     <div class="donut-legend">${legendHtml}</div>
   `;
 
-  // Hover interactions
   const paths=row.querySelectorAll("path[data-idx]");
   function dimAll(){paths.forEach(p=>p.style.opacity="0.5");}
   function resetAll(){paths.forEach(p=>p.style.opacity="1");}
   paths.forEach((path,i)=>{
     path.addEventListener("mouseenter",function(e){
-      dimAll();
-      this.style.opacity="1";
+      dimAll();this.style.opacity="1";
       const p=pieces[i];
       showTip(`${p.label}: ${p.count} files`,e.clientX,e.clientY);
     });
@@ -430,271 +502,7 @@ function renderTools(tools){
   container.innerHTML=html;
 }
 
-/* ── Force Graph ─────────────────────────────────────────────────────── */
-function renderGraph(graph){
-  const wrap=document.getElementById("graphWrap");
-  const canvas=document.getElementById("graphCanvas");
-  const empty=document.getElementById("graphEmpty");
-
-  if(!graph||!graph.nodes||!graph.nodes.length){
-    empty.style.display="flex";
-    canvas.style.display="none";
-    return;
-  }
-  empty.style.display="none";
-  canvas.style.display="block";
-
-  // Resize canvas to match CSS size
-  function resize(){
-    const rect=wrap.getBoundingClientRect();
-    canvas.width=rect.width*window.devicePixelRatio;
-    canvas.height=canvas.offsetHeight*window.devicePixelRatio;
-  }
-  resize();
-
-  const ctx=canvas.getContext("2d");
-  const dpr=window.devicePixelRatio||1;
-
-  // Node data
-  const nodeMap=new Map();
-  const maxWeight=Math.max(...graph.nodes.map(n=>n.weight),1);
-  const nonZeroWeights=graph.nodes.map(n=>n.weight).filter(w=>w>0).sort((a,b)=>b-a);
-  const rawP90=nonZeroWeights[Math.floor(nonZeroWeights.length*0.1)]||maxWeight;
-  const p90=Math.max(rawP90,maxWeight*0.5);
-
-  const nodes=graph.nodes.map((n,i)=>{
-    const w=n.weight||0;
-    const norm=w/maxWeight;
-    const r=clamp(3+Math.sqrt(w)*2.2,3,22);
-    // Color: low #3F3F46 → mid #0070F3 → hot #FACC15
-    const color=norm<0.5?lerpColor("#3F3F46","#0070F3",norm*2):lerpColor("#0070F3","#FACC15",(norm-0.5)*2);
-    const hot=w>=p90&&w>0;
-    return{id:n.id,label:n.label,weight:w,norm,r,color,hot,
-      x:(0.2+Math.random()*0.6)*canvas.width/dpr,
-      y:(0.2+Math.random()*0.6)*canvas.height/dpr,
-      vx:0,vy:0,pinned:false,idx:i};
-  });
-  nodes.forEach(n=>nodeMap.set(n.id,n));
-
-  // Edge data (only keep valid)
-  const edges=graph.links
-    .map(l=>({src:nodeMap.get(l.source),tgt:nodeMap.get(l.target)}))
-    .filter(e=>e.src&&e.tgt);
-
-  // Build adjacency for hover
-  const adj=new Map();
-  edges.forEach(e=>{
-    if(!adj.has(e.src.idx))adj.set(e.src.idx,new Set());
-    if(!adj.has(e.tgt.idx))adj.set(e.tgt.idx,new Set());
-    adj.get(e.src.idx).add(e.tgt.idx);
-    adj.get(e.tgt.idx).add(e.src.idx);
-  });
-
-  // Sim state
-  let ticks=0;
-  const SETTLE=150;
-  let heat=1;
-  let hoveredIdx=-1;
-  let animId=null;
-
-  const W=()=>canvas.width/dpr;
-  const H=()=>canvas.height/dpr;
-
-  function simulate(){
-    const w=W(),h=H();
-    const alpha=heat*Math.max(0,(SETTLE-ticks)/SETTLE);
-    if(alpha<0.001&&ticks>SETTLE){heat=0;return;}
-
-    // Repulsion
-    for(let i=0;i<nodes.length;i++){
-      for(let j=i+1;j<nodes.length;j++){
-        const a=nodes[i],b=nodes[j];
-        const dx=b.x-a.x,dy=b.y-a.y;
-        const dist=Math.sqrt(dx*dx+dy*dy)||1;
-        const minDist=a.r+b.r+20;
-        if(dist<minDist){
-          const f=(minDist-dist)/dist*0.5*alpha;
-          const fx=dx*f,fy=dy*f;
-          if(!a.pinned){a.vx-=fx;a.vy-=fy;}
-          if(!b.pinned){b.vx+=fx;b.vy+=fy;}
-        }
-      }
-    }
-    // Spring
-    edges.forEach(e=>{
-      const dx=e.tgt.x-e.src.x,dy=e.tgt.y-e.src.y;
-      const dist=Math.sqrt(dx*dx+dy*dy)||1;
-      const ideal=80;
-      const f=(dist-ideal)/dist*0.08*alpha;
-      const fx=dx*f,fy=dy*f;
-      if(!e.src.pinned){e.src.vx+=fx;e.src.vy+=fy;}
-      if(!e.tgt.pinned){e.tgt.vx-=fx;e.tgt.vy-=fy;}
-    });
-    // Center gravity
-    nodes.forEach(n=>{
-      if(n.pinned)return;
-      n.vx+=(w/2-n.x)*0.003*alpha;
-      n.vy+=(h/2-n.y)*0.003*alpha;
-      // Dampen
-      n.vx*=0.88;n.vy*=0.88;
-      n.x+=n.vx;n.y+=n.vy;
-      // Clamp
-      n.x=clamp(n.x,n.r+2,w-n.r-2);
-      n.y=clamp(n.y,n.r+2,h-n.r-2);
-    });
-    ticks++;
-  }
-
-  function draw(){
-    const w=W(),h=H();
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.save();
-    ctx.scale(dpr,dpr);
-    ctx.fillStyle="#171717";
-    ctx.fillRect(0,0,w,h);
-
-    const hov=hoveredIdx>=0;
-    const hovAdj=hov?adj.get(hoveredIdx)||new Set():null;
-
-    // Edges
-    edges.forEach(e=>{
-      const isInc=hov&&(e.src.idx===hoveredIdx||e.tgt.idx===hoveredIdx);
-      ctx.beginPath();
-      ctx.moveTo(e.src.x,e.src.y);
-      ctx.lineTo(e.tgt.x,e.tgt.y);
-      if(hov){
-        ctx.strokeStyle=isInc?"#0070F3":"#3A3A3A";
-        ctx.globalAlpha=isInc?0.9:0.15;
-      }else{
-        ctx.strokeStyle="#3A3A3A";
-        ctx.globalAlpha=0.35;
-      }
-      ctx.lineWidth=1;
-      ctx.stroke();
-    });
-    ctx.globalAlpha=1;
-
-    // Nodes
-    nodes.forEach(n=>{
-      const isHov=n.idx===hoveredIdx;
-      const isAdj=hov&&hovAdj&&hovAdj.has(n.idx);
-      const dimmed=hov&&!isHov&&!isAdj;
-
-      ctx.globalAlpha=dimmed?0.15:1;
-      // Ring for hot nodes
-      if(n.hot){
-        ctx.beginPath();
-        ctx.arc(n.x,n.y,n.r+2.5,0,Math.PI*2);
-        ctx.strokeStyle="#FACC15";
-        ctx.lineWidth=1.5;
-        ctx.stroke();
-      }
-      // Fill
-      ctx.beginPath();
-      ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
-      ctx.fillStyle=isHov?"#FACC15":n.color;
-      ctx.fill();
-    });
-    ctx.globalAlpha=1;
-
-    // Labels for hot nodes + hovered
-    nodes.forEach(n=>{
-      if(!n.hot&&n.idx!==hoveredIdx)return;
-      const dimmed=hov&&!n.hot&&n.idx!==hoveredIdx;
-      if(dimmed)return;
-      ctx.save();
-      ctx.font=`11px ui-monospace,Menlo,Consolas,monospace`;
-      ctx.textAlign="center";
-      ctx.textBaseline="middle";
-      // Halo
-      ctx.strokeStyle="#171717";
-      ctx.lineWidth=3;
-      ctx.lineJoin="round";
-      ctx.miterLimit=2;
-      ctx.strokeText(n.label,n.x,n.y-n.r-8);
-      ctx.fillStyle="#EDEDED";
-      ctx.fillText(n.label,n.x,n.y-n.r-8);
-      ctx.restore();
-    });
-
-    ctx.restore();
-  }
-
-  function loop(){
-    simulate();
-    draw();
-    animId=requestAnimationFrame(loop);
-  }
-
-  if(prefersReducedMotion){
-    // Run sim to settle synchronously, then draw once; re-draw only on interaction
-    for(let i=0;i<SETTLE;i++)simulate();
-    draw();
-  }else{
-    animId=requestAnimationFrame(loop);
-  }
-
-  // Interaction-triggered redraw (used by reduced-motion path)
-  function scheduleDraw(){if(prefersReducedMotion)draw();}
-
-  // Mouse interaction
-  let dragging=null;
-  let dragOffX=0,dragOffY=0;
-
-  function canvasXY(e){
-    const rect=canvas.getBoundingClientRect();
-    return[(e.clientX-rect.left),(e.clientY-rect.top)];
-  }
-  function nodeAt(cx,cy){
-    for(let i=nodes.length-1;i>=0;i--){
-      const n=nodes[i];
-      const dx=cx-n.x,dy=cy-n.y;
-      if(dx*dx+dy*dy<=n.r*n.r+4)return n;
-    }
-    return null;
-  }
-
-  canvas.addEventListener("mousemove",function(e){
-    const[cx,cy]=canvasXY(e);
-    const n=nodeAt(cx,cy);
-    if(dragging){
-      dragging.x=clamp(cx+dragOffX,dragging.r,W()-dragging.r);
-      dragging.y=clamp(cy+dragOffY,dragging.r,H()-dragging.r);
-      heat=0.3;ticks=0;scheduleDraw();
-    }else{
-      hoveredIdx=n?n.idx:-1;
-      if(n){
-        showTip(n.label,e.clientX,e.clientY);
-        canvas.title="";
-      }else{
-        hideTip();
-      }
-      scheduleDraw();
-    }
-  });
-  canvas.addEventListener("mouseleave",function(){
-    hoveredIdx=-1;
-    if(!dragging)hideTip();
-    scheduleDraw();
-  });
-  canvas.addEventListener("mousedown",function(e){
-    const[cx,cy]=canvasXY(e);
-    const n=nodeAt(cx,cy);
-    if(n){dragging=n;dragOffX=n.x-cx;dragOffY=n.y-cy;n.pinned=true;heat=0.3;ticks=0;}
-  });
-  canvas.addEventListener("mouseup",function(){dragging=null;scheduleDraw();});
-  canvas.addEventListener("dblclick",function(e){
-    const[cx,cy]=canvasXY(e);
-    const n=nodeAt(cx,cy);
-    if(n){n.pinned=false;heat=0.5;ticks=0;scheduleDraw();}
-  });
-
-  // Resize
-  const ro=new ResizeObserver(()=>{resize();});
-  ro.observe(wrap);
-}
-
-/* ── Resize re-render ────────────────────────────────────────────────── */
+/* ── Resize re-render (2D panels only) ───────────────────────────────── */
 let _resizeTimer=null;
 let _lastData=null;
 function onResize(){
@@ -705,12 +513,16 @@ function onResize(){
     renderBars(s.days||[]);
     renderDonut(_lastData.census||{});
     renderTools(s.tools||[]);
-    // graph has its own ResizeObserver — no re-render needed here
+    // 3D graph has its own ResizeObserver
   },120);
 }
 window.addEventListener("resize",onResize);
 
-/* ── Main: fetch and render ──────────────────────────────────────────── */
+/* ── Expose handshake for 3D module ─────────────────────────────────── */
+window.__dashPending=null;
+window.__dashDispatch=null;
+
+/* ── Main data fetch ────────────────────────────────────────────────── */
 fetch("/data")
   .then(r=>{
     if(!r.ok)throw new Error("HTTP "+r.status);
@@ -718,11 +530,9 @@ fetch("/data")
   })
   .then(data=>{
     _lastData=data;
-    // Header
     const root=data.root||"";
     document.getElementById("hdrRoot").textContent=root||"(no project root)";
 
-    // Stats
     const s=data.savings||{};
     const totalSaved=s.totalSaved||0;
     const ratio=s.ratio||0;
@@ -733,35 +543,809 @@ fetch("/data")
     countUp(document.getElementById("statRatioVal"),ratio,fmtRatio,600);
     countUp(document.getElementById("statUsd"),usd,fmtUsd,600);
     countUp(document.getElementById("statRuns"),runs,v=>Math.round(v).toLocaleString(),600);
-
     document.getElementById("statRatio").textContent=
       `${fmtTok(s.rawTok||0)} raw → ${fmtTok(s.outTok||0)} out`;
 
-    // Charts
     renderBars(s.days||[]);
     renderDonut(data.census||{});
     renderTools(s.tools||[]);
-    renderGraph(data.graph||{nodes:[],links:[]});
+
+    const g=data.graph||{nodes:[],links:[]};
+    if(window.__dashDispatch) window.__dashDispatch(g);
+    else window.__dashPending=g;
   })
   .catch(err=>{
-    // Surface error once in the header badge — leave panel empty-state copy intact
     const badge=document.querySelector(".hdr-badge");
     if(badge){badge.textContent=`error: ${err.message}`;badge.style.color="#F7768E";badge.style.borderColor="#F7768E";}
     ["statSaved","statRatioVal","statUsd","statRuns"].forEach(id=>{
       document.getElementById(id).textContent="—";
     });
-    // Show each panel's existing empty-state copy (don't overwrite it)
     ["barEmpty","donutEmpty","toolEmpty"].forEach(id=>{
-      const el=document.getElementById(id);
-      if(el)el.style.display="flex";
+      const el=document.getElementById(id);if(el)el.style.display="flex";
     });
     const ge=document.getElementById("graphEmpty");
-    if(ge){ge.style.display="flex";}
+    if(ge) ge.style.display="flex";
     const bs=document.getElementById("barSvg");
-    if(bs)bs.style.display="none";
+    if(bs) bs.style.display="none";
+    const empty={nodes:[],links:[]};
+    if(window.__dashDispatch) window.__dashDispatch(empty);
+    else window.__dashPending=empty;
   });
 
 })();
+</script>
+
+<!-- ── 3D Graph (include + call) — Three.js ES module (vendored, same-origin) -->
+<script type="module">
+import * as THREE from "/vendor/three.module.min.js";
+
+/* ── DOM refs ─────────────────────────────────────────────────────────── */
+const wrap        = document.getElementById("graphWrap");
+const emptyMsg    = document.getElementById("graphEmpty");
+const cgErrEl     = document.getElementById("cgErr");
+const metricsEl   = document.getElementById("graphMetrics");
+const tip         = document.getElementById("tooltip");
+const panelTitle  = document.getElementById("graphPanelTitle");
+
+const btnInclude  = document.getElementById("modeInclude");
+const btnCall     = document.getElementById("modeCall");
+const cgRow       = document.getElementById("cgRow");
+const cgSymbolEl  = document.getElementById("cgSymbol");
+const cgDirEl     = document.getElementById("cgDir");
+const cgDepthEl   = document.getElementById("cgDepth");
+const cgTraceBtn  = document.getElementById("cgTrace");
+const cgStatusEl  = document.getElementById("cgStatus");
+const hlFilterEl  = document.getElementById("hlFilter");
+
+/* ── Reduced motion ───────────────────────────────────────────────────── */
+const PRM = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+/* ── Shared utils ─────────────────────────────────────────────────────── */
+function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
+
+function showTip(html,x,y){
+  tip.innerHTML=html;
+  tip.style.opacity="1";
+  const vw=window.innerWidth,vh=window.innerHeight;
+  const tw=tip.offsetWidth+16,th=tip.offsetHeight+16;
+  tip.style.left=clamp(x+12,4,vw-tw)+"px";
+  tip.style.top=clamp(y-40,4,vh-th)+"px";
+}
+function hideTip(){ tip.style.opacity="0"; }
+
+/* ── Color helpers ────────────────────────────────────────────────────── */
+function hexToTHREE(h){ return new THREE.Color(parseInt(h.slice(1),16)); }
+function lerpTHREE(ca,cb,t){
+  return new THREE.Color(ca.r+(cb.r-ca.r)*t, ca.g+(cb.g-ca.g)*t, ca.b+(cb.b-ca.b)*t);
+}
+const COLOR_LOW = hexToTHREE("#3F3F46");
+const COLOR_MID = hexToTHREE("#0070F3");
+const COLOR_HOT = hexToTHREE("#FACC15");
+const COLOR_DIM = hexToTHREE("#1A1A1A");
+
+function heatColor(norm){
+  if(norm<0.5) return lerpTHREE(COLOR_LOW,COLOR_MID,norm*2);
+  return lerpTHREE(COLOR_MID,COLOR_HOT,(norm-0.5)*2);
+}
+
+/* ── Sprite label factory ─────────────────────────────────────────────── */
+function makeLabel(text, accent){
+  const c=document.createElement("canvas");
+  const ctx=c.getContext("2d");
+  const fs=22;
+  ctx.font=`${fs}px ui-monospace,Menlo,Consolas,monospace`;
+  const mw=Math.ceil(ctx.measureText(text).width)+20;
+  const mh=fs+12;
+  c.width=mw; c.height=mh;
+  ctx.font=`${fs}px ui-monospace,Menlo,Consolas,monospace`;
+  ctx.fillStyle="rgba(23,23,23,0.85)";
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(0,0,mw,mh,4); else ctx.rect(0,0,mw,mh);
+  ctx.fill();
+  ctx.fillStyle=accent||"#EDEDED";
+  ctx.textBaseline="middle";
+  ctx.fillText(text,10,mh/2);
+  const tex=new THREE.CanvasTexture(c);
+  const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false});
+  const sp=new THREE.Sprite(mat);
+  const sc=0.035;
+  sp.scale.set(mw*sc,mh*sc,1);
+  return sp;
+}
+
+/* ── Global WebGL renderer (created once, reused across graph loads) ──── */
+let renderer=null;
+let rendererOk=false;
+
+function ensureRenderer(){
+  if(renderer) return rendererOk;
+  try{
+    const tc=document.createElement("canvas");
+    if(!tc.getContext("webgl2")&&!tc.getContext("webgl")) throw new Error("no webgl");
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    renderer.setClearColor(0x08080A,1);
+    renderer.domElement.style.width="100%";
+    renderer.domElement.style.height="100%";
+    renderer.domElement.style.cursor="grab";
+    wrap.appendChild(renderer.domElement);
+    rendererOk=true;
+  }catch(e){
+    emptyMsg.textContent="WebGL unavailable — 3D graph needs a GPU context.";
+    emptyMsg.style.display="flex";
+    rendererOk=false;
+  }
+  return rendererOk;
+}
+
+/* ── Scene state — lives across mode switches ─────────────────────────── */
+let scene=null, camera=null;
+let orbitTarget=new THREE.Vector3();
+let orbitTheta=0, orbitPhi=Math.PI/2, orbitRadius=80;
+let autoRotating=true;
+const AUTO_ROT=0.0004;
+
+// Per-load GPU objects — disposed on each new load
+let instancedMesh=null, edgeLines=null, hlEdgeLines=null;
+let haloMeshes=[], nodeLabelSprites=[];
+let sphereGeo=null, sphereMat=null;
+let haloGeo=null;
+let edgeGeo=null, edgeMat=null, hlEdgeGeo=null, hlEdgeMat=null;
+
+// Per-load sim state
+let simNodes=[];       // [{id,label,file,line,kind,weight,focus,hot}]
+let simEdges=[];       // [{a,b}]
+let simAdj=[];         // Set[] per node
+let nodeColors=[];     // THREE.Color[]
+let px,py,pz,vx,vy,vz,radii,pinned; // Float32Array / Uint8Array
+let N=0;
+let simTick=0, heat=0;
+const SETTLE=150;
+
+// Render loop
+let frameId=null;
+let roObserver=null;
+let sceneInitialized=false;
+
+// Mode + current meta
+let currentMode="include";  // "include" | "call"
+let callMeta=null;          // {focus,direction,depth,truncated,focusLabel}
+
+// Highlight filter
+let hlFilter="";
+
+/* ── Dispose previous GPU objects ────────────────────────────────────── */
+function disposeGPU(){
+  if(instancedMesh){ scene && scene.remove(instancedMesh); instancedMesh.dispose(); instancedMesh=null; }
+  if(edgeLines){     scene && scene.remove(edgeLines); }
+  if(hlEdgeLines){   scene && scene.remove(hlEdgeLines); }
+  if(sphereGeo){  sphereGeo.dispose();  sphereGeo=null; }
+  if(sphereMat){  sphereMat.dispose();  sphereMat=null; }
+  if(haloGeo){    haloGeo.dispose();    haloGeo=null; }
+  if(edgeGeo){    edgeGeo.dispose();    edgeGeo=null; }
+  if(edgeMat){    edgeMat.dispose();    edgeMat=null; }
+  if(hlEdgeGeo){  hlEdgeGeo.dispose();  hlEdgeGeo=null; }
+  if(hlEdgeMat){  hlEdgeMat.dispose();  hlEdgeMat=null; }
+  haloMeshes.forEach(({mesh})=>{
+    scene && scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  });
+  haloMeshes=[];
+  nodeLabelSprites.forEach(entry=>{
+    if(!entry) return;
+    scene && scene.remove(entry.sprite);
+    entry.sprite.material.map && entry.sprite.material.map.dispose();
+    entry.sprite.material.dispose();
+  });
+  nodeLabelSprites=[];
+}
+
+/* ── Build / rebuild a scene from a graph data payload ───────────────── */
+function loadGraph(graph, mode, meta){
+  if(!ensureRenderer()) return;
+
+  disposeGPU();
+
+  // Ensure scene + camera exist (created once)
+  if(!scene){
+    scene=new THREE.Scene();
+    scene.fog=new THREE.FogExp2(0x08080A,0.018);
+    camera=new THREE.PerspectiveCamera(60,1,0.1,1000);
+    camera.position.set(0,0,80);
+  }
+
+  currentMode=mode;
+  callMeta=meta||null;
+
+  N=graph.nodes.length;
+  if(!N){
+    emptyMsg.style.display="flex";
+    updateMetrics([],[],null);
+    return;
+  }
+  emptyMsg.style.display="none";
+  cgErrEl.classList.remove("visible");
+
+  // Physics arrays
+  px=new Float32Array(N); py=new Float32Array(N); pz=new Float32Array(N);
+  vx=new Float32Array(N); vy=new Float32Array(N); vz=new Float32Array(N);
+  radii=new Float32Array(N);
+  pinned=new Uint8Array(N);
+  simNodes=graph.nodes;
+  nodeColors=[];
+
+  const maxWeight=Math.max(...graph.nodes.map(n=>n.weight||0),1);
+  const nonZero=graph.nodes.map(n=>n.weight||0).filter(w=>w>0).sort((a,b)=>b-a);
+  const rawP90=nonZero[Math.floor(nonZero.length*0.1)]||maxWeight;
+  const p90t=Math.max(rawP90,maxWeight*0.5);
+
+  const idToIdx=new Map();
+
+  // Geometries
+  sphereGeo=new THREE.SphereGeometry(1,12,8);
+  sphereMat=new THREE.MeshBasicMaterial({vertexColors:true});
+  instancedMesh=new THREE.InstancedMesh(sphereGeo,sphereMat,N);
+  instancedMesh.frustumCulled=false;
+  scene.add(instancedMesh);
+
+  haloGeo=new THREE.SphereGeometry(1,10,6);
+
+  graph.nodes.forEach((n,i)=>{
+    idToIdx.set(n.id,i);
+    const w=n.weight||0;
+    const norm=w/maxWeight;
+    // For call-graph, focus node gets the largest radius regardless
+    const isFocus=mode==="call"&&n.focus===true;
+    const r=isFocus ? Math.max(4.5, 1.2+Math.sqrt(w)*1.6) : Math.max(1.2, 1.2+Math.sqrt(w)*1.6);
+    radii[i]=r;
+
+    // Scatter in a sphere
+    const theta=Math.random()*Math.PI*2;
+    const phi=Math.acos(2*Math.random()-1);
+    const dist=15+Math.random()*25;
+    px[i]=dist*Math.sin(phi)*Math.cos(theta);
+    py[i]=dist*Math.sin(phi)*Math.sin(theta);
+    pz[i]=dist*Math.cos(phi);
+
+    const col=heatColor(norm);
+    nodeColors.push(col);
+    instancedMesh.setColorAt(i,col);
+
+    const hot=(w>=p90t&&w>0)||isFocus;
+
+    if(hot){
+      // Halo
+      const hm=new THREE.MeshBasicMaterial({
+        color: isFocus ? 0xFACC15 : 0x0070F3,
+        transparent:true, opacity:isFocus?0.18:0.11,
+        blending:THREE.AdditiveBlending, depthWrite:false
+      });
+      const halo=new THREE.Mesh(haloGeo.clone(),hm);
+      halo.scale.setScalar(r+2.5);
+      halo.frustumCulled=false;
+      scene.add(halo);
+      haloMeshes.push({mesh:halo,idx:i,isFocus});
+
+      // Always-on label
+      const lbl=n.label||(n.id.split("/").pop())||n.id;
+      const sp=makeLabel(lbl, isFocus?"#FACC15":undefined);
+      sp.frustumCulled=false;
+      scene.add(sp);
+      nodeLabelSprites.push({sprite:sp,idx:i,always:true});
+    }else{
+      nodeLabelSprites.push(null);
+    }
+  });
+  instancedMesh.instanceColor.needsUpdate=true;
+
+  // Edges
+  simEdges=[];
+  const validLinks=(graph.links||[]).filter(l=>idToIdx.has(l.source)&&idToIdx.has(l.target));
+  validLinks.forEach(l=>simEdges.push({a:idToIdx.get(l.source),b:idToIdx.get(l.target)}));
+
+  const EP=simEdges.length;
+  const edgePos=new Float32Array(EP*2*3);
+  edgeGeo=new THREE.BufferGeometry();
+  edgeGeo.setAttribute("position",new THREE.BufferAttribute(edgePos,3));
+  edgeMat=new THREE.LineBasicMaterial({color:0x3A3A3A,transparent:true,opacity:0.22});
+  edgeLines=new THREE.LineSegments(edgeGeo,edgeMat);
+  edgeLines.frustumCulled=false;
+  scene.add(edgeLines);
+
+  const hlPos=new Float32Array(EP*2*3);
+  hlEdgeGeo=new THREE.BufferGeometry();
+  hlEdgeGeo.setAttribute("position",new THREE.BufferAttribute(hlPos,3));
+  hlEdgeMat=new THREE.LineBasicMaterial({color:0x0070F3,transparent:true,opacity:0.9});
+  hlEdgeLines=new THREE.LineSegments(hlEdgeGeo,hlEdgeMat);
+  hlEdgeLines.frustumCulled=false;
+  scene.add(hlEdgeLines);
+
+  simAdj=new Array(N).fill(null).map(()=>new Set());
+  simEdges.forEach(({a,b})=>{ simAdj[a].add(b); simAdj[b].add(a); });
+
+  // Sim
+  simTick=0; heat=1.0;
+  if(PRM){ for(let t=0;t<SETTLE;t++) simStep(); }
+
+  // Camera
+  if(!sceneInitialized){
+    sceneInitialized=true;
+    resizeRenderer();
+    recenterCamera();
+    deriveCameraOrbit();
+  }else{
+    recenterCamera();
+    deriveCameraOrbit();
+  }
+
+  // Update metrics overlay
+  updateMetrics(graph.nodes, simEdges, callMeta);
+
+  // Start/continue render loop
+  if(!frameId&&!PRM){
+    frameId=requestAnimationFrame(renderLoop);
+  }
+  if(PRM){
+    updateInstancedMesh(-1);
+    updateDecorations();
+    updateEdgePositions(-1);
+    renderer.render(scene,camera);
+  }
+}
+
+/* ── Force sim ────────────────────────────────────────────────────────── */
+const REPULSION_K=280, SPRING_REST=30, SPRING_K=0.06, GRAVITY=0.004, DAMPING=0.86;
+
+function simStep(){
+  const alpha=heat*Math.max(0,(SETTLE-simTick)/SETTLE);
+  if(alpha<0.001&&simTick>=SETTLE){ heat=0; return; }
+
+  for(let i=0;i<N;i++){
+    if(pinned[i]) continue;
+    for(let j=i+1;j<N;j++){
+      const dx=px[j]-px[i],dy=py[j]-py[i],dz=pz[j]-pz[i];
+      const d2=dx*dx+dy*dy+dz*dz;
+      const d=Math.sqrt(d2)||0.001;
+      const minD=radii[i]+radii[j]+6;
+      if(d<minD*3){
+        const f=(REPULSION_K/(d2+0.1))*alpha*0.5;
+        const fx=dx/d*f,fy=dy/d*f,fz=dz/d*f;
+        vx[i]-=fx; vy[i]-=fy; vz[i]-=fz;
+        if(!pinned[j]){ vx[j]+=fx; vy[j]+=fy; vz[j]+=fz; }
+      }
+    }
+  }
+
+  simEdges.forEach(({a,b})=>{
+    const dx=px[b]-px[a],dy=py[b]-py[a],dz=pz[b]-pz[a];
+    const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.001;
+    const f=(d-SPRING_REST)/d*SPRING_K*alpha;
+    const fx=dx*f,fy=dy*f,fz=dz*f;
+    if(!pinned[a]){ vx[a]+=fx; vy[a]+=fy; vz[a]+=fz; }
+    if(!pinned[b]){ vx[b]-=fx; vy[b]-=fy; vz[b]-=fz; }
+  });
+
+  for(let i=0;i<N;i++){
+    if(pinned[i]) continue;
+    vx[i]+=-px[i]*GRAVITY*alpha;
+    vy[i]+=-py[i]*GRAVITY*alpha;
+    vz[i]+=-pz[i]*GRAVITY*alpha;
+    vx[i]*=DAMPING; vy[i]*=DAMPING; vz[i]*=DAMPING;
+    px[i]+=vx[i]; py[i]+=vy[i]; pz[i]+=vz[i];
+  }
+  simTick++;
+}
+
+/* ── Renderer resize ──────────────────────────────────────────────────── */
+function resizeRenderer(){
+  if(!renderer) return;
+  const w=wrap.clientWidth, h=wrap.clientHeight;
+  renderer.setSize(w,h,false);
+  if(camera){ camera.aspect=w/h; camera.updateProjectionMatrix(); }
+}
+
+/* ── Camera helpers ───────────────────────────────────────────────────── */
+function recenterCamera(){
+  if(!N) return;
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<N;i++){ cx+=px[i];cy+=py[i];cz+=pz[i]; }
+  cx/=N; cy/=N; cz/=N;
+  let maxR=0;
+  for(let i=0;i<N;i++){
+    const dx=px[i]-cx,dy=py[i]-cy,dz=pz[i]-cz;
+    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i];
+    if(r>maxR) maxR=r;
+  }
+  const fovR=camera.fov*Math.PI/180;
+  const dist=(maxR/Math.tan(fovR/2))*1.25;
+  camera.position.set(cx,cy,cz+dist);
+  camera.lookAt(cx,cy,cz);
+  orbitTarget.set(cx,cy,cz);
+}
+
+function deriveCameraOrbit(){
+  if(!camera) return;
+  const d=camera.position.clone().sub(orbitTarget);
+  orbitRadius=d.length();
+  orbitTheta=Math.atan2(d.x,d.z);
+  orbitPhi=Math.acos(Math.max(-1,Math.min(1,d.y/orbitRadius)));
+}
+
+function updateCameraFromOrbit(){
+  if(!camera) return;
+  const x=orbitTarget.x+orbitRadius*Math.sin(orbitPhi)*Math.sin(orbitTheta);
+  const y=orbitTarget.y+orbitRadius*Math.cos(orbitPhi);
+  const z=orbitTarget.z+orbitRadius*Math.sin(orbitPhi)*Math.cos(orbitTheta);
+  camera.position.set(x,y,z);
+  camera.lookAt(orbitTarget);
+}
+
+/* ── Node / edge update ───────────────────────────────────────────────── */
+const dummy=new THREE.Object3D();
+
+function updateInstancedMesh(hovIdx){
+  if(!instancedMesh||!N) return;
+  const hl=hlFilter.trim().toLowerCase();
+  for(let i=0;i<N;i++){
+    dummy.position.set(px[i],py[i],pz[i]);
+    dummy.scale.setScalar(radii[i]);
+    dummy.updateMatrix();
+    instancedMesh.setMatrixAt(i,dummy.matrix);
+
+    let col;
+    const nodeLabel=(simNodes[i].label||simNodes[i].id||"").toLowerCase();
+    const hlMatch=!hl||nodeLabel.includes(hl);
+
+    if(!hlMatch){
+      // Dimmed by filter
+      col=COLOR_DIM.clone();
+    } else if(hovIdx>=0){
+      const isHov=(i===hovIdx);
+      const isAdj=simAdj[hovIdx]&&simAdj[hovIdx].has(i);
+      const dimmed=!isHov&&!isAdj;
+      col=isHov ? COLOR_HOT.clone() : dimmed ? nodeColors[i].clone().multiplyScalar(0.18) : nodeColors[i];
+    }else{
+      col=nodeColors[i];
+    }
+    instancedMesh.setColorAt(i,col);
+  }
+  instancedMesh.instanceMatrix.needsUpdate=true;
+  instancedMesh.instanceColor.needsUpdate=true;
+}
+
+function updateDecorations(){
+  haloMeshes.forEach(({mesh,idx})=>{
+    mesh.position.set(px[idx],py[idx],pz[idx]);
+  });
+  nodeLabelSprites.forEach(entry=>{
+    if(!entry) return;
+    const {sprite,idx}=entry;
+    sprite.position.set(px[idx],py[idx]+radii[idx]+2.5,pz[idx]);
+    sprite.visible=true;
+  });
+}
+
+function updateEdgePositions(hovIdx){
+  if(!edgeGeo||!hlEdgeGeo||!simEdges.length) return;
+  const hl=hlFilter.trim().toLowerCase();
+  const mainPos=edgeGeo.attributes.position.array;
+  const hlPos=hlEdgeGeo.attributes.position.array;
+  let base=0,hlBase=0,hlCount=0;
+
+  simEdges.forEach(({a,b})=>{
+    const isHov=hovIdx>=0&&(a===hovIdx||b===hovIdx);
+    // Also dim edges when filter active and neither endpoint matches
+    const aLabel=(simNodes[a]&&(simNodes[a].label||simNodes[a].id)||"").toLowerCase();
+    const bLabel=(simNodes[b]&&(simNodes[b].label||simNodes[b].id)||"").toLowerCase();
+    const hlActive=hl!=="";
+    const edgeMatch=!hlActive||(aLabel.includes(hl)||bLabel.includes(hl));
+
+    mainPos[base  ]=px[a];mainPos[base+1]=py[a];mainPos[base+2]=pz[a];
+    mainPos[base+3]=px[b];mainPos[base+4]=py[b];mainPos[base+5]=pz[b];
+    base+=6;
+
+    if(isHov&&edgeMatch){
+      hlPos[hlBase  ]=px[a];hlPos[hlBase+1]=py[a];hlPos[hlBase+2]=pz[a];
+      hlPos[hlBase+3]=px[b];hlPos[hlBase+4]=py[b];hlPos[hlBase+5]=pz[b];
+      hlBase+=6; hlCount++;
+    }
+  });
+
+  edgeGeo.attributes.position.needsUpdate=true;
+  edgeGeo.setDrawRange(0,simEdges.length*2);
+  hlEdgeGeo.attributes.position.needsUpdate=true;
+  hlEdgeGeo.setDrawRange(0,hlCount*2);
+}
+
+/* ── Metrics overlay update ───────────────────────────────────────────── */
+function updateMetrics(nodes, edges, meta){
+  if(!nodes||!nodes.length){ metricsEl.textContent=""; return; }
+  const hotNode=nodes.reduce((best,n)=>(n.weight||0)>(best.weight||0)?n:best, nodes[0]);
+  const hotLabel=hotNode.label||(hotNode.id.split("/").pop())||hotNode.id;
+  let txt=`${nodes.length} nodes · ${edges.length} edges   hot: ${hotLabel}`;
+  if(meta&&currentMode==="call"){
+    const fl=meta.focusLabel||meta.focus||"";
+    txt+=`\nfocus: ${fl} · ${meta.direction} · depth ${meta.depth}`;
+    if(meta.truncated) txt+=" · truncated";
+  }
+  metricsEl.textContent=txt;
+}
+
+/* ── Raycasting ───────────────────────────────────────────────────────── */
+const raycaster=new THREE.Raycaster();
+const mouse2D=new THREE.Vector2();
+let hoveredIdx=-1;
+
+function getXY(e){
+  const rect=renderer.domElement.getBoundingClientRect();
+  return{
+    x:((e.clientX-rect.left)/rect.width)*2-1,
+    y:-((e.clientY-rect.top)/rect.height)*2+1
+  };
+}
+function pickNode(e){
+  if(!instancedMesh||!camera) return -1;
+  const{x,y}=getXY(e);
+  mouse2D.set(x,y);
+  raycaster.setFromCamera(mouse2D,camera);
+  const hits=raycaster.intersectObject(instancedMesh);
+  return hits.length?hits[0].instanceId:-1;
+}
+
+function nodeTooltip(idx){
+  if(idx<0||!simNodes[idx]) return "";
+  const n=simNodes[idx];
+  const lbl=n.label||(n.id.split("/").pop())||n.id;
+  if(currentMode==="call"&&(n.file||n.line)){
+    return `${lbl}<br><span style="color:#737373">${n.file||""}${n.line?":"+n.line:""} (${n.kind||"symbol"})</span>`;
+  }
+  return `${lbl}<br><span style="color:#737373">fan-in: ${n.weight||0}</span>`;
+}
+
+/* ── Drag / orbit controls ────────────────────────────────────────────── */
+let isDragging=false,isNodeDrag=false,draggedIdx=-1;
+let dragStartX=0,dragStartY=0;
+let lastTheta=0,lastPhi=0;
+const dragPlane=new THREE.Plane();
+const dragTarget=new THREE.Vector3();
+
+function attachControls(){
+  const el=renderer.domElement;
+  el.addEventListener("mousedown",onMD);
+  el.addEventListener("mousemove",onMM);
+  el.addEventListener("mouseup",onMU);
+  el.addEventListener("mouseleave",onML);
+  el.addEventListener("dblclick",onDbl);
+  el.addEventListener("wheel",onWheel,{passive:false});
+}
+
+function onMD(e){
+  if(!camera) return;
+  const idx=pickNode(e);
+  isDragging=true;
+  dragStartX=e.clientX; dragStartY=e.clientY;
+  lastTheta=orbitTheta; lastPhi=orbitPhi;
+  autoRotating=false;
+  if(idx>=0){
+    isNodeDrag=true; draggedIdx=idx;
+    pinned[idx]=1; heat=0.4; simTick=0;
+    renderer.domElement.style.cursor="grabbing";
+    const camDir=new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    dragPlane.setFromNormalAndCoplanarPoint(camDir,new THREE.Vector3(px[idx],py[idx],pz[idx]));
+  }else{
+    isNodeDrag=false;
+    renderer.domElement.style.cursor="grabbing";
+  }
+}
+
+function onMM(e){
+  if(!camera) return;
+  if(isDragging){
+    if(isNodeDrag&&draggedIdx>=0){
+      const{x,y}=getXY(e);
+      mouse2D.set(x,y);
+      raycaster.setFromCamera(mouse2D,camera);
+      if(raycaster.ray.intersectPlane(dragPlane,dragTarget)){
+        px[draggedIdx]=dragTarget.x;
+        py[draggedIdx]=dragTarget.y;
+        pz[draggedIdx]=dragTarget.z;
+        heat=0.3; simTick=0;
+      }
+    }else{
+      const dx=(e.clientX-dragStartX)*0.005;
+      const dy=(e.clientY-dragStartY)*0.005;
+      orbitTheta=lastTheta-dx;
+      orbitPhi=Math.max(0.1,Math.min(Math.PI-0.1,lastPhi+dy));
+      updateCameraFromOrbit();
+    }
+    return;
+  }
+  const idx=pickNode(e);
+  if(idx!==hoveredIdx){
+    hoveredIdx=idx;
+    if(idx>=0){
+      showTip(nodeTooltip(idx),e.clientX,e.clientY);
+      renderer.domElement.style.cursor="pointer";
+    }else{
+      hideTip();
+      renderer.domElement.style.cursor="grab";
+    }
+  }else if(idx>=0){
+    showTip(nodeTooltip(idx),e.clientX,e.clientY);
+  }
+}
+
+function onMU(){
+  isDragging=false; isNodeDrag=false; draggedIdx=-1;
+  if(renderer) renderer.domElement.style.cursor="grab";
+  setTimeout(()=>{ autoRotating=!PRM; },1200);
+}
+
+function onML(){
+  if(!isDragging){ hideTip(); hoveredIdx=-1; }
+}
+
+function onDbl(e){
+  const idx=pickNode(e);
+  if(idx>=0){ pinned[idx]=0; heat=0.5; simTick=0; }
+}
+
+function onWheel(e){
+  e.preventDefault();
+  orbitRadius=Math.max(10,Math.min(300,orbitRadius+e.deltaY*0.15));
+  updateCameraFromOrbit();
+  autoRotating=false;
+  setTimeout(()=>{ autoRotating=!PRM; },1500);
+}
+
+/* ── Main render loop ─────────────────────────────────────────────────── */
+function renderLoop(){
+  frameId=requestAnimationFrame(renderLoop);
+  if(!scene||!camera||!renderer) return;
+
+  if(!PRM){
+    if(heat>0) simStep();
+    if(autoRotating) orbitTheta+=AUTO_ROT;
+    updateCameraFromOrbit();
+  }
+
+  updateInstancedMesh(hoveredIdx);
+  updateDecorations();
+  updateEdgePositions(hoveredIdx);
+  edgeMat&&(edgeMat.opacity=hoveredIdx>=0?0.10:0.22);
+
+  renderer.render(scene,camera);
+}
+
+/* ── ResizeObserver ───────────────────────────────────────────────────── */
+roObserver=new ResizeObserver(()=>resizeRenderer());
+roObserver.observe(wrap);
+
+/* ── Mode toggle UI ───────────────────────────────────────────────────── */
+let includeGraphData=null; // cached from /data
+
+function switchMode(mode){
+  if(mode===currentMode&&instancedMesh) return;
+  btnInclude.classList.toggle("active",mode==="include");
+  btnCall.classList.toggle("active",mode==="call");
+  btnInclude.setAttribute("aria-pressed",String(mode==="include"));
+  btnCall.setAttribute("aria-pressed",String(mode==="call"));
+  cgRow.classList.toggle("visible",mode==="call");
+  panelTitle.textContent=mode==="include"?"Include Graph · 3D":"Call Graph · 3D";
+
+  if(mode==="include"){
+    currentMode="include";
+    callMeta=null;
+    cgErrEl.classList.remove("visible");
+    cgStatusEl.textContent="";
+    if(includeGraphData){
+      loadGraph(includeGraphData,"include",null);
+    }else{
+      emptyMsg.style.display="flex";
+    }
+  }else{
+    currentMode="call";
+    // Don't tear down — wait for a trace
+  }
+}
+
+btnInclude.addEventListener("click",()=>switchMode("include"));
+btnCall.addEventListener("click",()=>switchMode("call"));
+
+/* ── Call-graph fetch ─────────────────────────────────────────────────── */
+function traceCallGraph(){
+  const sym=cgSymbolEl.value.trim();
+  if(!sym) return;
+  const dir=cgDirEl.value;
+  const depth=cgDepthEl.value;
+
+  cgTraceBtn.disabled=true;
+  cgStatusEl.textContent="tracing…";
+  cgErrEl.classList.remove("visible");
+
+  fetch("/callgraph?symbol="+encodeURIComponent(sym)+"&direction="+encodeURIComponent(dir)+"&depth="+encodeURIComponent(depth))
+    .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(data=>{
+      cgStatusEl.textContent="";
+      cgTraceBtn.disabled=false;
+
+      if(data.error||!data.nodes||!data.nodes.length){
+        const msg=data.error||`No call hierarchy for "${sym}" — try a function/method name, or warm up the backend first.`;
+        cgErrEl.textContent=msg;
+        cgErrEl.classList.add("visible");
+        updateMetrics(simNodes,simEdges,callMeta);
+        return;
+      }
+
+      const focusNode=data.nodes.find(n=>n.focus===true);
+      const focusLabel=focusNode?(focusNode.label||focusNode.id):sym;
+      const meta={
+        focus:data.focus||sym,
+        focusLabel,
+        direction:data.direction||dir,
+        depth:data.depth||depth,
+        truncated:!!data.truncated
+      };
+      loadGraph(data,"call",meta);
+    })
+    .catch(err=>{
+      cgStatusEl.textContent="";
+      cgTraceBtn.disabled=false;
+      cgErrEl.textContent=`Error: ${err.message}`;
+      cgErrEl.classList.add("visible");
+    });
+}
+
+cgTraceBtn.addEventListener("click",traceCallGraph);
+cgSymbolEl.addEventListener("keydown",e=>{ if(e.key==="Enter") traceCallGraph(); });
+
+/* ── Highlight filter ─────────────────────────────────────────────────── */
+hlFilterEl.addEventListener("input",()=>{
+  hlFilter=hlFilterEl.value;
+  // If reduced-motion, force a re-render
+  if(PRM&&renderer&&scene&&camera){
+    updateInstancedMesh(hoveredIdx);
+    updateDecorations();
+    updateEdgePositions(hoveredIdx);
+    renderer.render(scene,camera);
+  }
+});
+
+/* ── Attach controls after renderer exists ────────────────────────────── */
+// Controls are attached once on first graph load via ensureRenderer + attachControls
+let controlsAttached=false;
+function maybeAttachControls(){
+  if(controlsAttached||!renderer) return;
+  attachControls();
+  controlsAttached=true;
+}
+
+/* ── Data handshake with 2D script ───────────────────────────────────── */
+function handleIncludeData(g){
+  includeGraphData=g;
+  maybeAttachControls();
+  if(currentMode==="include"){
+    if(!g||!g.nodes||!g.nodes.length){
+      emptyMsg.style.display="flex";
+    }else{
+      loadGraph(g,"include",null);
+    }
+  }
+}
+
+// Wire up: ensureRenderer is called inside loadGraph; controls need the element to exist
+// We call ensureRenderer early so the canvas is in the DOM before first data arrives
+if(ensureRenderer()) attachControls();
+controlsAttached=true;
+
+if(window.__dashPending!==null){
+  handleIncludeData(window.__dashPending);
+  window.__dashPending=null;
+}else{
+  window.__dashDispatch=handleIncludeData;
+}
 </script>
 </body>
 </html>

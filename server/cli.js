@@ -55,8 +55,9 @@ Commands:
                  the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
                  [--clangdCmd <path>] — persist the clangd ≥ 22 binary path (VS-bundled 19.1.x deadlocks UE).
   serve          Start the local dashboard (127.0.0.1 only, nothing transmitted) — savings trend, language
-                 mix, per-tool savings, and the include-graph fan-in as an interactive force graph.
-                 [--port N (default 8731) --projectPath <dir>]  Ctrl-C to stop.
+                 mix, per-tool savings, and the include-graph fan-in as an interactive 3D force graph (Three.js,
+                 vendored locally — no CDN). [--port N (default 8731) --projectPath <dir> --open (launch browser)]
+                 Stop it with 'vts serve --stop' (or Ctrl-C). Easiest: the /vs-token-safer:viz / :viz-stop commands.
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
                  [--graph (30-day ASCII) --daily --history]
@@ -79,7 +80,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open"]);
 
 function parseArgs(argv) {
   const a = {};
@@ -104,15 +105,21 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { co
 // stay alive until Ctrl-C. Special-cased here so it doesn't fall through to the one-shot runTool path below.
 if (rawCmd === "serve") {
   const a = parseArgs(rest);
+  const { startServer, writePid, clearPid, stopServer, openBrowser } = await import("./serve.js");
+  // --stop: signal a running dashboard via its pidfile and exit (the /vs-token-safer:viz-stop command).
+  if (a.stop === true || a.stop === "true") { process.stdout.write(stopServer() + "\n"); process.exit(0); }
   const root = a.projectPath || process.cwd();
   const port = parseInt(a.port, 10) || 8731;
-  const { startServer } = await import("./serve.js");
+  const open = a.open === true || a.open === "true";
   try {
     const { url } = await startServer(root, port);
-    process.stdout.write(`vs-token-safer dashboard → ${url}\n  root: ${root}\n  local-only (127.0.0.1), nothing transmitted. Ctrl-C to stop.\n`);
-    process.on("SIGINT", () => { process.stdout.write("\nstopped.\n"); process.exit(0); });
+    writePid({ port, url, root });
+    process.stdout.write(`vs-token-safer dashboard → ${url}\n  root: ${root}\n  local-only (127.0.0.1), nothing transmitted. Ctrl-C (or \`vts serve --stop\`) to stop.\n`);
+    if (open) openBrowser(url);
+    const bye = () => { clearPid(); process.stdout.write("\nstopped.\n"); process.exit(0); };
+    process.on("SIGINT", bye); process.on("SIGTERM", bye);
   } catch (e) {
-    process.stderr.write(`vts serve failed: ${e.message}${/EADDRINUSE/.test(String(e.message)) ? ` — port ${port} busy, pass --port <n>.` : ""}\n`);
+    process.stderr.write(`vts serve failed: ${e.message}${/EADDRINUSE/.test(String(e.message)) ? ` — port ${port} busy, pass --port <n> (or \`vts serve --stop\` first).` : ""}\n`);
     process.exit(1);
   }
 } else {
