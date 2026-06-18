@@ -923,7 +923,27 @@ function fmtLocations(locs, max, label) {
     : shown.map((l) => `  @ ${locLine(l.uri, l.range)}`).join("\n");
   return `${arr.length} ${label}:\n${body}${tail}`;
 }
-export { compactLocationLines, commonDirPrefix };
+// detail=file|dir summary for find_references — a "blast-radius" view: group dependents by file (or dir),
+// sort by ref-count desc, factor the common prefix. Collapses a long ref list into "who depends on this and
+// how heavily" in one capped block (the per-line list is what you get with detail omitted). Pure reuse of the
+// refs we already have — no extra analysis. Token win on a hot symbol with dozens of call sites.
+function fmtRefSummary(locList, level, max) {
+  const by = new Map();
+  for (const l of locList) {
+    const f = fromUri(l.uri).replace(/\\/g, "/");
+    const k = level === "dir" ? (f.replace(/\/[^/]*$/, "") || f) : f;
+    by.set(k, (by.get(k) || 0) + 1);
+  }
+  const rows = [...by.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const keys = rows.map((r) => r[0]);
+  const factor = compactResults() && keys.length > 1 ? commonDirPrefix(keys) : "";
+  const shown = rows.slice(0, max);
+  const more = rows.length - shown.length;
+  const head = `${locList.length} reference(s) across ${by.size} ${level === "dir" ? "dir" : "file"}(s), most-referenced first`;
+  const body = shown.map(([k, n]) => `  ${factor ? k.slice(factor.length + 1) : k} (${n})`).join("\n");
+  return head + (factor ? ` under ${factor}/` : "") + ":\n" + body + (more > 0 ? `\n… ${more} more ${level === "dir" ? "dir" : "file"}(s).` : "");
+}
+export { compactLocationLines, commonDirPrefix, fmtRefSummary };
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 // LSP DiagnosticSeverity. Diagnostics (compiler/linter errors+warnings) as a token-capped
 // `file:line:col severity [code]: message` list, sorted error→hint then by line, with a count summary —
@@ -1535,7 +1555,10 @@ export async function runTool(name, a = {}) {
       const locList = (Array.isArray(locs) ? locs : [locs]).filter(Boolean);
       try { recordQueryResults(root, locList.map((l) => fromUri(l.uri))); } catch { /* best-effort */ }
       const refTee = teeOverflow("find_references", a.symbol ? String(a.symbol) : `${path.basename(String(pos.path))}:${pos.line + 1}`, locList.map((l) => locLine(l.uri, l.range)), max);
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + fmtLocations(locs, max, "reference(s)"));
+      // detail=file|dir → a blast-radius summary (dependents grouped + ranked) instead of the per-line list.
+      const detail = String(a.detail || "").toLowerCase();
+      const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody);
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
@@ -1585,12 +1608,52 @@ export async function runTool(name, a = {}) {
       return finishOut(h || {}, backendAdvisory(backendName, root) + `hover ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtHover(h));
     }
     if (name === "document_symbols") {
-      if (!a.path) return err("document_symbols needs path (the file to outline).");
+      const dirScope = a.scope === "directory" || a.directory === true;
+      if (!a.path && !dirScope) return err("document_symbols needs `path` (the file to outline), or `scope=\"directory\"` for a signatures-only project skeleton.");
       const c = await getClient(root, backendName);
+      if (dirScope) {
+        // repo_skeleton: a signatures-only map of a directory — outline each code file (no bodies) so you can
+        // see the SHAPE of a module without Reading every file. Bounded (VTS_SKELETON_DIR_MAX + codeFilesUnder's
+        // time-box) so a giant tree can't hang it. Reuses codeFilesUnder + fmtDocSymbols (the noise filter).
+        const dirRoot = (a.path ? (path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path))) : root).replace(/\\/g, "/");
+        const cap = envInt("VTS_SKELETON_DIR_MAX", 40);
+        const files = codeFilesUnder(dirRoot, cap);
+        const parts = [];
+        for (const f of files) {
+          c.didOpen(f, langIdForPath(f, backendName));
+          const syms = (await c.documentSymbol(f)) || [];
+          if (syms.length) parts.push(`# ${f.replace(/\\/g, "/")}\n` + fmtDocSymbols(syms, max));
+        }
+        try { recordQueryResults(root, files); } catch { /* best-effort */ }
+        const capNote = files.length >= cap ? ` (capped at ${cap}; raise VTS_SKELETON_DIR_MAX or narrow the path)` : "";
+        return finishOut({}, backendAdvisory(backendName, root) + `repo skeleton — ${files.length} file(s) under ${dirRoot}${capNote} (backend: ${backendName}):\n` + (parts.join("\n\n") || "(no outlined symbols)"));
+      }
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
       return finishOut(syms, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max));
+    }
+    if (name === "read_symbol") {
+      // READ-side twin of replace_symbol_body: name a symbol → return ONLY that symbol's source (its outline
+      // span), never the whole file. Kills the whole-file Read that precedes most edits (measured ~468k tok/30d
+      // in the savings ledger). Reuses resolveSymbolForEdit verbatim; signatureOnly trims to the declaration head.
+      const c = await getClient(root, backendName);
+      const r = await resolveSymbolForEdit(c, root, backendName, a);
+      if (r.error) return err(r.error);
+      const sLine = r.ds.range.start.line, eLine = r.ds.range.end.line;
+      const all = fs.readFileSync(r.file, "utf8").split(/\r?\n/);
+      const sigOnly = a.signatureOnly === true || a.signatureOnly === "true";
+      const cap = envInt("VTS_SYMBOL_MAX_LINES", 200);
+      let end = eLine;
+      if (sigOnly) { end = sLine; for (let i = sLine; i <= Math.min(eLine, sLine + 8); i++) { end = i; if (all[i] && (all[i].includes("{") || /[:=]\s*$/.test(all[i]))) break; } }
+      if (end - sLine + 1 > cap) end = sLine + cap - 1;
+      const body = all.slice(sLine, end + 1).join("\n");
+      const omitted = eLine - end;
+      const note = omitted > 0 ? `\n… ${omitted} more line(s)${sigOnly ? " (signature only — omit signatureOnly for the body)" : ` — raise VTS_SYMBOL_MAX_LINES (now ${cap})`}.` : "";
+      const fp = r.file.replace(/\\/g, "/");
+      const ambl = r.ambiguous > 1 ? ` (${r.ambiguous} same-named — pass line= to disambiguate)` : "";
+      try { recordQueryResults(root, [r.file]); } catch { /* best-effort */ }
+      return finishOut({ file: r.file, range: r.ds.range }, backendAdvisory(backendName, root) + `${SYMBOL_KIND[r.ds.kind] || "symbol"} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${backendName}):\n` + body + note);
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");

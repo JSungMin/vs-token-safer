@@ -13,7 +13,8 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 - References / usages of a symbol → `find_references`  (args: `path`, `line`, `character` — 0-based — `includeDeclaration`). Semantic, not a text match.
 - Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based). The `kind` arg picks WHICH: `definition` (default) · `type_definition` (the type of an expression) · `implementation` (concrete impls of an interface/abstract/virtual — "who implements this?") · `declaration`. For every *usage* (not the definition) use `find_references` instead.
 - Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
-- Outline a file (its classes/functions) → `document_symbols`  (args: `path`).
+- Outline a file (its classes/functions) → `document_symbols`  (args: `path`; `scope="directory"` → a signatures-only skeleton of every code file under a dir, to grasp a module's shape without reading each file).
+- Read ONE declaration's source (not the whole file) → `read_symbol`  (args: `symbol`, optional `path`/`line`, `signatureOnly`). The read-side twin of the edit tools — name a symbol, get just its body. Prefer over the built-in Read when you only need one declaration.
 - Errors / warnings → `diagnostics`  (args: `path`, or `scope="directory"` to scan the project). Token-capped `file:line:col severity: message`, sorted error→hint with a count summary — read this instead of the raw build/compiler output.
 - Rename a symbol project-wide → `rename`  (args: `path`, `line`, `character`, `newName`, `apply`). Semantic (every reference), not a `sed`. Preview by default; `apply=true` writes the edits.
 - **Add / replace / delete a WHOLE declaration → edit it by NAME**, don't Read-the-file-then-Edit:
