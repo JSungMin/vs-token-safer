@@ -58,8 +58,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   alternative to reading raw build output; `lsp.js diagnosticsFor` stores publishDiagnostics PER-uri since
   `notified` only keeps the last, waits briefly for the first publish after didOpen; eval guard 63),
   `rename` (LSP; preview by default, `apply=true` writes); SYMBOL-LEVEL EDITING (Serena-parity, the mutating
-  set — all preview-by-default, `apply=true` writes): `replace_symbol_body` / `insert_after_symbol` /
-  `insert_before_symbol` / `safe_delete` — `resolveSymbolForEdit` (core.js) resolves a declaration by NAME via
+  set — all preview-by-default, `apply=true` writes): `replace_symbol_body` / `insert_symbol`
+  (`position=after`[default]`|before` — the after/before inserts MERGED into one tool to shrink the surface) /
+  `safe_delete` — `resolveSymbolForEdit` (core.js) resolves a declaration by NAME via
   the LSP outline (`documentSymbol`'s `.range` = whole body, `.selectionRange` = name; `path` pins the file
   else the index resolves it, optional `line` disambiguates), then splices text at the span via
   `applyEditsToText` (`symbolEditResult` shared preview/apply, reuses the rename read-only/Perforce note).
@@ -105,9 +106,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   read is sunk by Edit time so a block recovers nothing — only a LEARNING signal): (B) `EDIT_STEER` on a FOCUSED
   `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result (`VTS_EDIT_STEER=0` hides); (L1) the
   grep-block hook now also matches `Edit|MultiEdit` — a whole-decl replace/insert gets a MODEL-VISIBLE
-  `emitWarn` with a READY symbol-edit call (`replace_symbol_body`/`insert_after_symbol`, `declSymbolName`
+  `emitWarn` with a READY symbol-edit call (`replace_symbol_body`/`insert_symbol`, `declSymbolName`
   best-effort names it), `VTS_EDIT_WARN=0` off; (L2) OPT-IN escalation, `VTS_EDIT_BLOCK_AFTER` DEFAULT 0=OFF — set ≥1 and once the
-  adoption ledger's ignore-`streak` hits it, a SAFE insert (`insertDecl && !replaceDecl` — `insert_after_symbol`
+  adoption ledger's ignore-`streak` hits it, a SAFE insert (`insertDecl && !replaceDecl` — `insert_symbol`
   can't corrupt) is BLOCKED ONCE (exit 2) then `resetStreak()` (fire-once, NOT a wall — a permanent block
   TRAPPED the agent: it fought the wall with Edit retries / code contortions instead of switching, and each
   blocked attempt re-escalated the streak; live-reproduced on US editing edit-ledger.js); a replace stays warn. ADOPTION LEDGER (server/edit-ledger.js, `~/.vs-token-safer/
