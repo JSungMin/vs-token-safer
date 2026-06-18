@@ -26,6 +26,9 @@ process.stdin.on("data", (d) => {
       // "MISS" returns no symbols — exercises search_symbol's ts/pyright text-search fallback for a name
       // the workspace/symbol index doesn't surface (e.g. a non-exported local / unopened file).
       if (q === "MISS") { send({ jsonrpc: "2.0", id: msg.id, result: [] }); continue; }
+      // "VARSYM" resolves to a const (kind 14) — a NON-callable symbol, so a call-hierarchy trace must
+      // fail FAST with a clear "not a function/method" message (no prepareCallHierarchy retry burn).
+      if (q === "VARSYM") { send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "VARSYM", kind: 14, location: { uri: "file:///proj/src/V.cpp", range: { start: { line: 3, character: 6 }, end: { line: 3, character: 12 } } } }] }); continue; }
       let result;
       if (q === "ALL") {
         // big result set with verbose container names — to exercise the token cap

@@ -1438,6 +1438,13 @@ const anCh = anchorOnName(anFile, 1, "resolveX", 0); // line 1 (0-based) = the a
 const anFallback = anchorOnName(anFile, 1, "nope_not_here", 7); // name absent → fallback char
 const anchorOnNameOk = anCh >= 15 && anCh <= 16 && anFallback === 7; // anchors inside "resolveX", not col 0; fallback honored
 try { fs.rmSync(anDir, { recursive: true, force: true }); } catch { /* ignore */ }
+// 73c) non-callable kind → call hierarchy fails FAST + clear (not an 8s prepareCallHierarchy retry burn).
+// VARSYM resolves to a const (kind 14); both buildCallGraph and find_references(direction) must reject it.
+const cgVar = await buildCallGraph({ symbol: "VARSYM", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
+const frVar = await runTool("find_references", { symbol: "VARSYM", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
+const nonCallableOk =
+  !!cgVar.error && /not a function\/method\/class/.test(cgVar.error) && cgVar.nodes.length === 0 &&
+  !frVar.isError && /not a function\/method/.test(frVar.text) && /needs a callable/.test(frVar.text);
 const cgCallers = await buildCallGraph({ symbol: "Target", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
 const cgCallersOk = !cgCallers.error && cgCallers.nodes.some((n) => n.label === "CallerA") && !cgCallers.nodes.some((n) => n.label === "Callee"); // callers-only excludes the callee
 // /callgraph route
@@ -1455,7 +1462,7 @@ const symHttp = await new Promise((res, rej) => { http.get({ host: "127.0.0.1", 
 let symParsed = {}; try { symParsed = JSON.parse(symHttp.body); } catch { /* leave empty */ }
 const symRouteOk = symHttp.status === 200 && Array.isArray(symParsed.symbols) && symParsed.symbols.some((x) => x.name === "SpawnHandler");
 await new Promise((r) => cgSrv.server.close(r));
-const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk && lsOk && symRouteOk && anchorOnNameOk;
+const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk && lsOk && symRouteOk && anchorOnNameOk && nonCallableOk;
 // guards 66/68/70/73 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 

@@ -1059,16 +1059,26 @@ export function anchorOnName(file, line, name, fallbackChar) {
 }
 async function prepareCallHierReady(c, p, line, ch, capMs = envInt("VTS_CALLHIER_WAIT_MS", 8000)) {
   let items = (await c.prepareCallHierarchy(p, line, ch)) || [];
-  if (items.length) return items;
+  if (items.length) { c.callHierWarm = true; return items; }
+  // Once this client has EVER produced a hierarchy item, the index is proven warm → an empty result is a
+  // GENUINE "not callable here" (a variable, a non-function position), not index lag. Don't burn the retry
+  // window (live-found: tracing a `const` or an off-function position waited the full 8s before failing).
+  if (c.callHierWarm) return items;
   const t0 = Date.now(); let delay = 400;
   while (Date.now() - t0 < capMs) {
     await sleep(Math.min(delay, Math.max(0, capMs - (Date.now() - t0))));
     items = (await c.prepareCallHierarchy(p, line, ch)) || [];
-    if (items.length) return items;
+    if (items.length) { c.callHierWarm = true; return items; }
     delay = Math.min(Math.round(delay * 1.5), 2000);
   }
   return items;
 }
+// LSP SymbolKinds that can anchor a call hierarchy (have callers/callees): method, ctor, func — plus the
+// type kinds whose ctor is the hook (class/interface/struct). A variable/const/field/property/module/etc.
+// can never produce a hierarchy item, so a by-name trace of one fails FAST with a clear reason instead of
+// burning the retry. (kind from workspace/symbol; null → allow and let prepareCallHierarchy decide.)
+const CALLABLE_KIND = new Set([5, 6, 9, 11, 12, 23]);
+const isCallableKind = (k) => k == null || CALLABLE_KIND.has(k);
 // ON-DEMAND call graph for the dashboard (the comparable-to-codebase-memory-mcp "call graph" view, but the
 // official-LSP way: NO persistent semantic graph DB — we resolve a focused symbol and walk LSP callHierarchy
 // live, returning a {nodes,links} object shaped like the include-graph so the 3D viz renders it the same).
@@ -1092,6 +1102,7 @@ export async function buildCallGraph(a = {}) {
     const want = String(a.symbol);
     const pick = syms.slice().sort((x, y) => (x.name === want ? 0 : 1) - (y.name === want ? 0 : 1))[0];
     if (!pick) return { error: `no indexed declaration for "${want}"`, focus: want, nodes: [], links: [] };
+    if (!isCallableKind(pick.kind)) return { error: `"${want}" is a ${SYMBOL_KIND[pick.kind] || "symbol"}, not a function/method/class — call hierarchy needs a callable symbol.`, focus: want, nodes: [], links: [] };
     pos = { path: fromUri(pick.location.uri), line: pick.location.range.start.line, character: pick.location.range.start.character };
     focusLabel = pick.name;
   } else if (a.path && a.line != null && a.character != null) {
@@ -1739,7 +1750,7 @@ export async function runTool(name, a = {}) {
       // from a NAME, not a 0-based position. Accept `symbol` and resolve the declaration position via the
       // index first (search_symbol → best match → its location), then find references there — so
       // "where is FooBar used" is ONE call, not the locate→position→refs dance that pushes the model to grep.
-      let pos = null, originLabel = "";
+      let pos = null, originLabel = "", pickKind = null;
       if (a.symbol) {
         const persisted = backendName === "clangd" && hasPersistedIndex(root);
         const syms = await symbolReady(c, String(a.symbol), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
@@ -1764,6 +1775,7 @@ export async function runTool(name, a = {}) {
         }
         const pp = fromUri(pick.location.uri);
         pos = { path: pp, line: pick.location.range.start.line, character: pick.location.range.start.character };
+        pickKind = pick.kind;
         c.didOpen(pp, langIdForPath(pp, backendName)); // ensure the resolved TU is open for the references query
         originLabel = `"${want}" (${SYMBOL_KIND[pick.kind] || "sym"} @ ${locLine(pick.location.uri, pick.location.range)})`;
       } else {
@@ -1777,6 +1789,10 @@ export async function runTool(name, a = {}) {
       // "who uses this", reuses the symbol→position resolution above, and adds no fixed tool-surface cost.
       const dirRaw = String(a.direction || "").toLowerCase();
       const traceDir = (dirRaw === "callers" || dirRaw === "incoming") ? "callers" : (dirRaw === "callees" || dirRaw === "outgoing") ? "callees" : null;
+      if (traceDir && a.symbol && !isCallableKind(pickKind)) {
+        // a variable/const/field has no call hierarchy — say so FAST (don't burn the prepareCallHierarchy retry)
+        return finishOut([], backendAdvisory(backendName, root) + `${originLabel} is a ${SYMBOL_KIND[pickKind] || "symbol"}, not a function/method — call hierarchy (direction=${traceDir}) needs a callable. Omit direction for plain references.`);
+      }
       if (traceDir) {
         if (a.symbol) pos.character = anchorOnName(pos.path, pos.line, String(a.symbol), pos.character); // anchor ON the name for callHierarchy
         c.didOpen(pos.path, langIdForPath(pos.path, backendName));
