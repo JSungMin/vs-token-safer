@@ -84,7 +84,10 @@ process.stdin.on("data", (d) => {
         ? [{ severity: 2, range: { start: { line: 9, character: 0 }, end: { line: 9, character: 4 } }, message: "unused variable 'x'" },
           { severity: 1, range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } }, code: "E001", message: "use of undeclared identifier 'foo'" }]
         : [];
-      send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics: diags } });
+      // Publish with a SERVER-STYLE uri (lowercase, %3A-encoded Windows drive — like real clangd/tsserver) so
+      // the diagnostics lookup must canonicalize to match (regression net for the Win uri-spelling bug).
+      const pub = uri.replace(/^file:\/\/\/([A-Za-z]):/, (m, d) => `file:///${d.toLowerCase()}%3A`);
+      send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: pub, diagnostics: diags } });
     } else if (msg.method === "textDocument/references") {
       // "Foo"'s name sits at line 4 (its selectionRange) — return one usage there so safe_delete sees a
       // referrer and refuses; any other position (e.g. the find_references guard at line 41) returns none.
