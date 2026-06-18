@@ -26,7 +26,9 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   version, current disk text) so a file changed after warm-up isn't answered from a stale buffer; a
   since-deleted file → `didClose`. Position tools re-call `didOpen` before each query, so hover/goto/
   outline/rename always re-read the file. The LSP engine keeps UNOPENED files fresh itself (clangd
-  file-watch + background re-index); our warmset caches self-invalidate (include-graph by mtime,
+  file-watch + background re-index); our warmset caches self-invalidate (include-graph by mtime+size composite
+  key + an FNV-1a content hash [`warmset.js fnv1a`, zero-dep — codebase-memory-mcp XXH3 parity; reuses cached
+  includes when bytes are unchanged despite mtime/size jitter, catches a real change a mtime-only key would miss],
   query-history by re-record; `_censusCache` is process-lifetime → restart/re-setup to refresh).
   LSP-spec conformance: server→client requests get shape-correct replies (`_serverRequestReply`:
   `workspace/configuration`→array, `workspace/applyEdit`→`{applied:false}`, `window/showDocument`→
@@ -55,7 +57,14 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   code-modification primitive: by-name resolves the decl via `c.symbol` [exact-name-then-`path`-endsWith
   ranking], `didOpen`s it, queries references at `location.range.start`; no indexed decl → `scanTextUnder`
   literal-usage fallback. Discover showed name-driven usage hunts = the top bypass; this collapses the
-  locate→position→refs dance that pushed the model to grep), `goto_definition` (a `kind` param folds in
+  locate→position→refs dance that pushed the model to grep. CALL-HIERARCHY FOLD: a `direction=callers|callees`
+  param turns the SAME tool into a MULTI-HOP call hierarchy [transitive callers = blast radius before an edit /
+  callees] to `depth` hops [`VTS_TRACE_MAX_DEPTH` 5, node cap `VTS_TRACE_MAX_NODES` 80] via `lsp.js`
+  prepareCallHierarchy→incoming/outgoingCalls [graceful -32601→[], `traceFrom` DFS w/ cycle+dedup guard, indented
+  file:line tree]; codebase-memory-mcp `trace_path` parity but on the OFFICIAL LSP [zero-transmission, real
+  semantic edges] and folded INTO find_references — NOT a new tool [no fixed-surface cost, reuses the symbol→pos
+  resolution]. `vts trace-calls` CLI = `references --direction callers`. Eval guard 70; live-verified on the vts
+  repo itself), `goto_definition` (a `kind` param folds in
   `type_definition`/`implementation`/`declaration` via `lsp.js gotoByKind` → 3 more LSP nav requests, NO new
   MCP tools), `hover`, `document_symbols`, `diagnostics` (compiler/linter errors+warnings for a file as a
   token-capped `file:line:col severity [code]: msg` list, sorted error→hint + count summary — the compact
@@ -131,6 +140,13 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
 - `server/compact.js` — PURE output-compaction fns (`compactGit`/`compactP4`, string→string, no spawn) for the
   `vts_git`/`vts_p4` wrappers. Eval exercises them on canned input (deterministic). (No grep compaction here —
   grep reroutes to search_text, which scans + token-caps itself; there is no raw grep output to compact.)
+- `server/viz.js` + `server/serve.js` — LOCAL DASHBOARD (`vts serve`, cbm-style viz but local-only). `viz.js`
+  `buildVizData(root)` assembles the savings ledger + language census + include-graph cache into one model;
+  `renderDashboardHtml()` is a SELF-CONTAINED page (CSS/JS inlined, NO CDN/external `<script src>` → renders
+  offline, no transmission) with a vanilla-JS force-graph (no D3). `serve.js` is node:http ONLY (no express/ws),
+  binds `127.0.0.1` (never 0.0.0.0), routes `/`→html + `/data`→JSON. OPT-IN + CLI-ONLY: started only by
+  `vts serve` (cli.js special-cases it — long-running, not a runTool dispatch), NEVER by the MCP server, so the
+  steady-state package stays a thin stdio client. `VTS_VIZ_MAX_NODES` (200) bounds the graph. Eval guard 72.
 - `server/cli.js` — `vts <cmd>`. `server/index.js` — MCP server (async handler → `await runTool`). PER-CALL
   ROOT: `resolveRoot(a)` (core.js) replaces the old single-pin `a.projectPath || PROJECT_PATH || cwd` for
   every query — precedence: explicit `projectPath` > a `path`'s enclosing project (`findProjectRoot`, only

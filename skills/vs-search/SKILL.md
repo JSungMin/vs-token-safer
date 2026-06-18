@@ -10,7 +10,7 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 
 ## Tools (MCP server name: `vs-search`)
 - Symbol / class / function / type / variable → `search_symbol`  (args: `q`, `projectPath`, `backend`, `maxResults`). Never `grep`/`rg` for this.
-- References / usages of a symbol → `find_references`  (args: `path`, `line`, `character` — 0-based — `includeDeclaration`). Semantic, not a text match.
+- References / usages of a symbol → `find_references`  (args: `symbol` NAME, or `path`+`line`+`character` — 0-based — `includeDeclaration`). Semantic, not a text match. `direction=callers`/`callees` + `depth` → a **multi-hop call hierarchy** (transitive callers = blast radius before an edit / callees) via LSP `callHierarchy`, instead of flat references.
 - Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based). The `kind` arg picks WHICH: `definition` (default) · `type_definition` (the type of an expression) · `implementation` (concrete impls of an interface/abstract/virtual — "who implements this?") · `declaration`. For every *usage* (not the definition) use `find_references` instead.
 - Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
 - Outline a file (its classes/functions) → `document_symbols`  (args: `path`; `scope="directory"` → a signatures-only skeleton of every code file under a dir, to grasp a module's shape without reading each file).

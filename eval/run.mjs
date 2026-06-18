@@ -6,6 +6,7 @@ import { LspClient } from "../server/lsp.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 
 process.env.VTS_CLANGD_CMD = process.execPath;
 process.env.VTS_CLANGD_ARGS = new URL("./_mock-lsp.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
@@ -1264,11 +1265,11 @@ const toolsBudgetOk =
   TOOL_DEFS.length === 14 && // hot search/nav/edit (incl. read_symbol) + diagnostics + vts_admin
   ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
-  !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
+  !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db", "trace_calls"].some((n) => toolNames.includes(n)) && // cold tools folded away; trace_calls folded INTO find_references (direction param), not a new tool
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
-  toolsTok <= 3500; // ~3030 (13 tools) + read_symbol (~200) + detail/scope params. Cap still blocks prose creep.
+  toolsTok <= 3500; // ~3226 (14 tools) + find_references direction/depth params. Cap still blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -1383,7 +1384,27 @@ fs.writeFileSync(path.join(skDir, "B.cpp"), "int b(){return 1;}\n");
 const sk = await runTool("document_symbols", { scope: "directory", projectPath: skDir, backend: "clangd" });
 const skeletonOk = !sk.isError && /repo skeleton/.test(sk.text) && /A\.cpp/.test(sk.text) && /B\.cpp/.test(sk.text) && /Foo/.test(sk.text);
 try { fs.rmSync(skDir, { recursive: true, force: true }); } catch { /* ignore */ }
-// guards 66/68 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
+
+// 70) call-hierarchy FOLDED INTO find_references (direction=callers|callees) — multi-hop, via LSP
+// callHierarchy (prepareCallHierarchy → incoming/outgoingCalls). Adopted from codebase-memory-mcp's
+// trace_path, but synthesized from the OFFICIAL LSP (zero-transmission, real semantic edges) and token-capped
+// to an indented file:line tree — and NOT a new tool (no fixed-surface cost; reuses the symbol resolution).
+// Mock graph: Target ← CallerA, CallerB ; CallerA ← GrandCaller (2nd hop) ; Target → Callee. depth bounds hops.
+const tcCallers = await runTool("find_references", { symbol: "Target", direction: "callers", projectPath: process.cwd(), backend: "clangd" }); // depth 2 default
+const tcCallees = await runTool("find_references", { symbol: "Target", direction: "callees", projectPath: process.cwd(), backend: "clangd" });
+const tcDepth1 = await runTool("find_references", { symbol: "Target", direction: "callers", depth: 1, projectPath: process.cwd(), backend: "clangd" });
+const tcPos = await runTool("find_references", { path: "src/Foo.cpp", line: 41, character: 6, direction: "callers", projectPath: process.cwd(), backend: "clangd" }); // by position
+const tcPlain = await runTool("find_references", { symbol: "Target", projectPath: process.cwd(), backend: "clangd" }); // NO direction → flat references, unchanged default
+const traceOk =
+  !tcCallers.isError && /callers of/.test(tcCallers.text) &&
+  /CallerA {2}@ .*A\.cpp:10/.test(tcCallers.text) && /CallerB {2}@ .*B\.cpp:20/.test(tcCallers.text) &&
+  /GrandCaller {2}@ .*C\.cpp:30/.test(tcCallers.text) &&                                  // 2nd hop reached (depth 2)
+  /caller edge\(s\) across \d+ file\(s\)/.test(tcCallers.text) &&                           // blast-radius summary
+  !tcCallees.isError && /callees of/.test(tcCallees.text) && /Callee {2}@ .*D\.cpp:40/.test(tcCallees.text) &&
+  !tcDepth1.isError && /CallerA/.test(tcDepth1.text) && !/GrandCaller/.test(tcDepth1.text) && // depth 1 → no 2nd hop
+  !tcPos.isError && /CallerA/.test(tcPos.text) &&                                            // position-based start works
+  !tcPlain.isError && /references of/.test(tcPlain.text) && !/callers of/.test(tcPlain.text); // no direction → flat refs (default intact)
+// guards 66/68/70 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 
 // 69) B: clangd index-aware EMPTY advisory — distinguish (1) target file not in compile_commands.json from
@@ -1407,6 +1428,63 @@ const idxAdvOk =
   /index ~10% complete \(1\/10 TUs\)/.test(advIncomplete) &&
   advOff === "";
 try { fs.rmSync(ixDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 71) include-graph content-hash invalidation (adopted from codebase-memory-mcp's XXH3 incremental reindex;
+// pure-JS FNV-1a, zero-dep). fnv1a is deterministic + content-sensitive; the include-graph cache now keys on
+// mtime+size (free robustness over mtime-only) and stores a content hash. After a warm, each cached entry
+// carries the new {s,h} fields — proving the composite key landed (orderForWarm → centralityRank writes it).
+const { fnv1a } = await import("../server/warmset.js");
+const fnvDetOk = fnv1a("#include <a.h>\n") === fnv1a("#include <a.h>\n") && fnv1a("#include <a.h>\n") !== fnv1a("#include <b.h>\n") && Number.isInteger(fnv1a("x"));
+const igDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-ig`);
+fs.mkdirSync(igDir, { recursive: true });
+fs.writeFileSync(path.join(igDir, "core.h"), "#pragma once\nint core();\n");
+fs.writeFileSync(path.join(igDir, "use.cpp"), '#include "core.h"\nint use(){return core();}\n'); // includes core.h → fan-in
+try { fs.rmSync(IG, { force: true }); } catch { /* ignore */ } // start clean so the graph is freshly written
+orderForWarm(igDir, [path.join(igDir, "core.h"), path.join(igDir, "use.cpp")], 10);
+const igGraph = (() => { try { return JSON.parse(fs.readFileSync(IG, "utf8")); } catch { return {}; } })();
+const igEntry = Object.values(igGraph)[0] || {};
+const contentHashOk =
+  fnvDetOk &&
+  Object.keys(igGraph).length >= 1 &&
+  typeof igEntry.s === "number" && typeof igEntry.h === "number" && Array.isArray(igEntry.i); // composite key + hash persisted
+try { fs.rmSync(igDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 72) local dashboard (vts serve) — cbm-style viz, but LOCAL-ONLY + zero-dep. buildVizData assembles the
+// savings ledger + language census + include-graph into one model; renderDashboardHtml is fully
+// self-contained (NO external <script src>/CDN → renders offline, no transmission); the server binds
+// 127.0.0.1 and answers / (html) + /data (json) + 404. node:http only — no express/ws.
+const { buildVizData, renderDashboardHtml } = await import("../server/viz.js");
+fs.writeFileSync(SV, JSON.stringify({ runs: 5, rawTok: 100000, outTok: 10000, days: { [new Date().toISOString().slice(0, 10)]: { runs: 5, rawTok: 100000, outTok: 10000 } }, tools: { search_symbol: { runs: 3, rawTok: 60000, outTok: 6000 }, find_references: { runs: 2, rawTok: 40000, outTok: 4000 } } }));
+const vizRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-viz`);
+fs.mkdirSync(vizRoot, { recursive: true });
+for (const f of ["a.cpp", "b.cpp", "hub.h"]) fs.writeFileSync(path.join(vizRoot, f), "#pragma once\n");
+const vn = (f) => path.join(vizRoot, f).replace(/\\/g, "/").toLowerCase();
+fs.writeFileSync(IG, JSON.stringify({ [vn("a.cpp")]: { m: 1, s: 1, h: 1, i: ["hub.h"] }, [vn("b.cpp")]: { m: 1, s: 1, h: 1, i: ["hub.h"] }, [vn("hub.h")]: { m: 1, s: 1, h: 1, i: [] } }));
+const vd = buildVizData(vizRoot);
+const html = renderDashboardHtml();
+const hub = vd.graph.nodes.find((n) => n.label === "hub.h");
+const vizDataOk =
+  vd.savings.totalSaved === 90000 && vd.savings.ratio === 10 && vd.savings.tools.length === 2 && vd.savings.days.length === 30 &&
+  vd.census.clangd === 3 &&                                  // a.cpp + b.cpp + hub.h all clangd
+  !!hub && hub.weight === 2 && vd.graph.links.length === 2;  // hub.h included by both → fan-in 2
+const htmlSelfContainedOk =
+  /<!doctype html>/i.test(html) && /fetch\("\/data"\)/.test(html) &&
+  !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html); // no external script / CDN
+const { startServer } = await import("../server/serve.js");
+const { server, port, url } = await startServer(vizRoot, 0); // port 0 → OS-assigned ephemeral
+const httpGet = (p) => new Promise((res, rej) => { http.get({ host: "127.0.0.1", port, path: p }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b })); }).on("error", rej); });
+const rHtml = await httpGet("/");
+const rData = await httpGet("/data");
+const rMiss = await httpGet("/nope");
+let parsedData = {}; try { parsedData = JSON.parse(rData.body); } catch { /* leave empty */ }
+const serveOk =
+  /^http:\/\/127\.0\.0\.1:\d+\/$/.test(url) &&                // bound to localhost, never 0.0.0.0
+  rHtml.status === 200 && /vs-token-safer/.test(rHtml.body) &&
+  rData.status === 200 && parsedData.savings && parsedData.savings.totalSaved === 90000 &&
+  rMiss.status === 404;
+await new Promise((r) => server.close(r));
+try { fs.rmSync(vizRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk;
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -1479,6 +1557,9 @@ const rows = [
   ["find_references detail=file|dir: blast-radius summary (ranked)", refSummaryOk, "true", refSummaryOk],
   ["document_symbols scope=directory: signatures-only repo skeleton", skeletonOk, "true", skeletonOk],
   ["clangd index advisory: file-not-in-DB vs index-incomplete (%), toggle", idxAdvOk, "true", idxAdvOk],
+  ["call hierarchy folded into find_references (direction=callers/callees, depth-bounded)", traceOk, "true", traceOk],
+  ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],
+  ["local dashboard (vts serve): buildVizData + self-contained HTML + 127.0.0.1 server", dashboardOk, "true", dashboardOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
