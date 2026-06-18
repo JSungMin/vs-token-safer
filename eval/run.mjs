@@ -1330,6 +1330,27 @@ const starNudgeOk =
   starNudgeLine(1000) === "" &&                                                                            // under threshold → silent
   (() => { process.env.VTS_STAR_NUDGE = "0"; const off = starNudgeLine(99999); delete process.env.VTS_STAR_NUDGE; return off === ""; })(); // toggle off
 
+// 65) symbol-edit P4 auto-checkout (ensureWritableForEdit): before an apply WRITE to a READ-ONLY file (the
+// Perforce signature) vts runs `p4 edit` so the symbol-edit/rename isn't blocked — it writes via fs directly,
+// bypassing any built-in Edit/Write p4 hook. Gated on read-only → a writable (git) repo never invokes p4.
+// Stub VTS_P4_CMD with a script that chmods the file writable, standing in for `p4 edit`.
+const { ensureWritableForEdit } = await import("../server/core.js");
+const p4dir = path.join(os.tmpdir(), `vts-eval-p4-${process.pid}`); fs.mkdirSync(p4dir, { recursive: true });
+const p4wf = path.join(p4dir, "writable.ts"); fs.writeFileSync(p4wf, "x");
+const p4rf = path.join(p4dir, "readonly.ts"); fs.writeFileSync(p4rf, "x"); fs.chmodSync(p4rf, 0o444);
+const p4stub = path.join(p4dir, "p4stub.mjs");
+fs.writeFileSync(p4stub, "import fs from 'node:fs'; fs.chmodSync(process.argv[process.argv.length-1], 0o666);\n");
+const p4NoteWritable = ensureWritableForEdit(p4wf); // writable → skip p4 entirely
+process.env.VTS_P4_CMD = `node "${p4stub}"`;
+const p4NoteRO = ensureWritableForEdit(p4rf);       // read-only → stub "p4 edit" opens it → note
+delete process.env.VTS_P4_CMD;
+try { fs.chmodSync(p4rf, 0o444); } catch { /* re-lock */ }
+process.env.VTS_P4_EDIT = "0";
+const p4NoteDisabled = ensureWritableForEdit(p4rf); // disabled → "" even though read-only
+delete process.env.VTS_P4_EDIT;
+const p4EditOk = p4NoteWritable === "" && /p4 edit/i.test(p4NoteRO) && p4NoteDisabled === "";
+try { fs.chmodSync(p4rf, 0o666); fs.rmSync(p4dir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -1396,6 +1417,7 @@ const rows = [
   ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3200 tok", toolsBudgetOk, "true", toolsBudgetOk],
   ["LSP glue: diagnostics tool + goto kinds (typeDef/impl/decl)", lspGlueOk, "true", lspGlueOk],
   ["star nudge: value-tied, threshold-gated, pure (no network), toggle", starNudgeOk, "true", starNudgeOk],
+  ["symbol-edit P4 auto-checkout: read-only → p4 edit, writable skips, toggle", p4EditOk, "true", p4EditOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
