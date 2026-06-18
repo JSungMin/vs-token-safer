@@ -106,9 +106,13 @@ the `file:line` table.
 
 **Dashboard — `vts serve`.** A local, interactive view of what vts knows + how much it saved: the
 savings trend, language mix, per-tool savings, and an **interactive 3D graph** (WebGL / Three.js) with two
-modes — the **include graph** (files sized + heat-colored by include fan-in) and an **on-demand call graph**
-(type a symbol → its transitive callers/callees, traced live through LSP `callHierarchy` — no persistent
-index). Drag to orbit, wheel to zoom, hover for `file:line`; a highlight filter + node/edge metrics overlay.
+modes — the **include graph** (files sized by include fan-in) and an **on-demand call graph** (type a symbol
+→ its transitive callers/callees, traced live through LSP `callHierarchy` — no persistent index; shows
+**call counts** per node/edge). Nodes are laid out on a **spherical shell** (so they spread out, not clump);
+drag/`WASD` to orbit, wheel/`+`-`-` to zoom, `R` to fit, hover for `file:line`. Symbol search has **live
+autocomplete** (`/symbols`); **color by** connected-component **groups** · **repo** (which repository each
+node is from, with a legend) · **heat**; **click a node to drill into its group** (`Esc`/`Backspace` to pop
+out); a **focus/maximize** toggle, a highlight filter, and a node/edge metrics overlay.
 
 Easiest via the slash commands: **`/vs-token-safer:viz`** (open) and **`/vs-token-safer:viz-stop`** (close).
 Or the CLI:
