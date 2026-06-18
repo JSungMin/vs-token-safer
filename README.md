@@ -328,6 +328,8 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | `starMin` | `VTS_STAR_MIN` | `50000` | Cumulative-saving threshold (tokens) past which `vts savings` appends a one-line ⭐ pointer. |
 | — | `VTS_STAR_NUDGE` | `1` | `0` hides the ⭐ line. Shown ONLY in the manual `vts savings` report (never in the search/edit flow); pure, **no network / no star-status check**. |
 | — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings` shows the 30-day graph by default; `0` (or `graph:false`) omits it for a terse report. |
+| — | `VTS_P4_EDIT` | `1` | A symbol-edit / `rename` **apply** auto-runs `p4 edit` on a read-only (Perforce) file before writing — symbol edits write via the server, bypassing any built-in Edit/Write p4 hook. Only fires on read-only files (a writable/git repo never invokes p4); `0` disables. |
+| — | `VTS_P4_CMD` | `p4` | Perforce CLI used for the auto-checkout above (`VTS_P4_TIMEOUT_MS`, default 15000, caps it). |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs. |
 </details>

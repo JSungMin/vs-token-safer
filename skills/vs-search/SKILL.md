@@ -21,6 +21,7 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
   - Add a declaration next to one → `insert_symbol`  (args: `symbol`, `text`, `position` = `after` default / `before`, `apply`).
   - Remove a declaration → `safe_delete`  (args: `symbol`, `force`, `apply`). Refuses while it's still referenced unless `force=true`.
   - The outline supplies the exact span, so you skip reading the whole file into context. Preview by default; `apply=true` writes. Use the built-in Edit for a sub-declaration tweak (a few lines inside a body); use these when the unit is the whole declaration.
+  - **Perforce:** an `apply=true` write auto-runs `p4 edit` on a read-only file first (symbol edits write via the server, so a built-in Edit/Write p4 hook never sees them). Read-only-gated, so a git repo never calls p4; disable with `VTS_P4_EDIT=0`.
 - Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
 - File by name (substring or glob) → `find_files`  (args: `q`, `projectPath`). Replaces `find -name`.
 - Admin/meta (rarely needed reflexively) → `vts_admin` with an `op`: `config`/`setup` (settings), `savings`/`savings_reset` (token ledger), `warmup` (pre-build the index), `discover` (find searches that bypassed vts), `gen_compile_db` (UE clangd DB), `git`/`p4` (read-only VCS, output compacted). Put the op's args in `params`, e.g. `vts_admin {op:"git", params:{argv:["status"]}}`. (CLI keeps the bare subcommands: `vts setup`, `vts git`, …)

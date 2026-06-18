@@ -98,6 +98,24 @@ export function preferBackend(aBackend, byPath, forced) {
   return aBackend || (byPath && forced && byPath !== forced ? byPath : forced) || byPath || "";
 }
 
+// Perforce auto-checkout for a symbol-edit / rename APPLY. A symbol edit writes via `fs` directly (it bypasses
+// the built-in Edit/Write tool, so a p4-checkout PreToolUse hook never fires for it). In a P4 workspace an
+// unopened file is READ-ONLY, so before writing a read-only file we run `p4 edit` to open it for edit. Gated ON
+// the read-only signal → a normal writable (git) repo never invokes p4, so there's no p4 dependency for most
+// users. Best-effort: if p4 is missing or the file isn't in a client the edit fails, the file stays read-only,
+// and the caller's write surfaces the existing "check out of Perforce" note. VTS_P4_EDIT=0 disables;
+// VTS_P4_CMD overrides the binary. Returns a short note when it actually opened the file (else "").
+export function ensureWritableForEdit(file) {
+  try { fs.accessSync(file, fs.constants.W_OK); return ""; } catch { /* read-only → maybe a Perforce-managed file */ }
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_P4_EDIT ?? "1"))) return "";
+  const p4 = process.env.VTS_P4_CMD || "p4";
+  try {
+    execSync(`${p4} edit ${JSON.stringify(file)}`, { stdio: "ignore", timeout: envInt("VTS_P4_TIMEOUT_MS", 15000), cwd: path.dirname(file) });
+    fs.accessSync(file, fs.constants.W_OK); // only claim success if the file is now writable
+    return " (p4 edit'd for checkout)";
+  } catch { return ""; }
+}
+
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
 // what the model would otherwise read, so measure it as-is; an ARRAY/OBJECT (an LSP index response that
@@ -1219,9 +1237,10 @@ export async function runTool(name, a = {}) {
     const r = edit.range;
     const span = r.start.line === r.end.line ? `${fp}:${r.start.line + 1}` : `${fp}:${r.start.line + 1}-${r.end.line + 1}`;
     if (!apply) return finishOut(rawObj, `${headline} — PREVIEW at ${span}. Pass apply=true to write.`);
+    const p4note = ensureWritableForEdit(file); // P4: open a read-only file for edit before writing (no-op on a writable repo)
     try { fs.writeFileSync(file, applyEditsToText(fs.readFileSync(file, "utf8"), [edit])); }
-    catch (e) { return finishOut(rawObj, `${headline} — FAILED to write ${span} (${e.code || e.message}). Read-only? Check out of Perforce first.`); }
-    return finishOut(rawObj, `${headline} — APPLIED at ${span}.`);
+    catch (e) { return finishOut(rawObj, `${headline} — FAILED to write ${span} (${e.code || e.message}). Read-only? Check out of Perforce first (vts auto-runs \`p4 edit\` unless VTS_P4_EDIT=0 — is p4 on PATH / the file in a client?).`); }
+    return finishOut(rawObj, `${headline} — APPLIED at ${span}.${p4note}`);
   };
   try {
     if (name === "vts_setup") {
@@ -1586,13 +1605,15 @@ export async function runTool(name, a = {}) {
       const shown = rows.slice(0, max).join("\n") + (rows.length > max ? `\n… ${rows.length - max} more.` : "");
       const apply = a.apply === true || a.apply === "true";
       if (!apply) return finishOut(we, `rename → "${a.newName}" — PREVIEW: ${total} edit(s) across ${m.size} file(s). Pass apply=true to write. Affected:\n${shown}`);
-      let written = 0; const failed = [];
+      let written = 0; let p4ed = 0; const failed = [];
       for (const [p, edits] of m) {
+        if (ensureWritableForEdit(p)) p4ed++; // P4: open each read-only ref-file for edit before writing
         try { fs.writeFileSync(p, applyEditsToText(fs.readFileSync(p, "utf8"), edits)); written++; }
         catch (e) { failed.push(`${p.replace(/\\/g, "/")} (${e.code || e.message})`); }
       }
-      const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first): ${failed.slice(0, 5).join("; ")}` : "";
-      return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${note}\n${shown}`);
+      const p4note = p4ed ? ` (p4 edit'd ${p4ed} file(s))` : "";
+      const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first; vts auto-runs \`p4 edit\` unless VTS_P4_EDIT=0): ${failed.slice(0, 5).join("; ")}` : "";
+      return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${p4note}${note}\n${shown}`);
     }
     if (name === "replace_symbol_body" || name === "insert_symbol" || name === "safe_delete") {
       const c = await getClient(root, backendName);

@@ -327,6 +327,8 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | `starMin` | `VTS_STAR_MIN` | `50000` | 누적 절약(토큰)이 이 값을 넘으면 `vts savings`가 한 줄 ⭐ 안내를 덧붙임. |
 | — | `VTS_STAR_NUDGE` | `1` | `0`이면 ⭐ 줄 숨김. 수동 `vts savings` 리포트에서만 표시(검색/편집 흐름엔 안 나옴), 순수 함수 — **네트워크/star 확인 호출 없음**. |
 | — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings`가 30일 그래프를 기본 표시; `0`(또는 `graph:false`)이면 생략해 간결하게. |
+| — | `VTS_P4_EDIT` | `1` | 심볼편집 / `rename` **apply**가 read-only(Perforce) 파일을 기록 전 `p4 edit`로 자동 체크아웃 — 심볼편집은 서버에서 직접 기록하므로 빌트인 Edit/Write p4 훅을 안 거침. read-only일 때만 동작(쓰기 가능/git repo는 p4 미호출); `0`이면 끔. |
+| — | `VTS_P4_CMD` | `p4` | 위 자동 체크아웃에 쓸 Perforce CLI (`VTS_P4_TIMEOUT_MS`, 기본 15000으로 상한). |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 트랜스크립트를 찾는 곳. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 컴파일 DB의 소스 트리 밖 보관처. |
 </details>
