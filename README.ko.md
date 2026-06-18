@@ -232,7 +232,7 @@ $ vts discover --since 1
 - **C/C++ → clangd ≥ 22** ([릴리스](https://github.com/clangd/clangd/releases)). Visual Studio에 번들된 clangd 19.1.x는 실제 Unreal TU를 서버 모드로 인덱싱할 때 **교착**합니다 — 오래된 게 감지되면 vts가 경고합니다. `compile_commands.json`이 필요합니다.
 - **C#/.NET → Roslyn LSP.** VS Code C# 확장(`ms-dotnettools.csharp`)을 설치하면 vts가 번들에서 `Microsoft.CodeAnalysis.LanguageServer`와 런타임을 자동 감지합니다. 대안: `dotnet tool install --global csharp-ls`. `.sln`/`.csproj`가 필요합니다.
 - **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 들어가 첫 세션에 자동 설치됩니다(최초 1회 ~50MB; JS/TS는 Node 20+를 원하고 18에서는 건너뜀).
-- **혼합 repo?** 파일을 대상으로 한 질의는 그 파일의 언어 백엔드를 씁니다 — C++/C#(clangd/roslyn 루트) 트리 안의 `.py`/`.ts`도 pyright/typescript로 자동 처리되므로, UE 트리에 Python 도구 디렉터리가 섞여 있어도 수동 `backend=` 없이 vts가 동작합니다.
+- **혼합 repo?** 파일을 대상으로 한 질의는 그 파일의 언어 백엔드를 씁니다 — C++/C#(clangd/roslyn 루트) 트리 안의 `.py`/`.ts`도 pyright/typescript로 자동 처리되므로, UE 트리에 Python 도구 디렉터리가 섞여 있어도 수동 `backend=` 없이 vts가 동작합니다. 이건 **고정된 `backend`/`VTS_BACKEND`보다도 우선**합니다(충돌 시): 전역 서버 하나가 건드리는 모든 repo를 처리하므로, C++ 프로젝트용으로 `backend:"clangd"`를 박아 둬도 다른 repo의 `.js`/`.cs`/`.py`를 clangd로 보내지 않습니다(보내면 clangd가 `-32001 invalid AST`로 응답). 파일 대상이 없는 질의(예: 이름으로 `search_symbol`)는 고정 백엔드를 유지합니다.
 
 **clangd는 컴파일 데이터베이스가 필요합니다:**
 - **Unreal:** `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`. 타깃이 clang-cl로 빌드되면 **`-Compiler=VisualCpp`**를 더하세요 — 아니면 clang 툴체인 검증에 실패합니다.
@@ -342,6 +342,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | JS/TS·Python 결과 없음 | 번들 LSP 미설치(오프라인 첫 실행) | 세션 재실행, 또는 `VTS_TS_CMD` / `VTS_PY_CMD` 설정. |
 | 그냥 grep을 원했는데 코드 검색이 차단됨 | 훅이 인덱스로 유도 | `VTS_ENFORCE=0`이면 grep 통과. |
 | 잘못된 백엔드 선택 | 루트에 프로젝트 파일 여럿 | `VTS_BACKEND=clangd`로 고정(또는 호출마다 `backend`). |
+| 비-C++ 파일에서 `-32001 invalid AST` / 결과 없음 | C++용으로 고정한 `backend`가 다른 repo의 `.js`/`.cs`/`.py`에 닿음 | 0.28.4에서 수정 — 충돌 시 파일 자체 백엔드가 이김; 플러그인 업데이트(`/plugin marketplace update`). |
 </details>
 
 ## 상태 &amp; 안전

@@ -232,7 +232,7 @@ searches hit into the warm-up set, so each session leaves the index warmer.
 - **C/C++ → clangd ≥ 22** ([releases](https://github.com/clangd/clangd/releases)). The clangd 19.1.x bundled with Visual Studio **deadlocks** indexing real Unreal TUs in server mode; vts warns on an older one. Needs a `compile_commands.json`.
 - **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) — vts auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its runtime from the bundle. Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`.
 - **JS/TS → typescript-language-server, Python → pyright.** Ship as plugin deps, install automatically on the first session (one-time ~50 MB; JS/TS wants Node 20+, skipped on 18).
-- **Mixed repo?** A query that targets a file uses that file's own language backend — a `.py`/`.ts` inside a C++/C# (clangd/roslyn-rooted) tree gets pyright/typescript automatically, so vts works in a UE tree with a Python tooling dir without a manual `backend=`.
+- **Mixed repo?** A query that targets a file uses that file's own language backend — a `.py`/`.ts` inside a C++/C# (clangd/roslyn-rooted) tree gets pyright/typescript automatically, so vts works in a UE tree with a Python tooling dir without a manual `backend=`. This even **overrides a pinned `backend` / `VTS_BACKEND`** when they conflict: one global server serves every repo you touch, so a `backend:"clangd"` set for a C++ project never sends another repo's `.js`/`.cs`/`.py` to clangd (which would answer `-32001 invalid AST`). A query with no file target (e.g. `search_symbol` by name) keeps the pinned backend.
 
 **clangd needs a compile database:**
 - **Unreal:** `<UE>/Engine/Build/BatchFiles/RunUBT … -mode=GenerateClangDatabase`. If targets build with clang-cl, add **`-Compiler=VisualCpp`** or it fails clang-toolchain validation.
@@ -343,6 +343,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | No JS/TS or Python results | Bundled LSP didn't install (offline first run) | Re-run the session, or set `VTS_TS_CMD` / `VTS_PY_CMD`. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | `VTS_ENFORCE=0` lets grep through. |
 | Wrong backend picked | Multiple project files under the root | Pin `VTS_BACKEND=clangd` (or pass `backend` per call). |
+| `-32001 invalid AST` / nothing on a non-C++ file | A `backend` pinned for a C++ repo was reaching another repo's `.js`/`.cs`/`.py` | Fixed in 0.28.4 — the file's own backend now wins on conflict; update the plugin (`/plugin marketplace update`). |
 </details>
 
 ## Status &amp; safety
