@@ -12,6 +12,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { languageCensus } from "./warmset.js";
+import { findProjectRoot } from "./backends/index.js";
+
+// Which repository a file belongs to (nearest project root's basename) — so the viz can group/color nodes by
+// repo. Cached per dir. "external" when no enclosing project. Mirrors core.js repoLabelFor for the include graph.
+const _repoCache = new Map();
+function repoLabelFor(file) {
+  try {
+    const dir = path.dirname(String(file));
+    if (_repoCache.has(dir)) return _repoCache.get(dir);
+    const root = findProjectRoot(String(file)) || findProjectRoot(dir);
+    const label = root ? path.basename(root) : "external";
+    _repoCache.set(dir, label);
+    return label;
+  } catch { return "external"; }
+}
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 const SAVINGS_FILE = process.env.VTS_SAVINGS_FILE || path.join(CONFIG_DIR, "savings.json");
@@ -77,7 +92,7 @@ export function buildVizData(root) {
     const cap = envInt("VTS_VIZ_MAX_NODES", 200);
     const ranked = entries.map(([p]) => p).sort((a, b) => (fanin.get(b) || 0) - (fanin.get(a) || 0)).slice(0, cap);
     const keep = new Set(ranked);
-    const nodes = ranked.map((p) => ({ id: p, label: path.basename(p), weight: fanin.get(p) || 0 }));
+    const nodes = ranked.map((p) => ({ id: p, label: path.basename(p), repo: repoLabelFor(p), weight: fanin.get(p) || 0 }));
     const links = rawLinks.filter(([a, b]) => keep.has(a) && keep.has(b)).map(([a, b]) => ({ source: a, target: b }));
     return { nodes, links };
   })();

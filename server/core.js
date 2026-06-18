@@ -1030,6 +1030,20 @@ async function traceFrom(c, item, dir, depth, depthMax, visited, acc, capRef) {
 // prepareCallHierarchy right after a cold didOpen can return [] before the server finishes analyzing the
 // file (live-seen on a freshly-spawned tsserver). Retry with backoff for a short window so a cold call graph
 // isn't a spurious "no anchor". Cap via VTS_CALLHIER_WAIT_MS. Returns the items (possibly empty after the cap).
+// Which REPOSITORY a file belongs to — walk up to the nearest project marker (findProjectRoot) and label it
+// by that root's basename, so the viz can group/color nodes by repo ("which repo is this from?"). A file with
+// no enclosing project (system header, etc.) → "external". Cached per directory (the fs walk is the cost).
+const _repoCache = new Map();
+function repoLabelFor(file) {
+  try {
+    const dir = path.dirname(String(file));
+    if (_repoCache.has(dir)) return _repoCache.get(dir);
+    const root = findProjectRoot(String(file)) || findProjectRoot(dir);
+    const label = root ? path.basename(root) : "external";
+    _repoCache.set(dir, label);
+    return label;
+  } catch { return "external"; }
+}
 async function prepareCallHierReady(c, p, line, ch, capMs = envInt("VTS_CALLHIER_WAIT_MS", 8000)) {
   let items = (await c.prepareCallHierarchy(p, line, ch)) || [];
   if (items.length) return items;
@@ -1074,14 +1088,14 @@ export async function buildCallGraph(a = {}) {
   const items = (await prepareCallHierReady(c, pos.path, pos.line, pos.character)).filter(Boolean);
   if (!items.length) return { error: "no call-hierarchy anchor at the symbol (point at a function/method, or the backend may lack callHierarchy)", focus: focusLabel, nodes: [], links: [] };
   const nodeMap = new Map();
-  const linkSet = new Set(); const links = [];
+  const linkMap = new Map(); const links = [];
   const addNode = (item, isFocus) => {
     const k = traceKey(item);
-    if (!nodeMap.has(k)) nodeMap.set(k, { id: k, label: item.name, file: fromUri(item.uri).replace(/\\/g, "/"), line: (((item.selectionRange || item.range || {}).start || {}).line || 0) + 1, kind: SYMBOL_KIND[item.kind] || "sym", weight: 0, focus: !!isFocus });
+    if (!nodeMap.has(k)) { const file = fromUri(item.uri).replace(/\\/g, "/"); nodeMap.set(k, { id: k, label: item.name, file, line: (((item.selectionRange || item.range || {}).start || {}).line || 0) + 1, kind: SYMBOL_KIND[item.kind] || "sym", repo: repoLabelFor(file), weight: 0, calls: 0, calledBy: 0, focus: !!isFocus }); }
     else if (isFocus) nodeMap.get(k).focus = true;
     return k;
   };
-  const addLink = (s, t) => { if (s === t) return; const key = s + " " + t; if (!linkSet.has(key)) { linkSet.add(key); links.push({ source: s, target: t }); } };
+  const addLink = (s, t, count) => { if (s === t) return; const key = s + " " + t; const e = linkMap.get(key); if (e) { e.count += count; } else { const l = { source: s, target: t, count }; linkMap.set(key, l); links.push(l); } };
   const root0 = items[0];
   addNode(root0, true);
   const capRef = { n: 1, truncated: false }; // root counts as 1 node
@@ -1093,17 +1107,47 @@ export async function buildCallGraph(a = {}) {
       if (capRef.n >= nodeCap) { capRef.truncated = true; break; }
       const nx = dir === "callees" ? call.to : call.from;
       if (!nx || !nx.uri) continue;
+      const sites = Math.max(1, Array.isArray(call.fromRanges) ? call.fromRanges.length : 1); // # of call sites on this edge
       const seen = nodeMap.has(traceKey(nx));
       const k = addNode(nx, false);
-      if (dir === "callees") addLink(fromKey, k); else addLink(k, fromKey); // edge always points caller→callee
+      if (dir === "callees") addLink(fromKey, k, sites); else addLink(k, fromKey, sites); // edge always points caller→callee
       if (!seen) { capRef.n++; await collect(nx, dir, depth + 1); } // expand each node once
     }
   };
   for (const d of dirs) await collect(root0, d, 0);
-  for (const l of links) { const s = nodeMap.get(l.source), t = nodeMap.get(l.target); if (s) s.weight++; if (t) t.weight++; }
+  // per-node call counts: `calls` = call sites it makes (out), `calledBy` = call sites targeting it (in).
+  // weight = total call sites touching the node (call-weighted degree) → heat ramp = "how busy / hot".
+  for (const l of links) { const s = nodeMap.get(l.source), t = nodeMap.get(l.target); if (s) s.calls += l.count; if (t) t.calledBy += l.count; }
+  for (const n of nodeMap.values()) n.weight = n.calls + n.calledBy;
   const nodes = [...nodeMap.values()];
   try { recordQueryResults(root, nodes.map((n) => n.file)); } catch { /* best-effort */ }
-  return { root, focus: focusLabel, direction: dirRaw, depth: depthMax, nodes, links, truncated: capRef.truncated, backend: backendName };
+  const totalCallSites = links.reduce((a, l) => a + l.count, 0); // at-a-glance "how much is called" total
+  return { root, focus: focusLabel, direction: dirRaw, depth: depthMax, nodes, links, totalCallSites, truncated: capRef.truncated, backend: backendName };
+}
+// Symbol-name autocomplete for the dashboard's call-graph search box — `q` (a prefix) → matching declaration
+// NAMES via the LSP workspace/symbol index (the same source search_symbol uses). Deduped by name+file, capped,
+// function/method/class-ish first (the useful call-graph anchors). Exported for serve.js (/symbols) + eval.
+export async function listSymbols(a = {}) {
+  const root = resolveRoot(a);
+  const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
+  if (!backendName) return { error: "no language-server backend resolved", symbols: [] };
+  const c = await getClient(root, backendName);
+  const q = String(a.q || "");
+  const persisted = backendName === "clangd" && hasPersistedIndex(root);
+  const syms = (await symbolReady(c, q, persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000))) || [];
+  const max = Math.min(Number(a.maxResults) || 40, 200);
+  // call-graph anchors are functions/methods/classes/ctors — rank those first so the autocomplete is useful.
+  const CALLABLE = new Set([6, 9, 12, 5, 11, 23]); // method, ctor, func, class, interface, struct
+  const ranked = syms.slice().sort((x, y) => (CALLABLE.has(x.kind) ? 0 : 1) - (CALLABLE.has(y.kind) ? 0 : 1));
+  const seen = new Set(); const out = [];
+  for (const s of ranked) {
+    const file = fromUri(s.location.uri).replace(/\\/g, "/");
+    const k = s.name + "|" + file;
+    if (seen.has(k)) continue; seen.add(k);
+    out.push({ name: s.name, kind: SYMBOL_KIND[s.kind] || "sym", file, line: ((s.location.range.start || {}).line || 0) + 1 });
+    if (out.length >= max) break;
+  }
+  return { backend: backendName, symbols: out };
 }
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 // LSP DiagnosticSeverity. Diagnostics (compiler/linter errors+warnings) as a token-capped

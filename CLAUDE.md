@@ -151,8 +151,14 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   relative, so nothing leaves the host. `serve.js` is node:http ONLY (no express/ws), binds `127.0.0.1` (never
   0.0.0.0), routes `/`→html · `/data`→JSON (include graph) · `/callgraph?symbol=&direction=&depth=`→JSON
   (ON-DEMAND call graph via `core.js buildCallGraph` = LSP callHierarchy live, NOT a persistent semantic DB —
-  the cbm-parity "call graph" view our charter allows) · `/vendor/<allowlisted file>`. The 3D viz has two modes
-  (include graph / call-graph-by-symbol) + highlight filter + metrics overlay. OPT-IN + CLI-ONLY: started only by
+  the cbm-parity "call graph" view our charter allows; nodes carry `calls`/`calledBy`/`repo`, edges a call-site
+  `count` [fromRanges], + `totalCallSites`) · `/symbols?q=`→JSON (`core.js listSymbols` = workspace/symbol
+  autocomplete for the search box) · `/vendor/<allowlisted file>`. `core.js repoLabelFor` (findProjectRoot →
+  basename) tags every node with its repository. The 3D viz: two modes (include / call-graph-by-symbol with live
+  symbol autocomplete dropdown), **spherical-SHELL layout** (radius ∝ node count+footprint, radius-aware collision
+  so orbs don't clump/overlap), `color:` **groups** (union-find connected components) / **repo** (per-repository
+  hue + legend) / **heat**, **click-to-drill-into-a-group** (Esc/Backspace pops out), focus/maximize + keyboard
+  camera (WASD/arrows/+-/R/Esc), distance-scaled labels, highlight filter, metrics overlay (incl. call counts). OPT-IN + CLI-ONLY: started only by
   `vts serve` (cli.js special-cases it — long-running, `--open` launches the browser, `--stop`/SIGINT stop via a
   pidfile), NEVER by the MCP server, so the steady-state package stays a thin stdio client. Easy open/close via
   the **`skills/vs-viz`** skill + **`commands/viz.md` / `commands/viz-stop.md`** (`/vs-token-safer:viz[-stop]`).
