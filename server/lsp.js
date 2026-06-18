@@ -123,7 +123,7 @@ export class LspClient {
       const p = this.pending.get(msg.id);
       if (!p) return;
       this.pending.delete(msg.id);
-      if (msg.error) p.reject(new Error(`LSP error ${msg.error.code}: ${msg.error.message}`));
+      if (msg.error) { const e = new Error(`LSP error ${msg.error.code}: ${msg.error.message}`); e.code = msg.error.code; p.reject(e); }
       else p.resolve(msg.result);
     }
     // Server-initiated requests (have id + method) MUST get a reply or the server can stall the handshake.
@@ -275,15 +275,23 @@ export class LspClient {
   // Definition / type-definition / implementation / declaration share one position-request shape; the kind
   // just picks the LSP method (textDocument/definition|typeDefinition|implementation|declaration). Folded so
   // goto_definition can expose all four without four separate MCP tools.
-  gotoByKind(kind, uriOrPath, line, character) {
+  async gotoByKind(kind, uriOrPath, line, character) {
     const method = kind === "type_definition" ? "textDocument/typeDefinition"
       : kind === "implementation" ? "textDocument/implementation"
         : kind === "declaration" ? "textDocument/declaration"
           : "textDocument/definition";
-    return this.request(method, {
-      textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
-      position: { line, character },
-    });
+    try {
+      return await this.request(method, {
+        textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+        position: { line, character },
+      });
+    } catch (e) {
+      // A backend without this provider (e.g. tsserver has no textDocument/declaration) replies MethodNotFound
+      // (-32601). That's "this nav kind isn't available here", not a failure → return empty so the kind degrades
+      // gracefully (caller renders "0 definition(s)") instead of surfacing a raw `-32601` LSP error to the model.
+      if (e && (e.code === -32601 || /-32601/.test(String(e.message)))) return [];
+      throw e;
+    }
   }
   // Diagnostics (errors/warnings) for ONE file. The server pushes textDocument/publishDiagnostics after it
   // parses a didOpen'd file; we store them per-uri (_dispatch) and return the latest, waiting briefly for the

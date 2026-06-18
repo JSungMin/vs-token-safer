@@ -75,7 +75,9 @@ process.stdin.on("data", (d) => {
     } else if (msg.method === "textDocument/implementation") {
       send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Impl.cpp", range: { start: { line: 100, character: 0 }, end: { line: 100, character: 5 } } }] });
     } else if (msg.method === "textDocument/declaration") {
-      send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///proj/src/Decl.cpp", range: { start: { line: 300, character: 0 }, end: { line: 300, character: 5 } } }] });
+      // Simulate a backend WITHOUT a declaration provider (real tsserver has none) — MethodNotFound (-32601).
+      // gotoByKind must CATCH this and return empty so the kind degrades gracefully, NOT surface a raw LSP error.
+      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Unhandled method textDocument/declaration" } });
     } else if (msg.method === "textDocument/didOpen") {
       // Push diagnostics after a parse, keyed on the uri: a file whose name contains "diag" gets an
       // error + a warning (out of severity order, to exercise the sort); any other file is clean ([]).

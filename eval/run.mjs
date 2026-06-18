@@ -1283,6 +1283,7 @@ const dgClean = await runTool("diagnostics", { path: path.join(lspDir, "clean.cp
 const gImpl = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "implementation", projectPath: lspDir, backend: "clangd" });
 const gType = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "type_definition", projectPath: lspDir, backend: "clangd" });
 const gDef = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, projectPath: lspDir, backend: "clangd" });
+const gDecl = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "declaration", projectPath: lspDir, backend: "clangd" }); // mock replies -32601 → must degrade, not error
 process.env.VTS_DIAG_DIR_WAIT_MS = "300"; // mock publishes on didOpen instantly — no need for the 4s default
 const dgDir = await runTool("diagnostics", { scope: "directory", projectPath: lspDir, backend: "clangd" });
 delete process.env.VTS_DIAG_DIR_WAIT_MS;
@@ -1296,7 +1297,10 @@ const lspGlueOk =
   // goto kinds route to the right LSP method (distinct mock locations) with the right label
   !gImpl.isError && /implementation of/.test(gImpl.text) && /Impl\.cpp:101/.test(gImpl.text) &&
   !gType.isError && /type definition of/.test(gType.text) && /Type\.cpp:201/.test(gType.text) &&
-  !gDef.isError && /Foo\.cpp:42/.test(gDef.text) && /^definition of .*clean\.cpp/.test(gDef.text);
+  !gDef.isError && /Foo\.cpp:42/.test(gDef.text) && /^definition of .*clean\.cpp/.test(gDef.text) &&
+  // kind=declaration on a backend WITHOUT that provider → MethodNotFound (-32601) caught in gotoByKind →
+  // graceful empty ("0 definition(s)"), NOT a raw LSP error surfaced to the model (live dogfound: tsserver).
+  !gDecl.isError && /0 declaration\(s\)/.test(gDecl.text);
 try { fs.rmSync(lspDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 await disposeClients();
