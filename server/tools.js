@@ -22,9 +22,9 @@ export const TOOLS = [
   {
     name: "find_references",
     description:
-      "Every usage/call site of a symbol (semantic, not a text grep). THE tool for editing code: pass " +
-      "`symbol` (just the name) → it resolves the decl + returns all refs in one call, no line/column needed " +
-      "(a 0-based path+line+character also works, to disambiguate an overload). → token-capped `file:line`.",
+      "Every call site of a symbol (semantic, not grep) — pass `symbol` (a name): resolves the decl + returns " +
+      "all refs in one call (a 0-based path+line+character disambiguates an overload). → token-capped " +
+      "`file:line`; detail=file|dir for a blast-radius summary.",
     inputSchema: {
       type: "object",
       properties: {
@@ -42,7 +42,7 @@ export const TOOLS = [
   },
   {
     name: "goto_definition",
-    description: "Jump from the symbol at a 0-based position to its definition (semantic, read-only). `kind` picks which: definition (default) | type_definition (the type of an expression) | implementation (concrete impls of an interface/abstract/virtual) | declaration. → token-capped `file:line` (empty if it can't resolve). For all usages instead, use find_references.",
+    description: "Jump from a 0-based position to a definition (semantic). `kind`: definition (default) | type_definition | implementation | declaration. → token-capped `file:line`. For usages, use find_references.",
     inputSchema: {
       type: "object",
       properties: {
@@ -102,7 +102,7 @@ export const TOOLS = [
   },
   {
     name: "read_symbol",
-    description: "Return the SOURCE of one named declaration (its outline span) — NOT the whole file. The read-side twin of replace_symbol_body: name a symbol → get just its body, so you skip Read-ing the entire file to see/edit one declaration. `signatureOnly` trims to the declaration head. Body capped by VTS_SYMBOL_MAX_LINES.",
+    description: "Return the SOURCE of one named declaration (its span), NOT the whole file — the read twin of replace_symbol_body. Skip Read-ing a whole file for one declaration. `signatureOnly` = head only; body capped by VTS_SYMBOL_MAX_LINES.",
     inputSchema: {
       type: "object",
       properties: {
@@ -139,9 +139,8 @@ export const TOOLS = [
   {
     name: "replace_symbol_body",
     description:
-      "Replace a whole declaration (signature + body) by NAMING it — the outline gives the exact span, so no " +
-      "Read-the-file + line-counting for an exact-match Edit. PREVIEW by default returns the affected " +
-      "`file:line`; apply=true OVERWRITES the declaration on disk.",
+      "Replace a whole declaration (signature + body) by NAMING it — the outline gives the span, no " +
+      "Read + line-counting. PREVIEW by default; apply=true overwrites.",
     inputSchema: {
       type: "object",
       properties: {
@@ -160,10 +159,8 @@ export const TOOLS = [
   {
     name: "insert_symbol",
     description:
-      "Insert text next to a named declaration — `position=after` (default; e.g. a sibling function/method) " +
-      "or `before` (e.g. an import/attribute/decorator above it). The outline gives the point, no Read needed. " +
-      "PREVIEW by default returns the affected `file:line`; apply=true WRITES to the file on disk. Use instead " +
-      "of Read-then-Edit to add a declaration.",
+      "Insert text next to a named declaration — `position=after` (default) or `before`. The outline gives the " +
+      "point (no Read). PREVIEW by default; apply=true writes. Use instead of Read-then-Edit to add a declaration.",
     inputSchema: {
       type: "object",
       properties: {
