@@ -335,8 +335,8 @@ function editNudgeFor(toolName, ti) {
       : `[vs-token-safer] This replaces a WHOLE declaration. Instead of Read-the-file-then-Edit, edit by name — replace_symbol_body ${sym} body=<the full new declaration> (preview by default, apply=true writes; skips the file Read, saves tokens). A sub-declaration tweak? Built-in Edit is fine. Disable: VTS_EDIT_WARN=0.`;
   }
   return KO
-    ? `[vs-token-safer] 새 선언을 *추가*하네요. 앵커를 Read할 필요 없이 이름 옆에 삽입하세요 — insert_after_symbol ${sym} text=<추가할 선언> (또는 insert_before_symbol; preview 기본, apply=true 기록). 끄기: VTS_EDIT_WARN=0.`
-    : `[vs-token-safer] This ADDS a new declaration. Insert it next to an anchor by name (no Read needed for the anchor) — insert_after_symbol ${sym} text=<the new declaration> (or insert_before_symbol; preview by default, apply=true writes). Disable: VTS_EDIT_WARN=0.`;
+    ? `[vs-token-safer] 새 선언을 *추가*하네요. 앵커를 Read할 필요 없이 이름 옆에 삽입하세요 — insert_symbol ${sym} text=<추가할 선언> (position=after 기본 또는 before; preview 기본, apply=true 기록). 끄기: VTS_EDIT_WARN=0.`
+    : `[vs-token-safer] This ADDS a new declaration. Insert it next to an anchor by name (no Read needed) — insert_symbol ${sym} text=<the new declaration> (position=after default, or before; preview by default, apply=true writes). Disable: VTS_EDIT_WARN=0.`;
 }
 // enforcement v2 (A+) + v2.1: a Grep-TOOL pattern HUNTING A NAMED SYMBOL is escalated from warn to BLOCK —
 // a semantic tool is strictly better (smaller, exact, no regex false positives — `void.*Foo\(` also matches
@@ -567,7 +567,7 @@ process.stdin.on("end", () => {
         const threshold = Number.isFinite(after) && after >= 0 ? after : 0; // OFF by default (block traps the model)
         if (grepBlockOn() && threshold > 0 && led.streak >= threshold && ce.insertDecl && !ce.replaceDecl) {
           resetStreak(); // fire ONCE then back off — no permanent wall
-          process.stderr.write(editNudgeFor(toolName, ti) + " (one-time block: the nudge was ignored " + led.streak + "× — use insert_after_symbol / insert_before_symbol for this insert. Set VTS_EDIT_BLOCK_AFTER=0 to disable entirely.)" + setup + "\n");
+          process.stderr.write(editNudgeFor(toolName, ti) + " (one-time block: the nudge was ignored " + led.streak + "× — use insert_symbol (position=after|before) for this insert. Set VTS_EDIT_BLOCK_AFTER=0 to disable entirely.)" + setup + "\n");
           process.exit(2); // block — route the safe insert to a symbol-edit
         }
         emitWarn(editNudgeFor(toolName, ti) + setup);

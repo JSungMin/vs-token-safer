@@ -13,7 +13,7 @@ try {
   if (pct === null || total < 5) process.exit(0); // too little data — don't nag
   const msg =
     `[vs-token-safer] Symbol-edit adoption: ${pct}% (${o.symbol || 0} symbol-edit vs ${o.builtin || 0} built-in Edit on whole declarations). ` +
-    `When you ADD or REPLACE a whole declaration this session, prefer replace_symbol_body / insert_after_symbol / insert_before_symbol — ` +
+    `When you ADD or REPLACE a whole declaration this session, prefer replace_symbol_body / insert_symbol — ` +
     `they edit by NAME and skip reading the file into context. Aim to raise the ratio. (Built-in Edit stays right for sub-declaration tweaks.)`;
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: msg } }) + "\n");
 } catch { /* best-effort — never break session start */ }
