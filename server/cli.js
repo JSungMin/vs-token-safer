@@ -88,7 +88,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", "insert-after": "insert_after_symbol", "insert-before": "insert_before_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
@@ -109,6 +109,9 @@ if (name === "vts_git" || name === "vts_p4") {
   args = { argv, ...extra };
 } else {
   args = parseArgs(rest);
+  // back-compat CLI aliases: `vts insert-after`/`insert-before` map to insert_symbol with the position set.
+  if (rawCmd === "insert-before") args.position = "before";
+  else if (rawCmd === "insert-after" && args.position == null) args.position = "after";
 }
 try {
   const { text, isError } = await runTool(name, args);
