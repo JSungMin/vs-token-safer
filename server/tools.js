@@ -24,7 +24,8 @@ export const TOOLS = [
     description:
       "Every call site of a symbol (semantic, not grep) — pass `symbol` (a name): resolves the decl + returns " +
       "all refs in one call (a 0-based path+line+character disambiguates an overload). → token-capped " +
-      "`file:line`; detail=file|dir for a blast-radius summary.",
+      "`file:line`; detail=file|dir for a blast-radius summary. `direction`=callers|callees switches to a " +
+      "MULTI-HOP call hierarchy (transitive callers = blast radius / callees) to `depth` hops — use before changing a function.",
     inputSchema: {
       type: "object",
       properties: {
@@ -34,6 +35,8 @@ export const TOOLS = [
         character: { type: "number", description: "0-based column." },
         includeDeclaration: { type: "boolean", description: "Include the declaration." },
         detail: { type: "string", description: "`file` or `dir` → a blast-radius summary (dependents grouped + ranked by ref count) instead of the per-line list; omit for the full list." },
+        direction: { type: "string", description: "callers | callees → a multi-hop CALL HIERARCHY (who transitively calls this / what it calls) instead of flat references; omit for usages." },
+        depth: { type: "number", description: "Call-hierarchy hops when direction is set (default 2; capped by VTS_TRACE_MAX_DEPTH)." },
         projectPath: { type: "string", description: "Project root (cwd)." },
         backend: { type: "string", description: "Backend override; auto-detected." },
         maxResults: { type: "number", description: "Result cap (60)." },

@@ -35,9 +35,20 @@ function parseIncludes(txt) {
   while ((m = re.exec(txt))) out.push(path.basename(m[1]).toLowerCase());
   return out;
 }
-// Persistent include-graph cache ({ normPath: { m: mtimeMs, i: [includedBasename,...] } }) so centrality
-// scanning AMORTIZES across warmups instead of re-reading every file each time. mtime invalidates stale
-// entries automatically.
+// FNV-1a 32-bit content hash — zero-dependency, fast (cbm/codebase-memory-mcp uses native XXH3 for the same
+// job; this is the pure-JS analog, on-mission for our Node package). Used as a CONTENT-EQUALITY check so the
+// include-graph cache is robust to mtime lying: a touch / branch-bounce / `p4 sync` that rewrites identical
+// bytes reuses the cached includes (skips the re-parse), and a real content change is caught even when a
+// later file happens to share a prior entry's mtime+size. Hashes only the include-prefix we already read.
+export function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
+  return h >>> 0;
+}
+// Persistent include-graph cache ({ normPath: { m: mtimeMs, s: size, h: contentHash, i: [includedBasename,…] } })
+// so centrality scanning AMORTIZES across warmups instead of re-reading every file each time. The fast path
+// is keyed on mtime AND size (a free robustness upgrade over mtime-only — `statSync` already returns both);
+// when those miss but the content hash matches, the cached includes are reused without re-parsing.
 function loadGraph() { try { return JSON.parse(fs.readFileSync(GRAPH_FILE, "utf8")) || {}; } catch { return {}; } }
 function saveGraph(g) { try { fs.mkdirSync(path.dirname(GRAPH_FILE), { recursive: true }); fs.writeFileSync(GRAPH_FILE, JSON.stringify(g)); } catch { /* best-effort */ } }
 const readHist = () => { try { return JSON.parse(fs.readFileSync(HIST_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -141,15 +152,18 @@ function centralityRank(candidates) {
   const fanin = new Map();
   for (const f of list) {
     const nf = norm(f);
-    let st; try { st = fs.statSync(f).mtimeMs; } catch { continue; }
+    let st; try { st = fs.statSync(f); } catch { continue; }
+    const mt = st.mtimeMs, sz = st.size;
     const cached = graph[nf];
     let inc;
-    if (cached && cached.m === st) inc = cached.i;
+    if (cached && cached.m === mt && cached.s === sz) inc = cached.i; // mtime+size match → no read (fast path)
     else if (Date.now() - start < budgetMs) {
       const txt = readIncludePrefix(f);
       if (txt == null) continue;
-      inc = parseIncludes(txt);
-      graph[nf] = { m: st, i: inc };
+      const h = fnv1a(txt);
+      // content-equality: bytes unchanged despite mtime/size jitter → reuse the parsed includes, skip parsing.
+      inc = (cached && cached.h === h) ? cached.i : parseIncludes(txt);
+      graph[nf] = { m: mt, s: sz, h, i: inc };
       dirty = true;
     } else inc = cached ? cached.i : null; // budget spent → reuse stale cache, else defer to a later warmup
     if (!inc) continue;

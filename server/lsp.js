@@ -256,6 +256,7 @@ export class LspClient {
           hover: { contentFormat: ["plaintext", "markdown"] },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           rename: { dynamicRegistration: false, prepareSupport: false },
+          callHierarchy: { dynamicRegistration: false }, // trace_calls: prepareCallHierarchy → incoming/outgoingCalls
           publishDiagnostics: { relatedInformation: false }, // we wait on diagnostics in the clangd warm-up fallback
         },
       },
@@ -323,6 +324,22 @@ export class LspClient {
       newName,
     });
   }
+  // Call hierarchy (the 3-step LSP protocol behind trace_calls): prepare an item at a position, then walk
+  // its incoming (callers) / outgoing (callees) edges. A backend without a callHierarchy provider replies
+  // MethodNotFound (-32601) — caught here → [] so the tool degrades gracefully instead of surfacing a raw
+  // LSP error, exactly like gotoByKind. The engine resolves the call graph; we only walk + token-cap it.
+  async _callHierGraceful(method, params) {
+    try { return (await this.request(method, params)) || []; }
+    catch (e) { if (e && (e.code === -32601 || /-32601/.test(String(e.message)))) return []; throw e; }
+  }
+  prepareCallHierarchy(uriOrPath, line, character) {
+    return this._callHierGraceful("textDocument/prepareCallHierarchy", {
+      textDocument: { uri: uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath) },
+      position: { line, character },
+    });
+  }
+  incomingCalls(item) { return this._callHierGraceful("callHierarchy/incomingCalls", { item }); }
+  outgoingCalls(item) { return this._callHierGraceful("callHierarchy/outgoingCalls", { item }); }
   async shutdown() {
     // Teardown must RELIABLY release the child + all its handles — the backend-pool memory guard depends
     // on an evicted client actually freeing its process (else the LRU/idle reap leaves zombies and memory
