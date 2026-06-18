@@ -21,6 +21,9 @@ process.env.VTS_CONFIG_FILE = CF;
 fs.writeFileSync(CF, "{}"); // start "configured" so the first-use setup nudge doesn't prefix other tests
 const SV = path.join(os.tmpdir(), `vts-eval-sv-${process.pid}.json`); // isolate the savings ledger (recordSavings writes)
 process.env.VTS_SAVINGS_FILE = SV;
+const GDS = path.join(os.tmpdir(), `vts-eval-gds-${process.pid}.json`); // isolate the gamedev-log-analyzer ledger (combined-savings fold) — else the eval reads the REAL ~/.gamedev-log-analyzer ledger
+process.env.VTS_GAMEDEV_SAVINGS_FILE = GDS;
+fs.writeFileSync(GDS, "{}"); // empty by default so earlier savings guards see no gamedev contribution
 const TEE = path.join(os.tmpdir(), `vts-eval-tee-${process.pid}`); // isolate the tee dir
 process.env.VTS_TEE_DIR = TEE;
 const EDL = path.join(os.tmpdir(), `vts-eval-edl-${process.pid}.json`); // isolate the edit-adoption ledger
@@ -1404,7 +1407,32 @@ const traceOk =
   !tcDepth1.isError && /CallerA/.test(tcDepth1.text) && !/GrandCaller/.test(tcDepth1.text) && // depth 1 → no 2nd hop
   !tcPos.isError && /CallerA/.test(tcPos.text) &&                                            // position-based start works
   !tcPlain.isError && /references of/.test(tcPlain.text) && !/callers of/.test(tcPlain.text); // no direction → flat refs (default intact)
-// guards 66/68/70 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
+// 73) ON-DEMAND call graph (comparable-to-codebase-memory-mcp "call graph" view, but official-LSP/no
+// persistent DB). buildCallGraph resolves a symbol and walks LSP callHierarchy into a {nodes,links} object
+// (same shape the 3D viz renders). The /callgraph route serves it. Mock graph (guard 70): Target ← CallerA,
+// CallerB ; CallerA ← GrandCaller ; Target → Callee. direction=both → callers+callees; callers → no Callee.
+const { buildCallGraph } = await import("../server/core.js");
+const cg = await buildCallGraph({ symbol: "Target", direction: "both", projectPath: process.cwd(), backend: "clangd" });
+const cgLabels = cg.nodes.map((n) => n.label);
+const cgFocus = cg.nodes.find((n) => n.focus);
+const callGraphOk =
+  !cg.error && cg.nodes.length === 5 &&
+  ["Target", "CallerA", "CallerB", "GrandCaller", "Callee"].every((l) => cgLabels.includes(l)) && // both dirs + 2nd hop
+  !!cgFocus && cgFocus.label === "Target" &&
+  cg.links.length >= 4 &&
+  cg.nodes.every((n) => n.file && n.line && n.id) &&                 // richer than include graph: file:line per node
+  cg.links.every((l) => cg.nodes.some((n) => n.id === l.source) && cg.nodes.some((n) => n.id === l.target)); // links resolve
+const cgCallers = await buildCallGraph({ symbol: "Target", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
+const cgCallersOk = !cgCallers.error && cgCallers.nodes.some((n) => n.label === "CallerA") && !cgCallers.nodes.some((n) => n.label === "Callee"); // callers-only excludes the callee
+// /callgraph route
+const { startServer: ssCg } = await import("../server/serve.js");
+const cgSrv = await ssCg(process.cwd(), 0);
+const cgHttp = await new Promise((res, rej) => { http.get({ host: "127.0.0.1", port: cgSrv.port, path: "/callgraph?symbol=Target&direction=callers&backend=clangd" }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b })); }).on("error", rej); });
+let cgParsed = {}; try { cgParsed = JSON.parse(cgHttp.body); } catch { /* leave empty */ }
+const cgRouteOk = cgHttp.status === 200 && Array.isArray(cgParsed.nodes) && cgParsed.nodes.some((n) => n.label === "CallerA");
+await new Promise((r) => cgSrv.server.close(r));
+const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk;
+// guards 66/68/70/73 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 
 // 69) B: clangd index-aware EMPTY advisory — distinguish (1) target file not in compile_commands.json from
@@ -1455,6 +1483,7 @@ try { fs.rmSync(igDir, { recursive: true, force: true }); } catch { /* ignore */
 // 127.0.0.1 and answers / (html) + /data (json) + 404. node:http only — no express/ws.
 const { buildVizData, renderDashboardHtml } = await import("../server/viz.js");
 fs.writeFileSync(SV, JSON.stringify({ runs: 5, rawTok: 100000, outTok: 10000, days: { [new Date().toISOString().slice(0, 10)]: { runs: 5, rawTok: 100000, outTok: 10000 } }, tools: { search_symbol: { runs: 3, rawTok: 60000, outTok: 6000 }, find_references: { runs: 2, rawTok: 40000, outTok: 4000 } } }));
+fs.writeFileSync(GDS, JSON.stringify({ runs: 7, rawTok: 60000, outTok: 10000 })); // gamedev-log-analyzer: 50000 saved → folded into the COMBINED total
 const vizRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-viz`);
 fs.mkdirSync(vizRoot, { recursive: true });
 for (const f of ["a.cpp", "b.cpp", "hub.h"]) fs.writeFileSync(path.join(vizRoot, f), "#pragma once\n");
@@ -1462,29 +1491,42 @@ const vn = (f) => path.join(vizRoot, f).replace(/\\/g, "/").toLowerCase();
 fs.writeFileSync(IG, JSON.stringify({ [vn("a.cpp")]: { m: 1, s: 1, h: 1, i: ["hub.h"] }, [vn("b.cpp")]: { m: 1, s: 1, h: 1, i: ["hub.h"] }, [vn("hub.h")]: { m: 1, s: 1, h: 1, i: [] } }));
 const vd = buildVizData(vizRoot);
 const html = renderDashboardHtml();
+// the `vts savings` CLI report folds gamedev-log-analyzer in too (separate line + COMBINED total)
+const svReport = await runTool("vts_savings", { graph: false });
+const combinedReportOk = !svReport.isError && /gamedev-log-analyzer \(logs\): ~50[,.]000/.test(svReport.text) && /COMBINED saved: ~140[,.]000/.test(svReport.text);
 const hub = vd.graph.nodes.find((n) => n.label === "hub.h");
+const gdSrc = (vd.savings.sources || []).find((x) => x.key === "gamedev-log-analyzer");
 const vizDataOk =
-  vd.savings.totalSaved === 90000 && vd.savings.ratio === 10 && vd.savings.tools.length === 2 && vd.savings.days.length === 30 &&
+  vd.savings.totalSaved === 140000 && vd.savings.ratio === 8 &&     // COMBINED: vts 90k + gamedev 50k; ratio 160k/20k
+  !!gdSrc && gdSrc.saved === 50000 && (vd.savings.sources || []).some((x) => x.key === "vs-token-safer" && x.saved === 90000) && // per-source split
+  vd.savings.tools.length === 2 && vd.savings.days.length === 30 &&
   vd.census.clangd === 3 &&                                  // a.cpp + b.cpp + hub.h all clangd
   !!hub && hub.weight === 2 && vd.graph.links.length === 2;  // hub.h included by both → fan-in 2
 const htmlSelfContainedOk =
   /<!doctype html>/i.test(html) && /fetch\("\/data"\)/.test(html) &&
-  !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html); // no external script / CDN
+  !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html) && // no external script / CDN
+  /\/vendor\/three\.module\.min\.js/.test(html) && /import \* as THREE/.test(html) &&     // 3D: vendored Three.js, same-origin
+  /fetch\("\/callgraph/.test(html);                                                       // call-graph mode wired
 const { startServer } = await import("../server/serve.js");
 const { server, port, url } = await startServer(vizRoot, 0); // port 0 → OS-assigned ephemeral
-const httpGet = (p) => new Promise((res, rej) => { http.get({ host: "127.0.0.1", port, path: p }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b })); }).on("error", rej); });
+const httpGet = (p) => new Promise((res, rej) => { http.get({ host: "127.0.0.1", port, path: p }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b, ct: r.headers["content-type"] })); }).on("error", rej); });
 const rHtml = await httpGet("/");
 const rData = await httpGet("/data");
+const rVendor = await httpGet("/vendor/three.module.min.js");
+const rVendorBad = await httpGet("/vendor/../core.js"); // path-traversal attempt → allowlist denies
 const rMiss = await httpGet("/nope");
 let parsedData = {}; try { parsedData = JSON.parse(rData.body); } catch { /* leave empty */ }
 const serveOk =
   /^http:\/\/127\.0\.0\.1:\d+\/$/.test(url) &&                // bound to localhost, never 0.0.0.0
   rHtml.status === 200 && /vs-token-safer/.test(rHtml.body) &&
-  rData.status === 200 && parsedData.savings && parsedData.savings.totalSaved === 90000 &&
+  rData.status === 200 && parsedData.savings && parsedData.savings.totalSaved === 140000 && // combined over the route
+  rVendor.status === 200 && /javascript/.test(rVendor.ct || "") && /three/i.test(rVendor.body.slice(0, 200)) && // vendored lib served same-origin
+  rVendorBad.status === 404 &&                               // traversal blocked by the allowlist
   rMiss.status === 404;
 await new Promise((r) => server.close(r));
 try { fs.rmSync(vizRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk;
+fs.writeFileSync(GDS, "{}"); // reset so it doesn't leak into any later savings assertion
+const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk;
 
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
@@ -1559,7 +1601,8 @@ const rows = [
   ["clangd index advisory: file-not-in-DB vs index-incomplete (%), toggle", idxAdvOk, "true", idxAdvOk],
   ["call hierarchy folded into find_references (direction=callers/callees, depth-bounded)", traceOk, "true", traceOk],
   ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],
-  ["local dashboard (vts serve): buildVizData + self-contained HTML + 127.0.0.1 server", dashboardOk, "true", dashboardOk],
+  ["dashboard: 3D viz + vendored Three.js route + combined gamedev savings + 127.0.0.1", dashboardOk, "true", dashboardOk],
+  ["on-demand call graph: buildCallGraph (callHierarchy → nodes/links) + /callgraph route", callGraphAllOk, "true", callGraphAllOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
