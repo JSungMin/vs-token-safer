@@ -4,7 +4,7 @@
 // validation GATE decides whether a candidate variant beats the baseline. The live rollouts (spawning the
 // agents) live in rollout.workflow.js — they're token-heavy and opt-in; the SCORING is kept here so the
 // gate logic itself is deterministic and CI-testable (a gate you can't trust isn't a gate).
-const SYMBOL_EDIT_TOOLS = new Set(["replace_symbol_body", "insert_after_symbol", "insert_before_symbol", "safe_delete", "rename"]);
+const SYMBOL_EDIT_TOOLS = new Set(["replace_symbol_body", "insert_symbol", "insert_after_symbol", "insert_before_symbol", "safe_delete", "rename"]);
 const BUILTIN_EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write"]);
 
 // Classify one rollout by the edit tool that ACTUALLY APPLIED the change. `appliedTool` (the single tool

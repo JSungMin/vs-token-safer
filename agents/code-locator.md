@@ -28,12 +28,15 @@ been thousands of grep lines comes back as a few dozen `file:line` rows.
 
 ## Tool order
 1. **Symbol / definition** → `search_symbol` (`q`, `projectPath`, `backend`, `maxResults`); `goto_definition`
-   / `find_references` (`path`, `line`, `character`) for a position. `hover` for type-at-position.
+   / `find_references` (`path`, `line`, `character`) for a position. `goto_definition` takes a `kind`
+   (`definition` default · `type_definition` · `implementation` = who implements an interface/virtual ·
+   `declaration`). `hover` for type-at-position.
 2. **References / usages** → `find_references`.
 3. **Raw text in code** (string literals, comments, config keys — things the symbol index can't answer) →
    `search_text` (token-capped grep wrapper).
 4. **File by name** → `find_files` (`q`, glob or keyword).
 5. **Outline of a file** → `document_symbols` (`path`).
+6. **Errors / warnings in a file** → `diagnostics` (`path`) — token-capped `file:line:col severity: message`.
 
 ## Setup / fallbacks
 - The backend auto-detects from the root (`compile_commands.json` → clangd; `.sln`/`.csproj` → roslyn;
