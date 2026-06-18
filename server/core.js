@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
-import { LspClient, fromUri, langIdForPath, envInt } from "./lsp.js";
+import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
 import { recordQueryResults, languageCensus } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
@@ -1518,10 +1518,11 @@ export async function runTool(name, a = {}) {
         for (const f of files) c.didOpen(f, langIdForPath(f, backendName));
         await new Promise((r) => setTimeout(r, envInt("VTS_DIAG_DIR_WAIT_MS", 4000))); // let the server publish
         const agg = [];
+        const dirCanon = canonFsPath(dirRoot); // servers spell the Win drive differently (%3A/case) — compare canonically
         for (const [uri, ds] of c.diagnostics.entries()) {
           if (!ds || !ds.length) continue;
           let fp; try { fp = fromUri(uri).replace(/\\/g, "/"); } catch { continue; }
-          if (!fp.startsWith(dirRoot)) continue; // only files under the scanned dir
+          if (!canonFsPath(uri).startsWith(dirCanon)) continue; // only files under the scanned dir
           for (const x of ds) agg.push({ ...x, _file: fp });
         }
         const sweepNote = files.truncated ? ` — scan capped at ${files.length} file(s) (raise VTS_DIAG_DIR_MAX; more exist)` : ` (${files.length} file(s) scanned)`;

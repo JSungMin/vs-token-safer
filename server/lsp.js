@@ -18,6 +18,14 @@ export const toUri = (p) => pathToFileURL(path.resolve(p)).href;
 export const fromUri = (u) => {
   try { return fileURLToPath(u); } catch { return u.replace(/^file:\/\//, ""); }
 };
+// LSP servers disagree on file-uri spelling — clangd/tsserver emit a lowercase, %3A-encoded Windows drive
+// (`file:///g%3A/…`) while ours is `file:///G:/…`. Compare by the DECODED os path with a lowercased Windows
+// drive + forward slashes, so a per-file/diagnostics lookup matches regardless of the spelling.
+export const canonFsPath = (uriOrPath) => {
+  let p; try { p = fromUri(String(uriOrPath).startsWith("file:") ? uriOrPath : toUri(uriOrPath)); } catch { p = String(uriOrPath); }
+  p = p.replace(/\\/g, "/");
+  return /^[a-zA-Z]:/.test(p) ? p[0].toLowerCase() + p.slice(1) : p;
+};
 
 // LSP `textDocument/didOpen` wants a languageId. One backend can serve several extensions
 // (typescript-language-server handles .ts/.tsx/.js/.jsx; pyright handles .py/.pyi), so derive the id
@@ -282,10 +290,12 @@ export class LspClient {
   // first publish if none arrived yet. Returns [] for a clean file (server publishes an empty array). The
   // caller didOpens the file first so the parse is triggered.
   async diagnosticsFor(uriOrPath, timeoutMs = 8000) {
-    const uri = uriOrPath.startsWith("file:") ? uriOrPath : toUri(uriOrPath);
-    if (this.diagnostics.has(uri)) return this.diagnostics.get(uri);
-    const p = await this.waitForNotification("textDocument/publishDiagnostics", timeoutMs, (pp) => pp && pp.uri === uri);
-    return (p && Array.isArray(p.diagnostics) ? p.diagnostics : null) || this.diagnostics.get(uri) || [];
+    const want = canonFsPath(uriOrPath); // match by canonical path — servers spell the uri differently (Win drive case/%3A)
+    for (const [k, ds] of this.diagnostics) if (canonFsPath(k) === want) return ds;
+    const p = await this.waitForNotification("textDocument/publishDiagnostics", timeoutMs, (pp) => { try { return pp && canonFsPath(pp.uri) === want; } catch { return false; } });
+    if (p && Array.isArray(p.diagnostics)) return p.diagnostics;
+    for (const [k, ds] of this.diagnostics) if (canonFsPath(k) === want) return ds;
+    return [];
   }
   hover(uriOrPath, line, character) {
     return this.request("textDocument/hover", {
