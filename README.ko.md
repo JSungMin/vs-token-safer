@@ -330,6 +330,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_SAVINGS_GRAPH` | `1` | `vts savings`가 30일 그래프를 기본 표시; `0`(또는 `graph:false`)이면 생략해 간결하게. |
 | — | `VTS_P4_EDIT` | `1` | 심볼편집 / `rename` **apply**가 read-only(Perforce) 파일을 기록 전 `p4 edit`로 자동 체크아웃 — 심볼편집은 서버에서 직접 기록하므로 빌트인 Edit/Write p4 훅을 안 거침. read-only일 때만 동작(쓰기 가능/git repo는 p4 미호출); `0`이면 끔. |
 | — | `VTS_P4_CMD` | `p4` | 위 자동 체크아웃에 쓸 Perforce CLI (`VTS_P4_TIMEOUT_MS`, 기본 15000으로 상한). |
+| — | `VTS_INDEX_ADVISORY` | `1` | clangd 결과가 비면 이유 안내 추가: 파일이 `compile_commands.json`에 없음, 또는 백그라운드 인덱스가 N%만 빌드됨. `0`이면 끔. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | `vts discover`가 트랜스크립트를 찾는 곳. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | 생성된 컴파일 DB의 소스 트리 밖 보관처. |
 </details>
@@ -349,6 +350,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | 그냥 grep을 원했는데 코드 검색이 차단됨 | 훅이 인덱스로 유도 | `VTS_ENFORCE=0`이면 grep 통과. |
 | 잘못된 백엔드 선택 | 루트에 프로젝트 파일 여럿 | `VTS_BACKEND=clangd`로 고정(또는 호출마다 `backend`). |
 | 비-C++ 파일에서 `-32001 invalid AST` / 결과 없음 | C++용으로 고정한 `backend`가 다른 repo의 `.js`/`.cs`/`.py`에 닿음 | 0.28.4에서 수정 — 충돌 시 파일 자체 백엔드가 이김; 플러그인 업데이트(`/plugin marketplace update`). |
+| 분명히 있는 심볼을 clangd가 못 찾음 | 컴파일 DB가 그 모듈을 커버 안 하거나, 백그라운드 인덱스가 아직 안 빌드됨 (vts가 어느 쪽인지 출력 — `VTS_INDEX_ADVISORY`) | "compile_commands.json에 없음"이면 에디터 타깃 빌드 후 DB 재생성. "index N% complete"면 서버를 켜둬 인덱싱 완료하거나, DB를 게임 모듈로 스코프(26k-TU 엔진 전체는 느림 — `Engine/` 제외 시 ~8× 빠르고 완전). |
 </details>
 
 ## 상태 &amp; 안전
