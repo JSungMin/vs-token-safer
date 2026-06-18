@@ -74,7 +74,7 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | `goto_definition` | `vts definition` | Jump to the definition at a position. `kind=` also does `type_definition` / `implementation` (concrete impls of an interface/virtual) / `declaration`. |
 | `hover` | `vts hover` | Type/signature at a position. |
 | `document_symbols` | `vts symbols` | Outline a file (classes/functions/types as `file:line`). |
-| `diagnostics` | `vts diagnostics` | Compiler/linter errors + warnings for a file as a token-capped `file:line:col severity: message` list — the compact stand-in for reading raw build output. |
+| `diagnostics` | `vts diagnostics` | Compiler/linter errors + warnings as a token-capped `file:line:col severity: message` list — the compact stand-in for reading raw build output. One file by default; `scope=directory` scans the project. |
 | `find_files` | `vts files` | Find files by name/glob — token-capped stand-in for `find -name`. |
 | `search_text` | `vts text` | Raw text/regex search — capped stand-in for `grep` (`path=`/`glob=`/`docs=true` to target). |
 
@@ -84,8 +84,7 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | --- | --- | --- |
 | `rename` | `vts rename` | Semantic project-wide rename (every reference, not a text sed). |
 | `replace_symbol_body` | `vts replace-symbol` | Replace a whole declaration (signature + body) by name — the index supplies the span. |
-| `insert_after_symbol` | `vts insert-after` | Insert text after a declaration (e.g. add a sibling method). |
-| `insert_before_symbol` | `vts insert-before` | Insert text before a declaration (e.g. an import/attribute). |
+| `insert_symbol` | `vts insert` | Insert text next to a declaration — `position=after` (default, e.g. a sibling method) or `before` (e.g. an import/attribute). |
 | `safe_delete` | `vts safe-delete` | Delete a declaration — **refuses while it's still referenced** unless `force=true`. |
 
 **Admin / meta — one MCP tool `vts_admin {op, params}`** (folded to keep the per-session tool-definition
@@ -318,7 +317,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_REWRITE` | `1` | `0` makes the hook block a Bash code-grep instead of rewriting it. |
 | — | `VTS_GREP_BLOCK` | `1` | `0` reverts the **Grep/Glob tool** escalation from block to warn-only. |
 | — | `VTS_EDIT_STEER` | `1` | `0` hides the one-line hint (on a focused `search_symbol`/`goto_definition` result) pointing at the symbol-edit tools. `VTS_EDIT_STEER_MAX` (`10`) caps the result size that gets it. |
-| — | `VTS_EDIT_WARN` | `1` | `0` silences the model-visible nudge when a built-in Edit/MultiEdit replaces or adds a **whole declaration** (it points at `replace_symbol_body` / `insert_after_symbol`). Sub-declaration tweaks are never nudged. |
+| — | `VTS_EDIT_WARN` | `1` | `0` silences the model-visible nudge when a built-in Edit/MultiEdit replaces or adds a **whole declaration** (it points at `replace_symbol_body` / `insert_symbol`). Sub-declaration tweaks are never nudged. |
 | — | `VTS_TEXT_STEER` | `1` | `0` hides the one-line hint appended to a `search_text` result whose query is really a **symbol/class usage hunt** (a `Foo<Bar>` template arg, `::` scope, or CamelCase/snake identifier) — it points at `find_references` / `search_symbol`, which are semantic and **complete** (no 4s time-box). Fires only when the scan was truncated or the query carries a `<>`/`::` cue. |
 | — | `VTS_EDIT_BLOCK_AFTER` | `0` (off) | **Opt-in.** Set ≥1 to escalate the warn to a one-time **block** on a safe insert after that many consecutive ignored nudges (then it resets — fire-once, not a wall). Default off: a persistent block trapped the agent (it fought the wall with Edit retries instead of switching). A replace always stays a warn; `VTS_GREP_BLOCK=0` also holds it to warn. |
 | — | `VTS_EXCLUDE_COMMANDS` | — | Comma list of executables to exempt (also `excludeCommands` in config). |

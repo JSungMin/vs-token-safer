@@ -12,7 +12,7 @@ export const VARIANTS = [
     id: "explicit-ready-call",
     guidance:
       "Tooling note: when you ADD or REPLACE a whole declaration (a function, method, or class), use the " +
-      "vs-search symbol-edit tools — insert_after_symbol / insert_before_symbol / replace_symbol_body with " +
+      "vs-search symbol-edit tools — insert_symbol / replace_symbol_body with " +
       "symbol=<name> — instead of reading the file and using the built-in Edit. They edit by name and skip " +
       "reading the file into context.",
   },
@@ -20,7 +20,7 @@ export const VARIANTS = [
     id: "cost-framed",
     guidance:
       "Tooling note: reading a whole file just to edit one declaration wastes tokens. For a whole-declaration " +
-      "add or replace, call insert_after_symbol or replace_symbol_body (symbol=<name>, apply=true) — no file " +
+      "add or replace, call insert_symbol or replace_symbol_body (symbol=<name>, apply=true) — no file " +
       "read needed; the language-server outline supplies the span.",
   },
 ];
