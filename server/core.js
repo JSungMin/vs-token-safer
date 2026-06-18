@@ -215,6 +215,11 @@ function applySetup(args) {
 // ---- savings ledger (local; reused pattern from gamedev-log-analyzer) ----
 const SAVINGS_FILE = cfg("VTS_SAVINGS_FILE", "savingsFile", path.join(CONFIG_DIR, "savings.json"));
 const readSavings = () => { try { return JSON.parse(fs.readFileSync(SAVINGS_FILE, "utf8")) || {}; } catch { return {}; } };
+// The bundled sibling gamedev-log-analyzer keeps its own savings ledger (same shape); its log-compaction
+// savings count toward the same win (fewer tokens reach the model), so `vts savings` folds them into the
+// combined total. Local file read only — nothing transmitted. Override path via VTS_GAMEDEV_SAVINGS_FILE.
+const GAMEDEV_SAVINGS_FILE = process.env.VTS_GAMEDEV_SAVINGS_FILE || path.join(os.homedir(), ".gamedev-log-analyzer", "savings.json");
+const readGamedevSavings = () => { try { return JSON.parse(fs.readFileSync(GAMEDEV_SAVINGS_FILE, "utf8")) || {}; } catch { return {}; } };
 const dayKey = (d = new Date()) => d.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 // $/Mtok used for the est. USD line in `vts savings`. A rough single rate (saved tokens are mostly input
 // the model never has to ingest) — override with VTS_USD_PER_MTOK; purely informational.
@@ -284,14 +289,23 @@ export function starNudgeLine(saved) {
 }
 function savingsReport(a = {}) {
   const s = readSavings();
-  if (!s.runs) return "No savings recorded yet — run a search first.";
+  const gd = readGamedevSavings();
+  const gdSaved = Math.max(0, (gd.rawTok || 0) - (gd.outTok || 0));
+  if (!s.runs && !gd.runs) return "No savings recorded yet — run a search first.";
   const ratio = s.outTok > 0 ? Math.round(s.rawTok / s.outTok) : "∞";
   const best = s.bestRaw ? `\n  biggest single run: ${s.bestRaw.toLocaleString()} → ${s.bestOut.toLocaleString()} tok` : "";
-  const totalSaved = s.rawTok - s.outTok;
-  let body = `vs-token-safer savings (local, ${s.runs} search(es))\n  total saved: ~${totalSaved.toLocaleString()} tokens vs forwarding raw index responses\n  raw → output: ${s.rawTok.toLocaleString()} → ${s.outTok.toLocaleString()} tok (~${ratio}× smaller)${best}\n  est. value: ~$${usd(totalSaved).toFixed(2)} (@ $${USD_PER_MTOK}/Mtok — rough, set VTS_USD_PER_MTOK)`;
+  const totalSaved = Math.max(0, (s.rawTok || 0) - (s.outTok || 0));
+  let body = `vs-token-safer savings (local, ${s.runs || 0} search(es))\n  total saved: ~${totalSaved.toLocaleString()} tokens vs forwarding raw index responses\n  raw → output: ${(s.rawTok || 0).toLocaleString()} → ${(s.outTok || 0).toLocaleString()} tok (~${ratio}× smaller)${best}\n  est. value: ~$${usd(totalSaved).toFixed(2)} (@ $${USD_PER_MTOK}/Mtok — rough, set VTS_USD_PER_MTOK)`;
   if (s.tools) {
     const byTool = Object.entries(s.tools).map(([t, v]) => [t, v.rawTok - v.outTok, v.runs]).sort((x, y) => y[1] - x[1]).slice(0, 5);
     if (byTool.length) body += `\n  by tool: ` + byTool.map(([t, sv, n]) => `${t} ~${sv.toLocaleString()} (${n})`).join(", ");
+  }
+  // Fold in the bundled gamedev-log-analyzer's log-compaction savings → a combined total (same goal: fewer
+  // tokens reach the model). Shown as a separate line so the split stays legible.
+  if (gdSaved > 0 || gd.runs) {
+    const combined = totalSaved + gdSaved;
+    body += `\n  + gamedev-log-analyzer (logs): ~${gdSaved.toLocaleString()} tokens saved (${(gd.runs || 0).toLocaleString()} run(s))` +
+      `\n  ▸ COMBINED saved: ~${combined.toLocaleString()} tokens (~$${usd(combined).toFixed(2)})`;
   }
   const want = (k) => a[k] === true || a[k] === "true";
   // Graph shows BY DEFAULT (the at-a-glance trend is the point of the report). Suppress per-call with
@@ -1013,6 +1027,84 @@ async function traceFrom(c, item, dir, depth, depthMax, visited, acc, capRef) {
     await traceFrom(c, next, dir, depth + 1, depthMax, visited, acc, capRef);
   }
 }
+// prepareCallHierarchy right after a cold didOpen can return [] before the server finishes analyzing the
+// file (live-seen on a freshly-spawned tsserver). Retry with backoff for a short window so a cold call graph
+// isn't a spurious "no anchor". Cap via VTS_CALLHIER_WAIT_MS. Returns the items (possibly empty after the cap).
+async function prepareCallHierReady(c, p, line, ch, capMs = envInt("VTS_CALLHIER_WAIT_MS", 8000)) {
+  let items = (await c.prepareCallHierarchy(p, line, ch)) || [];
+  if (items.length) return items;
+  const t0 = Date.now(); let delay = 400;
+  while (Date.now() - t0 < capMs) {
+    await sleep(Math.min(delay, Math.max(0, capMs - (Date.now() - t0))));
+    items = (await c.prepareCallHierarchy(p, line, ch)) || [];
+    if (items.length) return items;
+    delay = Math.min(Math.round(delay * 1.5), 2000);
+  }
+  return items;
+}
+// ON-DEMAND call graph for the dashboard (the comparable-to-codebase-memory-mcp "call graph" view, but the
+// official-LSP way: NO persistent semantic graph DB — we resolve a focused symbol and walk LSP callHierarchy
+// live, returning a {nodes,links} object shaped like the include-graph so the 3D viz renders it the same).
+// direction: callers | callees | both (default). Bounded by depth (VTS_TRACE_MAX_DEPTH) + node cap
+// (VTS_TRACE_MAX_NODES). Returns { focus, direction, depth, nodes:[{id,label,file,line,kind,weight,focus}],
+// links:[{source,target}], truncated, backend } or { error, nodes:[], links:[] }. Exported for serve.js + eval.
+export async function buildCallGraph(a = {}) {
+  const root = resolveRoot(a);
+  const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
+  if (!backendName) return { error: "no language-server backend resolved for this root", nodes: [], links: [] };
+  const c = await getClient(root, backendName);
+  const dirRaw = String(a.direction || "both").toLowerCase();
+  const dirs = (dirRaw === "callers" || dirRaw === "incoming") ? ["callers"]
+    : (dirRaw === "callees" || dirRaw === "outgoing") ? ["callees"] : ["callers", "callees"];
+  const depthMax = Math.max(1, Math.min(Number(a.depth) || 2, envInt("VTS_TRACE_MAX_DEPTH", 5)));
+  const nodeCap = Math.min(Number(a.maxResults) || MAX_RESULTS, envInt("VTS_TRACE_MAX_NODES", 80));
+  let pos, focusLabel = String(a.symbol || "");
+  if (a.symbol) {
+    const persisted = backendName === "clangd" && hasPersistedIndex(root);
+    const syms = await symbolReady(c, String(a.symbol), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
+    const want = String(a.symbol);
+    const pick = syms.slice().sort((x, y) => (x.name === want ? 0 : 1) - (y.name === want ? 0 : 1))[0];
+    if (!pick) return { error: `no indexed declaration for "${want}"`, focus: want, nodes: [], links: [] };
+    pos = { path: fromUri(pick.location.uri), line: pick.location.range.start.line, character: pick.location.range.start.character };
+    focusLabel = pick.name;
+  } else if (a.path && a.line != null && a.character != null) {
+    pos = { path: String(a.path), line: Number(a.line), character: Number(a.character) };
+  } else { return { error: "needs `symbol` (a name) or `path`+`line`+`character`", nodes: [], links: [] }; }
+  c.didOpen(pos.path, langIdForPath(pos.path, backendName));
+  const items = (await prepareCallHierReady(c, pos.path, pos.line, pos.character)).filter(Boolean);
+  if (!items.length) return { error: "no call-hierarchy anchor at the symbol (point at a function/method, or the backend may lack callHierarchy)", focus: focusLabel, nodes: [], links: [] };
+  const nodeMap = new Map();
+  const linkSet = new Set(); const links = [];
+  const addNode = (item, isFocus) => {
+    const k = traceKey(item);
+    if (!nodeMap.has(k)) nodeMap.set(k, { id: k, label: item.name, file: fromUri(item.uri).replace(/\\/g, "/"), line: (((item.selectionRange || item.range || {}).start || {}).line || 0) + 1, kind: SYMBOL_KIND[item.kind] || "sym", weight: 0, focus: !!isFocus });
+    else if (isFocus) nodeMap.get(k).focus = true;
+    return k;
+  };
+  const addLink = (s, t) => { if (s === t) return; const key = s + " " + t; if (!linkSet.has(key)) { linkSet.add(key); links.push({ source: s, target: t }); } };
+  const root0 = items[0];
+  addNode(root0, true);
+  const capRef = { n: 1, truncated: false }; // root counts as 1 node
+  const collect = async (item, dir, depth) => {
+    if (depth >= depthMax) return;
+    let calls; try { calls = dir === "callees" ? await c.outgoingCalls(item) : await c.incomingCalls(item); } catch { calls = []; }
+    const fromKey = traceKey(item);
+    for (const call of (calls || []).filter(Boolean)) {
+      if (capRef.n >= nodeCap) { capRef.truncated = true; break; }
+      const nx = dir === "callees" ? call.to : call.from;
+      if (!nx || !nx.uri) continue;
+      const seen = nodeMap.has(traceKey(nx));
+      const k = addNode(nx, false);
+      if (dir === "callees") addLink(fromKey, k); else addLink(k, fromKey); // edge always points caller→callee
+      if (!seen) { capRef.n++; await collect(nx, dir, depth + 1); } // expand each node once
+    }
+  };
+  for (const d of dirs) await collect(root0, d, 0);
+  for (const l of links) { const s = nodeMap.get(l.source), t = nodeMap.get(l.target); if (s) s.weight++; if (t) t.weight++; }
+  const nodes = [...nodeMap.values()];
+  try { recordQueryResults(root, nodes.map((n) => n.file)); } catch { /* best-effort */ }
+  return { root, focus: focusLabel, direction: dirRaw, depth: depthMax, nodes, links, truncated: capRef.truncated, backend: backendName };
+}
 // hover MarkupContent → a few plaintext lines (signature/type), no fenced code, no walls of text.
 // LSP DiagnosticSeverity. Diagnostics (compiler/linter errors+warnings) as a token-capped
 // `file:line:col severity [code]: message` list, sorted error→hint then by line, with a count summary —
@@ -1631,7 +1723,7 @@ export async function runTool(name, a = {}) {
         c.didOpen(pos.path, langIdForPath(pos.path, backendName));
         const depthMax = Math.max(1, Math.min(Number(a.depth) || 2, envInt("VTS_TRACE_MAX_DEPTH", 5)));
         const nodeCap = Math.min(Number(a.maxResults) || MAX_RESULTS, envInt("VTS_TRACE_MAX_NODES", 80));
-        const cItems = ((await c.prepareCallHierarchy(pos.path, pos.line, pos.character)) || []).filter(Boolean);
+        const cItems = (await prepareCallHierReady(c, pos.path, pos.line, pos.character)).filter(Boolean);
         if (!cItems.length) return finishOut([], backendAdvisory(backendName, root) + `No call-hierarchy anchor for ${originLabel} (backend: ${backendName}) — point at a function/method, or the backend may not support callHierarchy.` + EMPTY_HINT);
         const acc = []; const visited = new Set(); const capRef = { cap: nodeCap, truncated: false };
         for (const it of cItems) { visited.add(traceKey(it)); await traceFrom(c, it, traceDir, 0, depthMax, visited, acc, capRef); }

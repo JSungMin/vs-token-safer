@@ -16,6 +16,9 @@ import { languageCensus } from "./warmset.js";
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 const SAVINGS_FILE = process.env.VTS_SAVINGS_FILE || path.join(CONFIG_DIR, "savings.json");
 const GRAPH_FILE = process.env.VTS_INCLUDE_GRAPH || path.join(CONFIG_DIR, "include-graph.json");
+// The bundled sibling gamedev-log-analyzer keeps its OWN savings ledger (same shape) — its log-compaction
+// savings count toward the same goal (fewer tokens reach the model), so the dashboard folds them in.
+const GAMEDEV_SAVINGS_FILE = process.env.VTS_GAMEDEV_SAVINGS_FILE || path.join(os.homedir(), ".gamedev-log-analyzer", "savings.json");
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")) || {}; } catch { return {}; } };
 const envInt = (name, def) => { const v = parseInt(process.env[name], 10); return Number.isFinite(v) && v > 0 ? v : def; };
 
@@ -24,8 +27,18 @@ const envInt = (name, def) => { const v = parseInt(process.env[name], 10); retur
 // degrades to empty/zero on a missing store rather than throwing.
 export function buildVizData(root) {
   const s = readJson(SAVINGS_FILE);
-  const totalSaved = Math.max(0, (s.rawTok || 0) - (s.outTok || 0));
-  const ratio = s.outTok > 0 ? +(s.rawTok / s.outTok).toFixed(1) : 0;
+  const gd = readJson(GAMEDEV_SAVINGS_FILE);
+  // COMBINED savings — vts code-search + the bundled gamedev-log-analyzer's log compaction. Both keep fewer
+  // tokens out of the model, so the headline total/ratio/$/runs sum them; `sources` carries the split.
+  const vtsSaved = Math.max(0, (s.rawTok || 0) - (s.outTok || 0));
+  const gdSaved = Math.max(0, (gd.rawTok || 0) - (gd.outTok || 0));
+  const rawCombined = (s.rawTok || 0) + (gd.rawTok || 0);
+  const outCombined = (s.outTok || 0) + (gd.outTok || 0);
+  const totalSaved = Math.max(0, rawCombined - outCombined);
+  const ratio = outCombined > 0 ? +(rawCombined / outCombined).toFixed(1) : 0;
+  const runsCombined = (s.runs || 0) + (gd.runs || 0);
+  const sources = [{ key: "vs-token-safer", name: "code search", saved: vtsSaved, runs: s.runs || 0 }];
+  if (gdSaved > 0 || gd.runs) sources.push({ key: "gamedev-log-analyzer", name: "log analysis", saved: gdSaved, runs: gd.runs || 0 });
   const usdRate = parseFloat(process.env.VTS_USD_PER_MTOK || "3") || 3;
   // last-30-day buckets (saved tokens / day), oldest→newest, zero-filled for the trend chart.
   const days = [];
@@ -71,7 +84,7 @@ export function buildVizData(root) {
 
   return {
     root: root || "",
-    savings: { totalSaved, rawTok: s.rawTok || 0, outTok: s.outTok || 0, ratio, runs: s.runs || 0, usd: +((totalSaved / 1e6) * usdRate).toFixed(2), days, tools },
+    savings: { totalSaved, rawTok: rawCombined, outTok: outCombined, ratio, runs: runsCombined, usd: +((totalSaved / 1e6) * usdRate).toFixed(2), days, tools, sources },
     census,
     graph,
   };
