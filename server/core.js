@@ -160,8 +160,8 @@ function textSymbolSteer(q, truncated) {
 // skip that read — the token win lives here (upstream of Edit), not at the Edit call. Additive, one line,
 // only on small result sets (a 60-hit search isn't an edit precursor). `VTS_EDIT_STEER=0` hides it.
 const EDIT_STEER =
-  "\n↪ Going to CHANGE one of these? Edit by NAME — replace_symbol_body (whole body) / insert_after_symbol / " +
-  "insert_before_symbol / safe_delete (preview by default, apply=true writes). It skips reading the file into " +
+  "\n↪ Going to CHANGE one of these? Edit by NAME — replace_symbol_body (whole body) / insert_symbol " +
+  "(position=after|before) / safe_delete (preview by default, apply=true writes). It skips reading the file into " +
   "context. (VTS_EDIT_STEER=0 to hide.)";
 const editSteerOn = () => process.env.VTS_EDIT_STEER !== "0" && process.env.VTS_EDIT_STEER !== "false";
 
@@ -486,7 +486,7 @@ function discoverReport(a = {}) {
   // A: surface the edit habit alongside the search bypasses — whole-declaration Edits that could edit by name.
   // editUnreached = those with no prior vts search on the file → the EDIT_STEER (search-result-only) can't
   // reach them; a high fraction is the evidence for a harder lever (a warn on the Edit itself).
-  const editLine = editCount ? `\n  edit habit: ${editCount} whole-declaration Edit(s) on code; ~${editReadTok.toLocaleString()} tok went to reading those files first — replace_symbol_body / insert_after_symbol / insert_before_symbol / safe_delete edit by NAME and skip that read.` +
+  const editLine = editCount ? `\n  edit habit: ${editCount} whole-declaration Edit(s) on code; ~${editReadTok.toLocaleString()} tok went to reading those files first — replace_symbol_body / insert_symbol / safe_delete edit by NAME and skip that read.` +
     `\n    of those, ${editUnreached}/${editCount} had NO prior vts search on that file → the search-result steer can't reach them (the case for a warn-on-Edit if this fraction stays high).` : "";
   const files = { length: fc };
   const learn = a.learn === true || a.learn === "true";
@@ -892,15 +892,16 @@ const DIAG_SEV = { 1: "error", 2: "warning", 3: "info", 4: "hint" };
 function fmtDiagnostics(diags, file, max) {
   const arr = Array.isArray(diags) ? diags : [];
   if (!arr.length) return "  (no diagnostics — clean)";
-  const fileRel = String(file).replace(/\\/g, "/");
-  const sorted = arr.slice().sort((a, b) => (a.severity || 9) - (b.severity || 9) || ((a.range && a.range.start ? a.range.start.line : 0) - (b.range && b.range.start ? b.range.start.line : 0)));
+  const fileRel = file ? String(file).replace(/\\/g, "/") : null; // null → multi-file (each d._file), e.g. directory scope
+  const lineOf = (d) => (d.range && d.range.start ? d.range.start.line : 0);
+  const sorted = arr.slice().sort((a, b) => (a.severity || 9) - (b.severity || 9) || String(a._file || "").localeCompare(String(b._file || "")) || (lineOf(a) - lineOf(b)));
   const shown = sorted.slice(0, max);
   const body = shown.map((d) => {
-    const ln = (d.range && d.range.start ? d.range.start.line : 0) + 1;
+    const ln = lineOf(d) + 1;
     const col = (d.range && d.range.start ? d.range.start.character : 0) + 1;
     const sev = DIAG_SEV[d.severity] || "diag";
     const code = d.code !== undefined && d.code !== null && d.code !== "" ? ` [${d.code}]` : "";
-    return `  ${fileRel}:${ln}:${col} ${sev}${code}: ${trimMatchLine(String(d.message || "").replace(/\s+/g, " "))}`;
+    return `  ${(fileRel || d._file || "?")}:${ln}:${col} ${sev}${code}: ${trimMatchLine(String(d.message || "").replace(/\s+/g, " "))}`;
   }).join("\n");
   const counts = {};
   for (const d of arr) { const s = DIAG_SEV[d.severity] || "diag"; counts[s] = (counts[s] || 0) + 1; }
@@ -997,6 +998,26 @@ function findFilesUnder(root, q, max) {
   if (out.length > max) { out.length = max; out.truncated = "cap"; }
   else if (timedOut) out.truncated = "time";
   else if (scanned >= 300000 && stack.length) out.truncated = "scan";
+  return out;
+}
+// Bounded walk collecting CODE files under a root (for project-wide diagnostics: didOpen each so the
+// server parses + publishes). Same SKIP_DIRS + time/scan box as findFilesUnder so a giant tree can't hang
+// it. `.truncated` flags a capped/aborted sweep (no silent caps).
+const DIAG_CODE_RE = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
+function codeFilesUnder(root, max) {
+  const out = []; const stack = [root]; let scanned = 0; const t0 = Date.now(); let timedOut = false;
+  while (stack.length && out.length < max && scanned < 300000) {
+    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    const dir = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
+      else { scanned++; if (DIAG_CODE_RE.test(e.name)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
+    }
+  }
+  if (out.length >= max && stack.length) out.truncated = "cap";
+  else if (timedOut) out.truncated = "time";
   return out;
 }
 // Bounded, token-capped raw-text search (no LSP) — the sanctioned alternative to grep for strings/comments
@@ -1484,8 +1505,28 @@ export async function runTool(name, a = {}) {
       return finishOut(locs, backendAdvisory(backendName, root) + `${label} of ${a.path}:${Number(a.line) + 1} (backend: ${backendName}):\n` + fmtLocations(locs, max, `${label}(s)`) + defEdit);
     }
     if (name === "diagnostics") {
-      if (!a.path) return err("diagnostics needs path (the file to check for errors/warnings).");
+      const dirScope = a.scope === "directory" || a.directory === true;
+      if (!a.path && !dirScope) return err("diagnostics needs `path` (a file), or `scope=\"directory\"` to scan the project.");
       const c = await getClient(root, backendName);
+      if (dirScope) {
+        // Project-wide: open a BOUNDED set of code files so the server parses + publishes each, wait once for
+        // the publishes, then aggregate the per-uri diagnostics it pushed. Bounded (VTS_DIAG_DIR_MAX, time-box
+        // in codeFilesUnder) so a giant tree can't hang it; capped/aborted sweeps are disclosed (no silent caps).
+        const dirRoot = (a.path ? (path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path))) : root).replace(/\\/g, "/");
+        const cap = envInt("VTS_DIAG_DIR_MAX", 50);
+        const files = codeFilesUnder(dirRoot, cap);
+        for (const f of files) c.didOpen(f, langIdForPath(f, backendName));
+        await new Promise((r) => setTimeout(r, envInt("VTS_DIAG_DIR_WAIT_MS", 4000))); // let the server publish
+        const agg = [];
+        for (const [uri, ds] of c.diagnostics.entries()) {
+          if (!ds || !ds.length) continue;
+          let fp; try { fp = fromUri(uri).replace(/\\/g, "/"); } catch { continue; }
+          if (!fp.startsWith(dirRoot)) continue; // only files under the scanned dir
+          for (const x of ds) agg.push({ ...x, _file: fp });
+        }
+        const sweepNote = files.truncated ? ` — scan capped at ${files.length} file(s) (raise VTS_DIAG_DIR_MAX; more exist)` : ` (${files.length} file(s) scanned)`;
+        return finishOut(agg, backendAdvisory(backendName, root) + `diagnostics under ${dirRoot} (backend: ${backendName})${sweepNote}:\n` + fmtDiagnostics(agg, null, max));
+      }
       c.didOpen(a.path, lang); // parse the file so the server publishes its diagnostics
       const diags = (await c.diagnosticsFor(a.path)) || [];
       return finishOut(diags, backendAdvisory(backendName, root) + `diagnostics for ${a.path} (backend: ${backendName}):\n` + fmtDiagnostics(diags, a.path, max));
@@ -1526,7 +1567,7 @@ export async function runTool(name, a = {}) {
       const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first): ${failed.slice(0, 5).join("; ")}` : "";
       return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${note}\n${shown}`);
     }
-    if (name === "replace_symbol_body" || name === "insert_after_symbol" || name === "insert_before_symbol" || name === "safe_delete") {
+    if (name === "replace_symbol_body" || name === "insert_symbol" || name === "safe_delete") {
       const c = await getClient(root, backendName);
       const r = await resolveSymbolForEdit(c, root, backendName, a);
       if (r.error) return err(`${name}: ${r.error}`);
@@ -1538,13 +1579,12 @@ export async function runTool(name, a = {}) {
         if (a.body == null) return err("replace_symbol_body needs `body` (the new full text for the declaration — signature + body).");
         return symbolEditResult(r.file, { range: rng, newText: String(a.body) }, apply, `replace_symbol_body "${a.symbol}"${ambl}`, r.ds);
       }
-      if (name === "insert_after_symbol") {
-        if (a.text == null) return err("insert_after_symbol needs `text` (inserted on a new line after the declaration).");
-        return symbolEditResult(r.file, { range: { start: rng.end, end: rng.end }, newText: "\n" + String(a.text) }, apply, `insert_after_symbol "${a.symbol}"${ambl}`, r.ds);
-      }
-      if (name === "insert_before_symbol") {
-        if (a.text == null) return err("insert_before_symbol needs `text` (inserted on a line before the declaration).");
-        return symbolEditResult(r.file, { range: { start: rng.start, end: rng.start }, newText: String(a.text) + "\n" }, apply, `insert_before_symbol "${a.symbol}"${ambl}`, r.ds);
+      if (name === "insert_symbol") {
+        if (a.text == null) return err("insert_symbol needs `text` (the declaration to insert).");
+        const before = String(a.position || "after").toLowerCase() === "before";
+        const at = before ? rng.start : rng.end;
+        const newText = before ? String(a.text) + "\n" : "\n" + String(a.text);
+        return symbolEditResult(r.file, { range: { start: at, end: at }, newText }, apply, `insert_symbol ${before ? "before" : "after"} "${a.symbol}"${ambl}`, r.ds);
       }
       // safe_delete — refuse while the symbol is still referenced (unless force=true), so a delete can't
       // silently orphan call sites. References resolve at the NAME (selectionRange), not the whole body.

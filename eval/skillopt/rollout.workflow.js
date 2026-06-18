@@ -31,7 +31,7 @@ const RESULT_SCHEMA = {
   required: ['toolsUsed', 'appliedTool', 'editApplied'],
 };
 
-const SYMBOL = new Set(['replace_symbol_body', 'insert_after_symbol', 'insert_before_symbol', 'safe_delete', 'rename']);
+const SYMBOL = new Set(['replace_symbol_body', 'insert_symbol', 'insert_after_symbol', 'insert_before_symbol', 'safe_delete', 'rename']);
 const BUILTIN = new Set(['Edit', 'MultiEdit', 'Write']);
 const bare = (t) => String(t).replace(/^.*__/, '');
 // Score on the tool that APPLIED the edit (honest — a tried-symbol-then-fell-back-to-Edit rollout is builtin);
