@@ -21,9 +21,13 @@ Commands:
                  [--q <name> --projectPath <dir> --backend clangd|roslyn --maxResults N]
   references     Find every call site / usage of a symbol. Pass --symbol <name> (resolved via the index,
                  no position needed — the tool to use when editing code); or a --path --line --character
-                 position. [--symbol <name> | --path <file> --line N --character N] [--includeDeclaration]
+                 position. --direction callers|callees switches to a MULTI-HOP call hierarchy (transitive
+                 callers = blast radius / callees) to --depth N (default 2).
+                 [--symbol <name> | --path <file> --line N --character N] [--includeDeclaration --direction --depth N]
   definition     Go to the definition of the symbol at a position.
                  [--path <file> --line N --character N]
+  trace-calls    Alias for 'references --direction callers' (the multi-hop call hierarchy / blast radius).
+                 [--symbol <name> | --path <file> --line N --character N] [--direction callers|callees --depth N]
   hover          Type/signature info at a position. [--path <file> --line N --character N]
   symbols        Outline a file (its classes/functions as file:line). [--path <file>]
   rename         Semantic rename across the project. Preview by default; --apply to write.
@@ -50,6 +54,9 @@ Commands:
                  [--genCompileDb dry|apply] — also generate the C++ compile DB in this step (dry-run prints
                  the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
                  [--clangdCmd <path>] — persist the clangd ≥ 22 binary path (VS-bundled 19.1.x deadlocks UE).
+  serve          Start the local dashboard (127.0.0.1 only, nothing transmitted) — savings trend, language
+                 mix, per-tool savings, and the include-graph fan-in as an interactive force graph.
+                 [--port N (default 8731) --projectPath <dir>]  Ctrl-C to stop.
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
                  [--graph (30-day ASCII) --daily --history]
@@ -88,10 +95,27 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
+
+// `vts serve` — the local dashboard. Long-running (NOT a runTool dispatch): start the 127.0.0.1 server and
+// stay alive until Ctrl-C. Special-cased here so it doesn't fall through to the one-shot runTool path below.
+if (rawCmd === "serve") {
+  const a = parseArgs(rest);
+  const root = a.projectPath || process.cwd();
+  const port = parseInt(a.port, 10) || 8731;
+  const { startServer } = await import("./serve.js");
+  try {
+    const { url } = await startServer(root, port);
+    process.stdout.write(`vs-token-safer dashboard → ${url}\n  root: ${root}\n  local-only (127.0.0.1), nothing transmitted. Ctrl-C to stop.\n`);
+    process.on("SIGINT", () => { process.stdout.write("\nstopped.\n"); process.exit(0); });
+  } catch (e) {
+    process.stderr.write(`vts serve failed: ${e.message}${/EADDRINUSE/.test(String(e.message)) ? ` — port ${port} busy, pass --port <n>.` : ""}\n`);
+    process.exit(1);
+  }
+} else {
 const name = COMMANDS[rawCmd] || (rawCmd.startsWith("vts_") || rawCmd.includes("_") ? rawCmd : null);
 if (!name) { console.error(`Unknown command: ${rawCmd}\n`); console.log(HELP); process.exit(2); }
 
@@ -112,6 +136,8 @@ if (name === "vts_git" || name === "vts_p4") {
   // back-compat CLI aliases: `vts insert-after`/`insert-before` map to insert_symbol with the position set.
   if (rawCmd === "insert-before") args.position = "before";
   else if (rawCmd === "insert-after" && args.position == null) args.position = "after";
+  // `vts trace-calls` is sugar for `references --direction callers` (the multi-hop call hierarchy).
+  else if (rawCmd === "trace-calls" && args.direction == null) args.direction = "callers";
 }
 try {
   const { text, isError } = await runTool(name, args);
@@ -122,4 +148,5 @@ try {
   process.stderr.write(`vts error: ${e.message}\n`);
   try { await disposeClients(); } catch { /* ignore */ }
   process.exit(1);
+}
 }

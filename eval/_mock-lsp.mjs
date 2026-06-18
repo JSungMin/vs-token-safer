@@ -95,6 +95,22 @@ process.stdin.on("data", (d) => {
       // referrer and refuses; any other position (e.g. the find_references guard at line 41) returns none.
       const rp = msg.params.position;
       send({ jsonrpc: "2.0", id: msg.id, result: rp.line === 4 ? [{ uri: "file:///proj/src/User.cpp", range: { start: { line: 7, character: 2 }, end: { line: 7, character: 5 } } }] : [] });
+    } else if (msg.method === "textDocument/prepareCallHierarchy") {
+      // One anchor item ("Target") at the queried position — trace_calls then walks its callers/callees.
+      send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Target", kind: 12, uri: "file:///proj/src/Foo.cpp", range: { start: { line: 41, character: 0 }, end: { line: 50, character: 1 } }, selectionRange: { start: { line: 41, character: 6 }, end: { line: 41, character: 12 } } }] });
+    } else if (msg.method === "callHierarchy/incomingCalls") {
+      // callers graph: Target ← CallerA, CallerB ; CallerA ← GrandCaller (a 2nd hop, to exercise depth).
+      const n = (msg.params && msg.params.item && msg.params.item.name) || "";
+      const mk = (name, uri, line) => ({ from: { name, kind: 12, uri, range: { start: { line, character: 0 }, end: { line: line + 3, character: 1 } }, selectionRange: { start: { line, character: 0 }, end: { line, character: 5 } } }, fromRanges: [] });
+      let result = [];
+      if (n === "Target") result = [mk("CallerA", "file:///proj/src/A.cpp", 9), mk("CallerB", "file:///proj/src/B.cpp", 19)];
+      else if (n === "CallerA") result = [mk("GrandCaller", "file:///proj/src/C.cpp", 29)];
+      send({ jsonrpc: "2.0", id: msg.id, result });
+    } else if (msg.method === "callHierarchy/outgoingCalls") {
+      const n = (msg.params && msg.params.item && msg.params.item.name) || "";
+      const mk = (name, uri, line) => ({ to: { name, kind: 12, uri, range: { start: { line, character: 0 }, end: { line: line + 3, character: 1 } }, selectionRange: { start: { line, character: 0 }, end: { line, character: 5 } } }, fromRanges: [] });
+      const result = n === "Target" ? [mk("Callee", "file:///proj/src/D.cpp", 39)] : [];
+      send({ jsonrpc: "2.0", id: msg.id, result });
     } else if (msg.method === "textDocument/rename") {
       const uri = msg.params.textDocument.uri, p = msg.params.position;
       if (msg.params.newName === "MULTI") {
