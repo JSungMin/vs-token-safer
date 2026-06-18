@@ -1030,10 +1030,10 @@ const sePrevOk = !sePrev.isError && /PREVIEW/.test(sePrev.text) && /Ed\.cpp:5/.t
 const seRepl = await runTool("replace_symbol_body", { symbol: "Foo", path: seFile, body: "ZZZ", backend: "clangd", apply: true });
 const seReplOk = !seRepl.isError && /APPLIED/.test(seRepl.text) && seR() === "L0\nL1\nL2\nL3\nZZZ rest\n";
 seW();
-const seBefore = await runTool("insert_before_symbol", { symbol: "Foo", path: seFile, text: "PRE", backend: "clangd", apply: true });
+const seBefore = await runTool("insert_symbol", { symbol: "Foo", position: "before", path: seFile, text: "PRE", backend: "clangd", apply: true });
 const seBeforeOk = !seBefore.isError && seR() === "L0\nL1\nL2\nL3\nPRE\n0123456789 rest\n";
 seW();
-const seAfter = await runTool("insert_after_symbol", { symbol: "Foo", path: seFile, text: "POST", backend: "clangd", apply: true });
+const seAfter = await runTool("insert_symbol", { symbol: "Foo", position: "after", path: seFile, text: "POST", backend: "clangd", apply: true });
 const seAfterOk = !seAfter.isError && seR() === "L0\nL1\nL2\nL3\n0123456789\nPOST rest\n";
 seW();
 const seMiss = await runTool("replace_symbol_body", { symbol: "Nope", path: seFile, body: "x", backend: "clangd" });
@@ -1086,7 +1086,7 @@ const hOff = runHook({ tool_name: "Edit", tool_input: { file_path: "/src/T.cpp",
 const hMd = runHook({ tool_name: "Edit", tool_input: { file_path: "/notes/T.md", old_string: DECLC, new_string: "x" } }, elEnv());
 const editWarnOk =
   hRepl.status === 0 && /replace_symbol_body symbol="Bar"/.test(nudgeCtx(hRepl)) &&   // whole-decl replace → ready replace call
-  hIns.status === 0 && /insert_after_symbol symbol="Bar"/.test(nudgeCtx(hIns)) &&     // new-decl insert → ready insert call
+  hIns.status === 0 && /insert_symbol symbol="Bar"/.test(nudgeCtx(hIns)) &&     // new-decl insert → ready insert call
   hSub.status === 0 && !nudgeCtx(hSub) &&                                              // sub-decl tweak → silent
   hOff.status === 0 && !nudgeCtx(hOff) &&                                              // VTS_EDIT_WARN=0 → silent
   hMd.status === 0 && !nudgeCtx(hMd);                                                  // non-code file → silent
@@ -1251,7 +1251,7 @@ const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
 // cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
 const cfgViaOp = await runTool("vts_" + "config", {});
 const toolsBudgetOk =
-  TOOL_DEFS.length === 14 && // 12 hot search/nav/edit + diagnostics + vts_admin
+  TOOL_DEFS.length === 13 && // 11 hot search/nav/edit (inserts merged into insert_symbol) + diagnostics + vts_admin
   ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
   !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
@@ -1273,11 +1273,16 @@ const dgClean = await runTool("diagnostics", { path: path.join(lspDir, "clean.cp
 const gImpl = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "implementation", projectPath: lspDir, backend: "clangd" });
 const gType = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, kind: "type_definition", projectPath: lspDir, backend: "clangd" });
 const gDef = await runTool("goto_definition", { path: path.join(lspDir, "clean.cpp"), line: 0, character: 4, projectPath: lspDir, backend: "clangd" });
+process.env.VTS_DIAG_DIR_WAIT_MS = "300"; // mock publishes on didOpen instantly — no need for the 4s default
+const dgDir = await runTool("diagnostics", { scope: "directory", projectPath: lspDir, backend: "clangd" });
+delete process.env.VTS_DIAG_DIR_WAIT_MS;
 const lspGlueOk =
   // diagnostics: summary + sorted error-before-warning + file:line:col + [code] + message
   !dg.isError && /1 error, 1 warning/.test(dg.text) && /:5:3 error \[E001\]: use of undeclared/.test(dg.text) &&
   dg.text.indexOf("E001") < dg.text.indexOf("unused variable") &&
   !dgClean.isError && /no diagnostics/.test(dgClean.text) &&
+  // scope=directory aggregates across files (the diag file's 2 diagnostics, the clean file contributes none)
+  !dgDir.isError && /1 error, 1 warning/.test(dgDir.text) && /with_diag\.cpp:5:3 error/.test(dgDir.text) && /file\(s\) scanned/.test(dgDir.text) &&
   // goto kinds route to the right LSP method (distinct mock locations) with the right label
   !gImpl.isError && /implementation of/.test(gImpl.text) && /Impl\.cpp:101/.test(gImpl.text) &&
   !gType.isError && /type definition of/.test(gType.text) && /Type\.cpp:201/.test(gType.text) &&

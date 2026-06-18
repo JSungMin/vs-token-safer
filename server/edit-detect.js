@@ -35,7 +35,7 @@ function isWholeDecl(s, minLines) {
 // Classify a built-in edit tool call against the whole-declaration heuristic.
 //   replaceDecl — the text being REPLACED (old_string) is a whole declaration → replace_symbol_body fits.
 //   insertDecl  — the text being ADDED (new_string) is a whole declaration while what it replaces is NOT
-//                 → an addition; insert_after_symbol / insert_before_symbol fit.
+//                 → an addition; insert_symbol (position=after|before) fits.
 // `file` is the normalized lowercase path, or null when the target isn't a code file (callers early-out).
 // Write (a whole new file) and non-edit tools return all-false: not a symbol-level replace/insert.
 export function classifyDeclEdit(name, input, minLines = 8) {

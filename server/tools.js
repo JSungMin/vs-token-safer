@@ -58,16 +58,16 @@ export const TOOLS = [
   },
   {
     name: "diagnostics",
-    description: "Compiler/linter errors + warnings for ONE file (semantic, via the language server) → a token-capped `file:line:col severity [code]: message` list, sorted error→hint with a count summary. The compact alternative to reading raw build/compiler output. Read-only; empty = clean.",
+    description: "Compiler/linter errors + warnings (semantic, via the language server) → a token-capped `file:line:col severity [code]: message` list, sorted error→hint with a count summary. The compact alternative to reading raw build/compiler output. Read-only; empty = clean. Default scope is ONE file (`path`); `scope=\"directory\"` scans the project (a bounded set of code files — see VTS_DIAG_DIR_MAX).",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Source file to check." },
+        path: { type: "string", description: "Source file to check (or, with scope=directory, the subdirectory to scan; default = project root)." },
+        scope: { type: "string", description: "`file` (default) checks one `path`; `directory` scans the project for errors/warnings across files." },
         projectPath: { type: "string", description: "Project root (default cwd)." },
         backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
         maxResults: { type: "number", description: "Max diagnostics returned (default 60)." },
       },
-      required: ["path"],
     },
   },
   {
@@ -141,36 +141,18 @@ export const TOOLS = [
     },
   },
   {
-    name: "insert_after_symbol",
+    name: "insert_symbol",
     description:
-      "Insert text after a named declaration (e.g. a sibling function/method) — outline gives the point, no " +
-      "Read needed. PREVIEW by default returns the affected `file:line`; apply=true WRITES to the file on disk.",
+      "Insert text next to a named declaration — `position=after` (default; e.g. a sibling function/method) " +
+      "or `before` (e.g. an import/attribute/decorator above it). The outline gives the point, no Read needed. " +
+      "PREVIEW by default returns the affected `file:line`; apply=true WRITES to the file on disk. Use instead " +
+      "of Read-then-Edit to add a declaration.",
     inputSchema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "Declaration to insert after." },
-        text: { type: "string", description: "Text inserted on a new line after the declaration." },
-        path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
-        line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
-        apply: { type: "boolean", description: "Write to disk (default false = preview only)." },
-        projectPath: { type: "string", description: "Project root (default cwd)." },
-        backend: { type: "string", description: "clangd|roslyn|typescript|pyright (auto)." },
-        maxResults: { type: "number", description: "Result cap (default 60)." },
-      },
-      required: ["symbol", "text"],
-    },
-  },
-  {
-    name: "insert_before_symbol",
-    description:
-      "Insert text before a named declaration (e.g. an import/attribute/decorator above it). PREVIEW by " +
-      "default returns the affected `file:line`; apply=true WRITES to the file on disk. Use instead of " +
-      "Read-then-Edit to add a declaration.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        symbol: { type: "string", description: "Declaration to insert before." },
-        text: { type: "string", description: "Text inserted on a line before the declaration." },
+        symbol: { type: "string", description: "Declaration to insert next to." },
+        text: { type: "string", description: "Text to insert (on its own line)." },
+        position: { type: "string", description: "`after` (default) or `before` the declaration." },
         path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
         line: { type: "number", description: "0-based line to disambiguate same-named symbols (optional)." },
         apply: { type: "boolean", description: "Write to disk (default false = preview only)." },

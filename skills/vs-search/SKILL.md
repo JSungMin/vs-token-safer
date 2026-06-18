@@ -14,11 +14,11 @@ be open; the engine is spawned headlessly. Karpathy-style rules: do the listed t
 - Definition of a symbol → `goto_definition`  (args: `path`, `line`, `character` — 0-based). The `kind` arg picks WHICH: `definition` (default) · `type_definition` (the type of an expression) · `implementation` (concrete impls of an interface/abstract/virtual — "who implements this?") · `declaration`. For every *usage* (not the definition) use `find_references` instead.
 - Type / signature at a position → `hover`  (args: `path`, `line`, `character`).
 - Outline a file (its classes/functions) → `document_symbols`  (args: `path`).
-- Errors / warnings in a file → `diagnostics`  (args: `path`). Token-capped `file:line:col severity: message`, sorted error→hint with a count summary — read this instead of the raw build/compiler output.
+- Errors / warnings → `diagnostics`  (args: `path`, or `scope="directory"` to scan the project). Token-capped `file:line:col severity: message`, sorted error→hint with a count summary — read this instead of the raw build/compiler output.
 - Rename a symbol project-wide → `rename`  (args: `path`, `line`, `character`, `newName`, `apply`). Semantic (every reference), not a `sed`. Preview by default; `apply=true` writes the edits.
 - **Add / replace / delete a WHOLE declaration → edit it by NAME**, don't Read-the-file-then-Edit:
   - Replace a function/method/class body (signature included) → `replace_symbol_body`  (args: `symbol`, `body`, optional `path`/`line`, `apply`).
-  - Add a sibling declaration after/before one → `insert_after_symbol` / `insert_before_symbol`  (args: `symbol`, `text`, `apply`).
+  - Add a declaration next to one → `insert_symbol`  (args: `symbol`, `text`, `position` = `after` default / `before`, `apply`).
   - Remove a declaration → `safe_delete`  (args: `symbol`, `force`, `apply`). Refuses while it's still referenced unless `force=true`.
   - The outline supplies the exact span, so you skip reading the whole file into context. Preview by default; `apply=true` writes. Use the built-in Edit for a sub-declaration tweak (a few lines inside a body); use these when the unit is the whole declaration.
 - Raw text / string / comment / config key (the symbol index can't answer) → `search_text`  (args: `q`, `projectPath`). Token-capped; the sanctioned grep replacement.
