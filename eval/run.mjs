@@ -1428,6 +1428,16 @@ const callGraphOk =
   (() => { const t = cg.nodes.find((n) => n.label === "Target"); return t && t.calledBy === 2 && t.calls === 1 && t.weight === 3; })() &&
   cg.totalCallSites >= 4 &&
   cg.nodes.every((n) => typeof n.repo === "string");              // repo grouping: each node tagged with its repository
+// 73b) anchorOnName — a call-hierarchy query must anchor ON the symbol NAME, not workspace/symbol's range
+// start (which can land on a leading `async`/`function` keyword → prepareCallHierarchy returns [] even though
+// references works there; live-found: async functions traced empty). Unit: the name's column is found.
+const { anchorOnName } = await import("../server/core.js");
+const anDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-anchor`); fs.mkdirSync(anDir, { recursive: true });
+const anFile = path.join(anDir, "a.js"); fs.writeFileSync(anFile, "// c\nasync function resolveX(a, b) {\n  return a;\n}\n");
+const anCh = anchorOnName(anFile, 1, "resolveX", 0); // line 1 (0-based) = the async decl; name at col 15
+const anFallback = anchorOnName(anFile, 1, "nope_not_here", 7); // name absent → fallback char
+const anchorOnNameOk = anCh >= 15 && anCh <= 16 && anFallback === 7; // anchors inside "resolveX", not col 0; fallback honored
+try { fs.rmSync(anDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const cgCallers = await buildCallGraph({ symbol: "Target", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
 const cgCallersOk = !cgCallers.error && cgCallers.nodes.some((n) => n.label === "CallerA") && !cgCallers.nodes.some((n) => n.label === "Callee"); // callers-only excludes the callee
 // /callgraph route
@@ -1445,7 +1455,7 @@ const symHttp = await new Promise((res, rej) => { http.get({ host: "127.0.0.1", 
 let symParsed = {}; try { symParsed = JSON.parse(symHttp.body); } catch { /* leave empty */ }
 const symRouteOk = symHttp.status === 200 && Array.isArray(symParsed.symbols) && symParsed.symbols.some((x) => x.name === "SpawnHandler");
 await new Promise((r) => cgSrv.server.close(r));
-const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk && lsOk && symRouteOk;
+const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk && lsOk && symRouteOk && anchorOnNameOk;
 // guards 66/68/70/73 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 

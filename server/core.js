@@ -1044,6 +1044,19 @@ function repoLabelFor(file) {
     return label;
   } catch { return "external"; }
 }
+// Anchor a call-hierarchy query ON the symbol NAME. workspace/symbol's location.range.start can land on a
+// leading keyword (e.g. `async`/`function`) rather than the identifier — textDocument/references tolerates
+// that, but textDocument/prepareCallHierarchy returns [] unless the position is on the name (live-found:
+// `async function X` traced empty while a sync `function Y` worked). Read the resolved line, find the name's
+// column, and anchor a char INTO it; fall back to the given char if the line/name can't be read.
+export function anchorOnName(file, line, name, fallbackChar) {
+  try {
+    const ln = (fs.readFileSync(file, "utf8").split(/\r?\n/)[line] || "");
+    const i = name ? ln.indexOf(String(name)) : -1;
+    if (i >= 0) return i + Math.min(1, String(name).length); // one char inside the identifier
+  } catch { /* unreadable → fallback */ }
+  return fallbackChar;
+}
 async function prepareCallHierReady(c, p, line, ch, capMs = envInt("VTS_CALLHIER_WAIT_MS", 8000)) {
   let items = (await c.prepareCallHierarchy(p, line, ch)) || [];
   if (items.length) return items;
@@ -1084,6 +1097,7 @@ export async function buildCallGraph(a = {}) {
   } else if (a.path && a.line != null && a.character != null) {
     pos = { path: String(a.path), line: Number(a.line), character: Number(a.character) };
   } else { return { error: "needs `symbol` (a name) or `path`+`line`+`character`", nodes: [], links: [] }; }
+  if (a.symbol) pos.character = anchorOnName(pos.path, pos.line, String(a.symbol), pos.character); // anchor ON the name for callHierarchy
   c.didOpen(pos.path, langIdForPath(pos.path, backendName));
   const items = (await prepareCallHierReady(c, pos.path, pos.line, pos.character)).filter(Boolean);
   if (!items.length) return { error: "no call-hierarchy anchor at the symbol (point at a function/method, or the backend may lack callHierarchy)", focus: focusLabel, nodes: [], links: [] };
@@ -1764,6 +1778,7 @@ export async function runTool(name, a = {}) {
       const dirRaw = String(a.direction || "").toLowerCase();
       const traceDir = (dirRaw === "callers" || dirRaw === "incoming") ? "callers" : (dirRaw === "callees" || dirRaw === "outgoing") ? "callees" : null;
       if (traceDir) {
+        if (a.symbol) pos.character = anchorOnName(pos.path, pos.line, String(a.symbol), pos.character); // anchor ON the name for callHierarchy
         c.didOpen(pos.path, langIdForPath(pos.path, backendName));
         const depthMax = Math.max(1, Math.min(Number(a.depth) || 2, envInt("VTS_TRACE_MAX_DEPTH", 5)));
         const nodeCap = Math.min(Number(a.maxResults) || MAX_RESULTS, envInt("VTS_TRACE_MAX_NODES", 80));
