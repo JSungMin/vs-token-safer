@@ -1107,15 +1107,24 @@ const editHookOk = editWarnOk && editEscalateOk;
 
 // 55) per-file-language backend: a query that TARGETS a file gets its OWN language's backend, so a `.py`/
 // `.ts` file in a clangd/roslyn-rooted MIXED repo (e.g. a UE C++ tree with a Python tooling dir) doesn't
-// hit the wrong LSP and find nothing. Pure ext→backend map; wired as a.backend || BACKEND ||
-// backendForPath(a.path) || pickBackend(root) so an explicit backend=/VTS_BACKEND still wins.
-const { backendForPath } = await import("../server/core.js");
+// hit the wrong LSP and find nothing. Pure ext→backend map (backendForPath) + precedence (preferBackend):
+// explicit a.backend > the path's backend WHEN it conflicts with a forced one (a `.js` is never sent to a
+// `backend:"clangd"`-pinned global server → `-32001 invalid AST`) > forced BACKEND > path backend > "" (→ pickBackend).
+const { backendForPath, preferBackend } = await import("../server/core.js");
 const backendPathOk =
   backendForPath("Plugins/MyEditorPlugin/Python/trace_core.py") === "pyright" &&
   backendForPath("src/App.tsx") === "typescript" && backendForPath("a/b.mjs") === "typescript" &&
   backendForPath("Source/Foo.cpp") === "clangd" && backendForPath("Bar.h") === "clangd" &&
   backendForPath("Svc.cs") === "roslyn" &&
-  backendForPath("README.md") === null && backendForPath("noext") === null && backendForPath(undefined) === null;
+  backendForPath("README.md") === null && backendForPath("noext") === null && backendForPath(undefined) === null &&
+  // precedence — a forced clangd must NOT swallow a .js/.cs/.py query on the one global server (the live -32001 bug)
+  preferBackend("", "typescript", "clangd") === "typescript" && // conflict → the file's backend wins
+  preferBackend("", "roslyn", "clangd") === "roslyn" &&         // conflict → the file's backend wins
+  preferBackend("", "clangd", "clangd") === "clangd" &&         // agree → forced backend
+  preferBackend("", null, "clangd") === "clangd" &&             // path-less (search_symbol by name) → forced kept
+  preferBackend("roslyn", "typescript", "clangd") === "roslyn" && // explicit per-call wins outright
+  preferBackend("", "typescript", "") === "typescript" &&      // no forced backend → the file's backend
+  preferBackend("", null, "") === "";                          // nothing resolvable → "" (caller does pickBackend(root))
 
 // 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
 // doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs

@@ -38,7 +38,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `backendForPath(a.path)` (core.js — ext→backend: .py→pyright, .ts/.js→typescript, .cpp/.h→clangd, .cs→
   roslyn) BEFORE `pickBackend(root)`, so a `.py`/`.ts` file inside a clangd-rooted UE/C++ tree gets pyright/
   typescript instead of clangd (else the query hits the wrong LSP, finds nothing, model abandons vts).
-  Precedence: explicit `a.backend` > `VTS_BACKEND` > `backendForPath(a.path)` > `pickBackend(root)`. Eval guard 55.
+  Precedence (`preferBackend`, core.js): explicit `a.backend` > the path's OWN backend WHEN it CONFLICTS with a
+forced backend (one global server serves every repo, so a `backend:"clangd"` pinned for a C++ project must NOT be
+sent this repo's `.js`/`.cs`/`.py` → clangd answers `-32001 invalid AST`; live-found dogfooding goto on the vts
+repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `backend` > `backendForPath(a.path)` >
+`pickBackend(root)`. A path-less query (search_symbol by name) keeps the forced backend. Eval guard 55.
   Override via `VTS_CLANGD_CMD/ARGS`,
   `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
   shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.

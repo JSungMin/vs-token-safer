@@ -89,6 +89,15 @@ export function backendForPath(p) {
   return null;
 }
 
+// Backend precedence for a single query (pure, exported for the eval). Order: an explicit per-call
+// `backend=` wins outright > the path's OWN backend WHEN it conflicts with a forced backend (so a `.js`/`.cs`/
+// `.py` is never sent to a `backend:"clangd"`-pinned global server → `-32001 invalid AST`) > the forced
+// backend (config `backend` / `VTS_BACKEND`) > the path's backend > "" (caller falls back to pickBackend(root)).
+// A path-less query (byPath null) keeps the forced backend, so `search_symbol` by name on a C++ repo stays clangd.
+export function preferBackend(aBackend, byPath, forced) {
+  return aBackend || (byPath && forced && byPath !== forced ? byPath : forced) || byPath || "";
+}
+
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 // The token size of the RAW alternative a tool replaces. A STRING raw (vts_git/vts_p4 stdout) is exactly
 // what the model would otherwise read, so measure it as-is; an ARRAY/OBJECT (an LSP index response that
@@ -1403,8 +1412,12 @@ export async function runTool(name, a = {}) {
 
     const root = resolveRoot(a);
     // backendForPath(a.path): a `.py`/`.ts` file in a clangd/roslyn-rooted MIXED repo gets its OWN backend
-    // (pyright/typescript) instead of the root's — else the query hits the wrong LSP and finds nothing.
-    const backendName = a.backend || BACKEND || backendForPath(a.path) || pickBackend(root);
+    // (pyright/typescript) instead of the root's — else the query hits the wrong LSP and finds nothing. A
+    // path's own backend ALSO overrides a FORCED backend (config `backend` / VTS_BACKEND) when they CONFLICT:
+    // one global server serves every repo, so a `backend:"clangd"` pinned for a C++ project must not be sent
+    // this repo's `.js`/`.cs`/`.py` (clangd then answers `-32001 invalid AST`). A path-less query (e.g.
+    // search_symbol by name) keeps the forced backend; an explicit per-call `a.backend` still wins outright.
+    const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
     // search_symbol degrades gracefully when NO backend resolves (text fallback) instead of hard-erroring —
     // so the grep-rewrite hook can always route an identifier to `vts symbol` (semantic when a backend
     // exists, literal text otherwise) without risking a dead-end error.
