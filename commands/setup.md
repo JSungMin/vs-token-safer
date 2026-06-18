@@ -5,11 +5,12 @@ description: Configure the vs-token-safer plugin (project path, backend, result 
 # vs-token-safer — setup
 
 Configure the plugin by writing its config file (`~/.vs-token-safer/config.json`), which the CLI and
-MCP server read at startup. Use the `vts_setup` MCP tool (server: `vs-search`) — do NOT edit the
-user's OS environment.
+MCP server read at startup. Use the `vts_admin` MCP tool (server: `vs-search`) with an `op` +
+`params` — the admin/meta ops (`setup`, `config`, …) are folded behind it, e.g.
+`vts_admin { "op": "setup", "params": { "projectPath": "<root>" } }`. Do NOT edit the user's OS environment.
 
 Steps:
-1. **Show current settings:** call `vts_config`.
+1. **Show current settings:** call `vts_admin { "op": "config" }`.
 2. **Detect/confirm the backend.** Backend auto-detects from the project root:
    - C/C++ → needs `compile_commands.json` in (or under) the root → **clangd**. Unreal: generate via
      UBT `-mode=GenerateClangDatabase` (add **`-Compiler=VisualCpp`** if the targets build with clang-cl,
@@ -26,23 +27,23 @@ Steps:
    - `backend` — `clangd` | `roslyn` | `typescript` | `pyright` (omit to auto-detect).
    - `maxResults` — cap on returned `file:line` locations (default 60).
    - `prewarmBackends` — `auto` (warm the dominant backend) | `all` (warm every language present, each in
-     proportion to its file count) | a comma list. Omit it: `vts_setup` runs a **language census** of the
-     root and picks `auto` for a single-language repo or `all` for a multi-language one automatically.
-4. **Apply:** call `vts_setup` with only the keys to change, e.g.
-   `vts_setup { "projectPath": "<root>", "backend": "clangd" }`. `vts_setup` reports the detected language
-   mix (e.g. `clangd(820), typescript(40)`) and the `prewarmBackends` it chose.
+     proportion to its file count) | a comma list. Omit it: `vts_admin { op: "setup" }` runs a **language
+     census** of the root and picks `auto` for a single-language repo or `all` for a multi-language one automatically.
+4. **Apply:** call `vts_admin { "op": "setup", "params": { … } }` with only the keys to change, e.g.
+   `vts_admin { "op": "setup", "params": { "projectPath": "<root>", "backend": "clangd" } }`. It reports the
+   detected language mix (e.g. `clangd(820), typescript(40)`) and the `prewarmBackends` it chose.
 5. **Unmet C++ prerequisites → present clickable choices, don't ask in prose.** When the clangd backend
    is missing `compile_commands.json` and/or a clangd ≥ 22 binary, the user should **click**, not type. Use
    the **`AskUserQuestion`** tool — one question per missing prerequisite, each with concrete options:
    - **compile_commands.json missing** → question "Generate the C++ compile database now?" options:
-     - `Dry-run first (Recommended)` → call `vts_setup { genCompileDb: true }` (prints the exact UBT
-       `GenerateClangDatabase` command, runs nothing) — show it, then re-ask to apply.
-     - `Run it now (apply)` → `vts_setup { genCompileDb: "apply" }` (heavy: indexes engine headers, minutes,
-       needs clangd ≥ 22). DB parks out-of-tree (`~/.vs-token-safer/db/<project>`), git/p4 never see it.
+     - `Dry-run first (Recommended)` → call `vts_admin { op: "setup", params: { genCompileDb: true } }` (prints
+       the exact UBT `GenerateClangDatabase` command, runs nothing) — show it, then re-ask to apply.
+     - `Run it now (apply)` → `vts_admin { op: "setup", params: { genCompileDb: "apply" } }` (heavy: indexes
+       engine headers, minutes, needs clangd ≥ 22). DB parks out-of-tree (`~/.vs-token-safer/db/<project>`), git/p4 never see it.
      - `Skip — I'll generate it myself` → leave as-is (text fallback stays active).
    - **clangd ≥ 22 not on PATH** → question "clangd binary?" options:
-     - `Point vts at an installed clangd` → ask for the path, then `vts_setup { clangdCmd: "<path>" }`
-       (writes `VTS_CLANGD_CMD`).
+     - `Point vts at an installed clangd` → ask for the path, then
+       `vts_admin { op: "setup", params: { clangdCmd: "<path>" } }` (writes `VTS_CLANGD_CMD`).
      - `I'll install it` → link https://github.com/clangd/clangd/releases (VS-bundled 19.1.x deadlocks on UE).
      - `Skip for now` → text fallback stays active.
    Only fall back to a free-text question if `AskUserQuestion` is unavailable. Always dry-run the DB before
