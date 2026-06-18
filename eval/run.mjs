@@ -1261,15 +1261,14 @@ const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
 // cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
 const cfgViaOp = await runTool("vts_" + "config", {});
 const toolsBudgetOk =
-  TOOL_DEFS.length === 13 && // 11 hot search/nav/edit (inserts merged into insert_symbol) + diagnostics + vts_admin
-  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body"].every((n) => toolNames.includes(n)) && // hot tools first-class
+  TOOL_DEFS.length === 14 && // hot search/nav/edit (incl. read_symbol) + diagnostics + vts_admin
+  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
   !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db"].some((n) => toolNames.includes(n)) && // cold tools folded away
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
-  toolsTok <= 3200; // ~3030: fold floor ~2420 + Glama tool-quality re-add (~480) + the diagnostics tool +
-                    // goto `kind` (~130). Cap still blocks prose creep.
+  toolsTok <= 3500; // ~3030 (13 tools) + read_symbol (~200) + detail/scope params. Cap still blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -1351,6 +1350,42 @@ delete process.env.VTS_P4_EDIT;
 const p4EditOk = p4NoteWritable === "" && /p4 edit/i.test(p4NoteRO) && p4NoteDisabled === "";
 try { fs.chmodSync(p4rf, 0o666); fs.rmSync(p4dir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+// 66) read_symbol — READ-side twin of replace_symbol_body: name a symbol → ONLY its source span, never the
+// whole file (kills the pre-edit whole-file Read). Reuses resolveSymbolForEdit (mock puts "Foo" at line 4).
+const rsDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-readsym`); fs.mkdirSync(rsDir, { recursive: true });
+const rsFile = path.join(rsDir, "Rd.cpp");
+fs.writeFileSync(rsFile, "L0\nL1\nL2\nL3\nFOO_BODY rest\n");
+const rs = await runTool("read_symbol", { symbol: "Foo", path: rsFile, backend: "clangd" });
+const rsMiss = await runTool("read_symbol", { symbol: "Nope", path: rsFile, backend: "clangd" });
+const readSymbolOk =
+  !rs.isError && /FOO_BODY rest/.test(rs.text) && /Rd\.cpp:5-5/.test(rs.text) && !/\bL0\b/.test(rs.text) && // only the symbol's line, not the whole file
+  rsMiss.isError && /no symbol named "Nope"/.test(rsMiss.text);
+try { fs.rmSync(rsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+// 67) find_references detail=file|dir → blast-radius summary (group dependents, rank by ref count, factor
+// prefix). Pure fmtRefSummary over synthetic locs (deterministic, no mock-refs dance).
+const { fmtRefSummary } = await import("../server/core.js");
+const fakeLocs = [
+  { uri: "file:///proj/a/Foo.cpp", range: {} }, { uri: "file:///proj/a/Foo.cpp", range: {} },
+  { uri: "file:///proj/b/Bar.cpp", range: {} },
+];
+const refFile = fmtRefSummary(fakeLocs, "file", 60);
+const refDir = fmtRefSummary(fakeLocs, "dir", 60);
+const refSummaryOk =
+  /3 reference\(s\) across 2 file\(s\)/.test(refFile) && /Foo\.cpp \(2\)/.test(refFile) &&
+  refFile.indexOf("(2)") < refFile.indexOf("(1)") &&            // most-referenced first
+  /3 reference\(s\) across 2 dir\(s\)/.test(refDir);
+
+// 68) document_symbols scope=directory → signatures-only repo skeleton (one outline per code file, bounded).
+const skDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-skel`); fs.mkdirSync(skDir, { recursive: true });
+fs.writeFileSync(path.join(skDir, "A.cpp"), "int a(){return 0;}\n");
+fs.writeFileSync(path.join(skDir, "B.cpp"), "int b(){return 1;}\n");
+const sk = await runTool("document_symbols", { scope: "directory", projectPath: skDir, backend: "clangd" });
+const skeletonOk = !sk.isError && /repo skeleton/.test(sk.text) && /A\.cpp/.test(sk.text) && /B\.cpp/.test(sk.text) && /Foo/.test(sk.text);
+try { fs.rmSync(skDir, { recursive: true, force: true }); } catch { /* ignore */ }
+// guards 66/68 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
+await disposeClients();
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -1414,10 +1449,13 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
-  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3200 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3500 tok", toolsBudgetOk, "true", toolsBudgetOk],
   ["LSP glue: diagnostics tool + goto kinds (typeDef/impl/decl)", lspGlueOk, "true", lspGlueOk],
   ["star nudge: value-tied, threshold-gated, pure (no network), toggle", starNudgeOk, "true", starNudgeOk],
   ["symbol-edit P4 auto-checkout: read-only → p4 edit, writable skips, toggle", p4EditOk, "true", p4EditOk],
+  ["read_symbol: symbol source span only (not whole file) + miss", readSymbolOk, "true", readSymbolOk],
+  ["find_references detail=file|dir: blast-radius summary (ranked)", refSummaryOk, "true", refSummaryOk],
+  ["document_symbols scope=directory: signatures-only repo skeleton", skeletonOk, "true", skeletonOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

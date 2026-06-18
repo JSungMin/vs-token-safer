@@ -70,10 +70,11 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | Tool | CLI | Does |
 | --- | --- | --- |
 | `search_symbol` | `vts symbol` | Find a symbol declaration by name/substring (semantic, not text). |
-| `find_references` | `vts references` | Every call site of a symbol. Takes the **name directly** (`symbol="FooBar"`) — the one to reach for when you change a function/type and must touch every use. |
+| `find_references` | `vts references` | Every call site of a symbol. Takes the **name directly** (`symbol="FooBar"`) — the one to reach for when you change a function/type and must touch every use. `detail=file`/`dir` → a **blast-radius summary** (dependents grouped + ranked) instead of the per-line list. |
+| `read_symbol` | `vts read-symbol` | Return the **source of one named declaration** (its span) — not the whole file. The read-side twin of `replace_symbol_body`: skip Read-ing a 700-line file to see one function. `signatureOnly` trims to the head. |
 | `goto_definition` | `vts definition` | Jump to the definition at a position. `kind=` also does `type_definition` / `implementation` (concrete impls of an interface/virtual) / `declaration`. |
 | `hover` | `vts hover` | Type/signature at a position. |
-| `document_symbols` | `vts symbols` | Outline a file (classes/functions/types as `file:line`). |
+| `document_symbols` | `vts symbols` | Outline a file (classes/functions/types as `file:line`). `scope=directory` → a **signatures-only repo skeleton** of every code file under a dir (the shape of a module without Reading each file). |
 | `diagnostics` | `vts diagnostics` | Compiler/linter errors + warnings as a token-capped `file:line:col severity: message` list — the compact stand-in for reading raw build output. One file by default; `scope=directory` scans the project. |
 | `find_files` | `vts files` | Find files by name/glob — token-capped stand-in for `find -name`. |
 | `search_text` | `vts text` | Raw text/regex search — capped stand-in for `grep` (`path=`/`glob=`/`docs=true` to target). |
