@@ -105,16 +105,24 @@ find file W" lookup to the **`code-locator` subagent** — it searches in its ow
 the `file:line` table.
 
 **Dashboard — `vts serve`.** A local, interactive view of what vts knows + how much it saved: the
-savings trend, language mix, per-tool savings, and the include-graph fan-in as a force-directed graph.
+savings trend, language mix, per-tool savings, and an **interactive 3D graph** (WebGL / Three.js) with two
+modes — the **include graph** (files sized + heat-colored by include fan-in) and an **on-demand call graph**
+(type a symbol → its transitive callers/callees, traced live through LSP `callHierarchy` — no persistent
+index). Drag to orbit, wheel to zoom, hover for `file:line`; a highlight filter + node/edge metrics overlay.
+
+Easiest via the slash commands: **`/vs-token-safer:viz`** (open) and **`/vs-token-safer:viz-stop`** (close).
+Or the CLI:
 
 ```bash
-vts serve            # → http://127.0.0.1:8731/  (Ctrl-C to stop; --port N to change)
+vts serve --open     # → http://127.0.0.1:8731/  (launches the browser; --port N to change)
+vts serve --stop     # stop it (or Ctrl-C the process)
 ```
 
-It's **127.0.0.1-only and serves a fully self-contained page** (CSS/JS inlined, no CDN, no external
-fetch) — nothing leaves the machine, same trust model as the rest of vts. Built on Node's stdlib `http`
-(zero new dependency), and it runs **only when you invoke it** — the MCP server never starts it, so the
-steady-state package stays a thin stdio client.
+It's **127.0.0.1-only and serves a fully self-contained page** — CSS/JS inlined and **Three.js vendored
+locally** (`server/vendor/`, served same-origin, never a CDN), so nothing leaves the machine; it renders
+with the network unplugged. Same trust model as the rest of vts. Built on Node's stdlib `http` (no
+web-framework dependency), and it runs **only when you invoke it** — the MCP server never starts it, so the
+steady-state package stays a thin stdio client. The 3D graph caps at `VTS_VIZ_MAX_NODES` (200) for smoothness.
 
 ```
 $ vts symbol --q SpawnActor --projectPath ./MyGame
