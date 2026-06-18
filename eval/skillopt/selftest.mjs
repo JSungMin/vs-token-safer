@@ -42,7 +42,11 @@ check("gate: no baseline + positive signal → accept", gate({ adoption: null },
 const expects = new Set(SCENARIOS.map((s) => s.expect));
 check("scenarios: cover insert + replace", expects.has("insert") && expects.has("replace"));
 check("scenarios: have a train/holdout split", SCENARIOS.some(train) && SCENARIOS.some(heldout));
-check("scenarios: no obvious proprietary names", !SCENARIOS.some((s) => /mutable|cheat|acmecorp|internalproj|secretproject/i.test(s.content + s.task)));
+// Proprietary-name guard: scenarios must use synthetic names only. The real internal codenames are NOT
+// spelled out in this public file (the guard must not become the leak it prevents) — set VTS_PROPRIETARY_DENY
+// (csv) locally to also catch your own employer/project terms. The committed list is generic placeholders.
+const DENY = ["acmecorp", "internalproj", "secretproject", ...(process.env.VTS_PROPRIETARY_DENY || "").split(",").map((x) => x.trim()).filter(Boolean)];
+check("scenarios: no obvious proprietary names", !SCENARIOS.some((s) => DENY.some((d) => new RegExp(d, "i").test(s.content + s.task))));
 check("variants: baseline present + ≥2 candidates", byId("baseline") && VARIANTS.length >= 3);
 
 console.log("vs-token-safer — SkillOpt scorer + gate self-test\n");
