@@ -115,8 +115,8 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 .hl-input::placeholder{color:var(--faint)}
 .hl-input:focus{border-color:var(--accent)}
 
-/* Graph viewport */
-.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:#08080A;height:480px}
+/* Graph viewport — radial gradient bg for depth */
+.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:radial-gradient(ellipse at 50% 45%,#0E1525 0%,#05070F 65%,#020305 100%);height:480px}
 .graph-wrap canvas{display:block;width:100%;height:100%;cursor:grab;border-radius:6px}
 .graph-wrap canvas:active{cursor:grabbing}
 
@@ -580,32 +580,29 @@ fetch("/data")
 import * as THREE from "/vendor/three.module.min.js";
 
 /* ── DOM refs ─────────────────────────────────────────────────────────── */
-const wrap        = document.getElementById("graphWrap");
-const emptyMsg    = document.getElementById("graphEmpty");
-const cgErrEl     = document.getElementById("cgErr");
-const metricsEl   = document.getElementById("graphMetrics");
-const tip         = document.getElementById("tooltip");
-const panelTitle  = document.getElementById("graphPanelTitle");
-
-const btnInclude  = document.getElementById("modeInclude");
-const btnCall     = document.getElementById("modeCall");
-const cgRow       = document.getElementById("cgRow");
-const cgSymbolEl  = document.getElementById("cgSymbol");
-const cgDirEl     = document.getElementById("cgDir");
-const cgDepthEl   = document.getElementById("cgDepth");
-const cgTraceBtn  = document.getElementById("cgTrace");
-const cgStatusEl  = document.getElementById("cgStatus");
-const hlFilterEl  = document.getElementById("hlFilter");
+const wrap       = document.getElementById("graphWrap");
+const emptyMsg   = document.getElementById("graphEmpty");
+const cgErrEl    = document.getElementById("cgErr");
+const metricsEl  = document.getElementById("graphMetrics");
+const tip        = document.getElementById("tooltip");
+const panelTitle = document.getElementById("graphPanelTitle");
+const btnInclude = document.getElementById("modeInclude");
+const btnCall    = document.getElementById("modeCall");
+const cgRow      = document.getElementById("cgRow");
+const cgSymbolEl = document.getElementById("cgSymbol");
+const cgDirEl    = document.getElementById("cgDir");
+const cgDepthEl  = document.getElementById("cgDepth");
+const cgTraceBtn = document.getElementById("cgTrace");
+const cgStatusEl = document.getElementById("cgStatus");
+const hlFilterEl = document.getElementById("hlFilter");
 
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 const PRM = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-/* ── Shared utils ─────────────────────────────────────────────────────── */
+/* ── Utils ────────────────────────────────────────────────────────────── */
 function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
-
 function showTip(html,x,y){
-  tip.innerHTML=html;
-  tip.style.opacity="1";
+  tip.innerHTML=html; tip.style.opacity="1";
   const vw=window.innerWidth,vh=window.innerHeight;
   const tw=tip.offsetWidth+16,th=tip.offsetHeight+16;
   tip.style.left=clamp(x+12,4,vw-tw)+"px";
@@ -613,23 +610,81 @@ function showTip(html,x,y){
 }
 function hideTip(){ tip.style.opacity="0"; }
 
-/* ── Color helpers ────────────────────────────────────────────────────── */
-function hexToTHREE(h){ return new THREE.Color(parseInt(h.slice(1),16)); }
-function lerpTHREE(ca,cb,t){
-  return new THREE.Color(ca.r+(cb.r-ca.r)*t, ca.g+(cb.g-ca.g)*t, ca.b+(cb.b-ca.b)*t);
-}
-const COLOR_LOW = hexToTHREE("#3F3F46");
-const COLOR_MID = hexToTHREE("#0070F3");
-const COLOR_HOT = hexToTHREE("#FACC15");
-const COLOR_DIM = hexToTHREE("#1A1A1A");
+/* ── Energy color ramp ────────────────────────────────────────────────── */
+// cold=periwinkle (clearly visible on dark) → mid=sky blue → hot=amber gold
+// cold end MUST be luminous, never near-black
+function hexC(h){ return new THREE.Color(parseInt(h.slice(1),16)); }
+function lerpC(a,b,t){ return new THREE.Color(a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t); }
+
+const C_COLD   = hexC("#5C7CFA"); // periwinkle — luminous cold
+const C_MID    = hexC("#4DABF7"); // sky blue
+const C_HOT    = hexC("#FFD43B"); // amber gold
+const C_WHITE  = hexC("#FFFFFF");
+const C_DIM_HL = hexC("#1C1C28"); // near-invisible for filtered-out nodes
 
 function heatColor(norm){
-  if(norm<0.5) return lerpTHREE(COLOR_LOW,COLOR_MID,norm*2);
-  return lerpTHREE(COLOR_MID,COLOR_HOT,(norm-0.5)*2);
+  // Two-stop: cold→mid at 0..0.5, mid→hot at 0.5..1
+  if(norm<0.5) return lerpC(C_COLD,C_MID,norm*2);
+  return lerpC(C_MID,C_HOT,(norm-0.5)*2);
 }
 
-/* ── Sprite label factory ─────────────────────────────────────────────── */
-function makeLabel(text, accent){
+/* ── Fresnel/glow ShaderMaterial for the node cores ──────────────────── */
+// Bright near-white center, heat-tinted rim — "energy orb" look.
+// vertexColors:true so the instanced per-instance color (heat ramp) tints the rim.
+const CORE_VERT = `
+varying vec3 vNormal;
+varying vec3 vViewDir;
+void main(){
+  vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position,1.0);
+  vNormal   = normalize(normalMatrix * (mat3(instanceMatrix) * normal));
+  vViewDir  = normalize(-mvPos.xyz);
+  gl_Position = projectionMatrix * mvPos;
+}`;
+const CORE_FRAG = `
+uniform vec3 uColor;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+void main(){
+  float rim = 1.0 - clamp(dot(vNormal, vViewDir), 0.0, 1.0);
+  rim = pow(rim, 1.8);
+  // Center is near-white, rim is heat color
+  vec3 col = mix(vec3(0.96,0.98,1.0), uColor, rim);
+  // Slight overall brightness boost
+  col = col * 1.15;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+// We cannot use ShaderMaterial with instanced per-instance color directly via the
+// standard uniform path; instead we use MeshBasicMaterial with vertexColors for
+// the instanced color, and overlay a second additive glow sprite per node.
+// The "orb" effect comes from the radial-gradient glow sprites + bright core.
+
+/* ── Glow sprite texture factory (radial gradient, additive) ─────────── */
+// Returns a cached CanvasTexture keyed by hex color string.
+const _glowCache = new Map();
+function glowTex(col){
+  const key = col.getHexString();
+  if(_glowCache.has(key)) return _glowCache.get(key);
+  const SZ = 128;
+  const c = document.createElement("canvas");
+  c.width = SZ; c.height = SZ;
+  const ctx = c.getContext("2d");
+  const cx2 = SZ/2;
+  const grad = ctx.createRadialGradient(cx2,cx2,0,cx2,cx2,cx2);
+  const r=Math.round(col.r*255),g=Math.round(col.g*255),b=Math.round(col.b*255);
+  grad.addColorStop(0,   `rgba(${r},${g},${b},0.95)`);
+  grad.addColorStop(0.25,`rgba(${r},${g},${b},0.55)`);
+  grad.addColorStop(0.55,`rgba(${r},${g},${b},0.18)`);
+  grad.addColorStop(1,   `rgba(${r},${g},${b},0.0)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,SZ,SZ);
+  const tex = new THREE.CanvasTexture(c);
+  _glowCache.set(key,tex);
+  return tex;
+}
+
+/* ── Label sprite factory ─────────────────────────────────────────────── */
+function makeLabel(text, accentHex){
   const c=document.createElement("canvas");
   const ctx=c.getContext("2d");
   const fs=22;
@@ -638,36 +693,54 @@ function makeLabel(text, accent){
   const mh=fs+12;
   c.width=mw; c.height=mh;
   ctx.font=`${fs}px ui-monospace,Menlo,Consolas,monospace`;
-  ctx.fillStyle="rgba(23,23,23,0.85)";
+  ctx.fillStyle="rgba(8,8,18,0.88)";
   ctx.beginPath();
   if(ctx.roundRect) ctx.roundRect(0,0,mw,mh,4); else ctx.rect(0,0,mw,mh);
   ctx.fill();
-  ctx.fillStyle=accent||"#EDEDED";
+  ctx.fillStyle=accentHex||"#E2E8FF";
   ctx.textBaseline="middle";
   ctx.fillText(text,10,mh/2);
   const tex=new THREE.CanvasTexture(c);
-  const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false});
+  const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false,sizeAttenuation:true});
   const sp=new THREE.Sprite(mat);
-  const sc=0.035;
-  sp.scale.set(mw*sc,mh*sc,1);
+  sp.scale.set(mw*0.035,mh*0.035,1);
   return sp;
 }
 
-/* ── Global WebGL renderer (created once, reused across graph loads) ──── */
-let renderer=null;
-let rendererOk=false;
+/* ── Starfield (cheap Points cloud for parallax depth) ───────────────── */
+let starField=null;
+function buildStarfield(){
+  if(starField) return;
+  const STARS=500;
+  const pos=new Float32Array(STARS*3);
+  for(let i=0;i<STARS;i++){
+    const theta=Math.random()*Math.PI*2;
+    const phi=Math.acos(2*Math.random()-1);
+    const r=120+Math.random()*280;
+    pos[i*3]  =r*Math.sin(phi)*Math.cos(theta);
+    pos[i*3+1]=r*Math.sin(phi)*Math.sin(theta);
+    pos[i*3+2]=r*Math.cos(phi);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute("position",new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color:0x8899CC,size:0.28,sizeAttenuation:true,transparent:true,opacity:0.35});
+  starField=new THREE.Points(geo,mat);
+  starField.frustumCulled=false;
+  scene.add(starField);
+}
 
+/* ── Global renderer (created once) ──────────────────────────────────── */
+let renderer=null, rendererOk=false;
 function ensureRenderer(){
   if(renderer) return rendererOk;
   try{
     const tc=document.createElement("canvas");
-    if(!tc.getContext("webgl2")&&!tc.getContext("webgl")) throw new Error("no webgl");
-    renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+    if(!tc.getContext("webgl2")&&!tc.getContext("webgl")) throw new Error("no ctx");
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-    renderer.setClearColor(0x08080A,1);
-    renderer.domElement.style.width="100%";
-    renderer.domElement.style.height="100%";
-    renderer.domElement.style.cursor="grab";
+    // Transparent so the CSS radial-gradient bg shows through
+    renderer.setClearColor(0x000000,0);
+    renderer.domElement.style.cssText="display:block;width:100%;height:100%;cursor:grab;border-radius:6px;";
     wrap.appendChild(renderer.domElement);
     rendererOk=true;
   }catch(e){
@@ -678,86 +751,73 @@ function ensureRenderer(){
   return rendererOk;
 }
 
-/* ── Scene state — lives across mode switches ─────────────────────────── */
+/* ── Scene (persistent across mode switches) ──────────────────────────── */
 let scene=null, camera=null;
 let orbitTarget=new THREE.Vector3();
 let orbitTheta=0, orbitPhi=Math.PI/2, orbitRadius=80;
 let autoRotating=true;
 const AUTO_ROT=0.0004;
 
-// Per-load GPU objects — disposed on each new load
-let instancedMesh=null, edgeLines=null, hlEdgeLines=null;
-let haloMeshes=[], nodeLabelSprites=[];
+/* ── Per-load GPU objects ─────────────────────────────────────────────── */
+let instancedMesh=null;        // core spheres (InstancedMesh, MeshBasicMaterial vertexColors)
+let glowSprites=[];            // THREE.Sprite[] — one per node, additive glow
+let edgeLines=null, hlEdgeLines=null;
+let nodeLabelSprites=[];       // always-on labels for hot nodes + focus
 let sphereGeo=null, sphereMat=null;
-let haloGeo=null;
 let edgeGeo=null, edgeMat=null, hlEdgeGeo=null, hlEdgeMat=null;
 
-// Per-load sim state
-let simNodes=[];       // [{id,label,file,line,kind,weight,focus,hot}]
-let simEdges=[];       // [{a,b}]
-let simAdj=[];         // Set[] per node
-let nodeColors=[];     // THREE.Color[]
-let px,py,pz,vx,vy,vz,radii,pinned; // Float32Array / Uint8Array
-let N=0;
-let simTick=0, heat=0;
+/* ── Per-load sim state ───────────────────────────────────────────────── */
+let simNodes=[], simEdges=[], simAdj=[];
+let nodeColors=[];  // THREE.Color[] base heat color per node
+let nodeHot=[];     // bool[]
+let px,py,pz,vx,vy,vz,radii,pinned;
+let N=0, simTick=0, heat=0;
 const SETTLE=150;
 
-// Render loop
-let frameId=null;
-let roObserver=null;
-let sceneInitialized=false;
+let frameId=null, roObserver=null, sceneInitialized=false;
+let currentMode="include", callMeta=null, hlFilter="";
 
-// Mode + current meta
-let currentMode="include";  // "include" | "call"
-let callMeta=null;          // {focus,direction,depth,truncated,focusLabel}
-
-// Highlight filter
-let hlFilter="";
-
-/* ── Dispose previous GPU objects ────────────────────────────────────── */
+/* ── disposeGPU: clean up all per-load objects ────────────────────────── */
 function disposeGPU(){
-  if(instancedMesh){ scene && scene.remove(instancedMesh); instancedMesh.dispose(); instancedMesh=null; }
-  if(edgeLines){     scene && scene.remove(edgeLines); }
-  if(hlEdgeLines){   scene && scene.remove(hlEdgeLines); }
+  if(instancedMesh){ scene&&scene.remove(instancedMesh); instancedMesh.dispose(); instancedMesh=null; }
+  if(edgeLines){  scene&&scene.remove(edgeLines); }
+  if(hlEdgeLines){scene&&scene.remove(hlEdgeLines);}
   if(sphereGeo){  sphereGeo.dispose();  sphereGeo=null; }
   if(sphereMat){  sphereMat.dispose();  sphereMat=null; }
-  if(haloGeo){    haloGeo.dispose();    haloGeo=null; }
   if(edgeGeo){    edgeGeo.dispose();    edgeGeo=null; }
   if(edgeMat){    edgeMat.dispose();    edgeMat=null; }
   if(hlEdgeGeo){  hlEdgeGeo.dispose();  hlEdgeGeo=null; }
   if(hlEdgeMat){  hlEdgeMat.dispose();  hlEdgeMat=null; }
-  haloMeshes.forEach(({mesh})=>{
-    scene && scene.remove(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  glowSprites.forEach(sp=>{
+    scene&&scene.remove(sp);
+    sp.material.map&&sp.material.map.dispose();
+    sp.material.dispose();
   });
-  haloMeshes=[];
+  glowSprites=[];
   nodeLabelSprites.forEach(entry=>{
     if(!entry) return;
-    scene && scene.remove(entry.sprite);
-    entry.sprite.material.map && entry.sprite.material.map.dispose();
+    scene&&scene.remove(entry.sprite);
+    entry.sprite.material.map&&entry.sprite.material.map.dispose();
     entry.sprite.material.dispose();
   });
   nodeLabelSprites=[];
 }
 
-/* ── Build / rebuild a scene from a graph data payload ───────────────── */
+/* ── loadGraph: build scene from graph payload ────────────────────────── */
 function loadGraph(graph, mode, meta){
   if(!ensureRenderer()) return;
-
   disposeGPU();
 
-  // Ensure scene + camera exist (created once)
   if(!scene){
     scene=new THREE.Scene();
-    scene.fog=new THREE.FogExp2(0x08080A,0.018);
-    camera=new THREE.PerspectiveCamera(60,1,0.1,1000);
+    // Gentle far-only fog — nodes near camera stay vivid, distant nodes recede
+    scene.fog=new THREE.FogExp2(0x05070F,0.004);
+    camera=new THREE.PerspectiveCamera(60,1,0.1,1200);
     camera.position.set(0,0,80);
+    buildStarfield();
   }
 
-  currentMode=mode;
-  callMeta=meta||null;
-
+  currentMode=mode; callMeta=meta||null;
   N=graph.nodes.length;
   if(!N){
     emptyMsg.style.display="flex";
@@ -767,69 +827,75 @@ function loadGraph(graph, mode, meta){
   emptyMsg.style.display="none";
   cgErrEl.classList.remove("visible");
 
-  // Physics arrays
   px=new Float32Array(N); py=new Float32Array(N); pz=new Float32Array(N);
   vx=new Float32Array(N); vy=new Float32Array(N); vz=new Float32Array(N);
   radii=new Float32Array(N);
   pinned=new Uint8Array(N);
-  simNodes=graph.nodes;
-  nodeColors=[];
+  simNodes=graph.nodes; nodeColors=[]; nodeHot=[];
 
   const maxWeight=Math.max(...graph.nodes.map(n=>n.weight||0),1);
   const nonZero=graph.nodes.map(n=>n.weight||0).filter(w=>w>0).sort((a,b)=>b-a);
   const rawP90=nonZero[Math.floor(nonZero.length*0.1)]||maxWeight;
   const p90t=Math.max(rawP90,maxWeight*0.5);
-
   const idToIdx=new Map();
 
-  // Geometries
-  sphereGeo=new THREE.SphereGeometry(1,12,8);
+  // Core instanced spheres — MeshBasicMaterial + vertexColors for heat tint
+  // Boosted emissive feel: we'll mix toward near-white in the glow anyway
+  sphereGeo=new THREE.SphereGeometry(1,14,9);
   sphereMat=new THREE.MeshBasicMaterial({vertexColors:true});
   instancedMesh=new THREE.InstancedMesh(sphereGeo,sphereMat,N);
   instancedMesh.frustumCulled=false;
   scene.add(instancedMesh);
 
-  haloGeo=new THREE.SphereGeometry(1,10,6);
-
   graph.nodes.forEach((n,i)=>{
     idToIdx.set(n.id,i);
     const w=n.weight||0;
     const norm=w/maxWeight;
-    // For call-graph, focus node gets the largest radius regardless
     const isFocus=mode==="call"&&n.focus===true;
-    const r=isFocus ? Math.max(4.5, 1.2+Math.sqrt(w)*1.6) : Math.max(1.2, 1.2+Math.sqrt(w)*1.6);
+    // Min radius ensures even fan-in-0 nodes are visible (~2 world units)
+    const r=isFocus ? Math.max(5.0,2.0+Math.sqrt(w)*1.8)
+                    : 2.0+Math.sqrt(w)*1.8;
     radii[i]=r;
 
-    // Scatter in a sphere
-    const theta=Math.random()*Math.PI*2;
-    const phi=Math.acos(2*Math.random()-1);
-    const dist=15+Math.random()*25;
-    px[i]=dist*Math.sin(phi)*Math.cos(theta);
-    py[i]=dist*Math.sin(phi)*Math.sin(theta);
-    pz[i]=dist*Math.cos(phi);
+    // Scatter initial positions
+    const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1);
+    const d=15+Math.random()*22;
+    px[i]=d*Math.sin(ph)*Math.cos(th);
+    py[i]=d*Math.sin(ph)*Math.sin(th);
+    pz[i]=d*Math.cos(ph);
 
-    const col=heatColor(norm);
-    nodeColors.push(col);
-    instancedMesh.setColorAt(i,col);
+    // Core color: heat-ramp, brightened toward white so it reads on dark bg
+    const hc=heatColor(norm);
+    // Lerp toward white for a bright core feel
+    const coreCol=lerpC(hc,C_WHITE,0.35);
+    nodeColors.push(hc); // store original for hover dimming
+    instancedMesh.setColorAt(i,coreCol);
 
     const hot=(w>=p90t&&w>0)||isFocus;
+    nodeHot.push(hot);
 
+    // ── Glow sprite — EVERY node gets one ──────────────────────────────
+    // Radius scales with node importance; hot nodes get a bigger halo
+    const glowRadius=hot ? r*3.2 : r*2.6;
+    // Use heat color for the glow (not white-mixed)
+    const glowColor=isFocus ? hexC("#FFD43B") : hc;
+    const gTex=glowTex(glowColor);
+    const gMat=new THREE.SpriteMaterial({
+      map:gTex, transparent:true,
+      blending:THREE.AdditiveBlending, depthWrite:false,
+      opacity: hot ? 0.82 : 0.62
+    });
+    const gSp=new THREE.Sprite(gMat);
+    gSp.scale.set(glowRadius*2, glowRadius*2, 1);
+    gSp.frustumCulled=false;
+    scene.add(gSp);
+    glowSprites.push(gSp);
+
+    // ── Always-on label for hot nodes ──────────────────────────────────
     if(hot){
-      // Halo
-      const hm=new THREE.MeshBasicMaterial({
-        color: isFocus ? 0xFACC15 : 0x0070F3,
-        transparent:true, opacity:isFocus?0.18:0.11,
-        blending:THREE.AdditiveBlending, depthWrite:false
-      });
-      const halo=new THREE.Mesh(haloGeo.clone(),hm);
-      halo.scale.setScalar(r+2.5);
-      halo.frustumCulled=false;
-      scene.add(halo);
-      haloMeshes.push({mesh:halo,idx:i,isFocus});
-
-      // Always-on label
       const lbl=n.label||(n.id.split("/").pop())||n.id;
-      const sp=makeLabel(lbl, isFocus?"#FACC15":undefined);
+      const accentHex=isFocus?"#FFD43B":"#7DD3FC";
+      const sp=makeLabel(lbl,accentHex);
       sp.frustumCulled=false;
       scene.add(sp);
       nodeLabelSprites.push({sprite:sp,idx:i,always:true});
@@ -839,24 +905,31 @@ function loadGraph(graph, mode, meta){
   });
   instancedMesh.instanceColor.needsUpdate=true;
 
-  // Edges
+  // ── Edges ─────────────────────────────────────────────────────────────
   simEdges=[];
-  const validLinks=(graph.links||[]).filter(l=>idToIdx.has(l.source)&&idToIdx.has(l.target));
-  validLinks.forEach(l=>simEdges.push({a:idToIdx.get(l.source),b:idToIdx.get(l.target)}));
+  (graph.links||[]).filter(l=>idToIdx.has(l.source)&&idToIdx.has(l.target))
+    .forEach(l=>simEdges.push({a:idToIdx.get(l.source),b:idToIdx.get(l.target)}));
 
   const EP=simEdges.length;
-  const edgePos=new Float32Array(EP*2*3);
+  const ePos=new Float32Array(EP*2*3);
   edgeGeo=new THREE.BufferGeometry();
-  edgeGeo.setAttribute("position",new THREE.BufferAttribute(edgePos,3));
-  edgeMat=new THREE.LineBasicMaterial({color:0x3A3A3A,transparent:true,opacity:0.22});
+  edgeGeo.setAttribute("position",new THREE.BufferAttribute(ePos,3));
+  // Energy threads: cool blue, additive blending so they glow on dark
+  edgeMat=new THREE.LineBasicMaterial({
+    color:0x4DABF7, transparent:true, opacity:0.22,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  });
   edgeLines=new THREE.LineSegments(edgeGeo,edgeMat);
   edgeLines.frustumCulled=false;
   scene.add(edgeLines);
 
-  const hlPos=new Float32Array(EP*2*3);
+  const hlPos2=new Float32Array(EP*2*3);
   hlEdgeGeo=new THREE.BufferGeometry();
-  hlEdgeGeo.setAttribute("position",new THREE.BufferAttribute(hlPos,3));
-  hlEdgeMat=new THREE.LineBasicMaterial({color:0x0070F3,transparent:true,opacity:0.9});
+  hlEdgeGeo.setAttribute("position",new THREE.BufferAttribute(hlPos2,3));
+  hlEdgeMat=new THREE.LineBasicMaterial({
+    color:0xFFD43B, transparent:true, opacity:0.90,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  });
   hlEdgeLines=new THREE.LineSegments(hlEdgeGeo,hlEdgeMat);
   hlEdgeLines.frustumCulled=false;
   scene.add(hlEdgeLines);
@@ -864,75 +937,59 @@ function loadGraph(graph, mode, meta){
   simAdj=new Array(N).fill(null).map(()=>new Set());
   simEdges.forEach(({a,b})=>{ simAdj[a].add(b); simAdj[b].add(a); });
 
-  // Sim
+  // Settle sim
   simTick=0; heat=1.0;
   if(PRM){ for(let t=0;t<SETTLE;t++) simStep(); }
 
-  // Camera
   if(!sceneInitialized){
     sceneInitialized=true;
     resizeRenderer();
-    recenterCamera();
-    deriveCameraOrbit();
-  }else{
-    recenterCamera();
-    deriveCameraOrbit();
   }
+  recenterCamera();
+  deriveCameraOrbit();
+  updateMetrics(graph.nodes,simEdges,callMeta);
 
-  // Update metrics overlay
-  updateMetrics(graph.nodes, simEdges, callMeta);
-
-  // Start/continue render loop
-  if(!frameId&&!PRM){
-    frameId=requestAnimationFrame(renderLoop);
-  }
+  if(!frameId&&!PRM){ frameId=requestAnimationFrame(renderLoop); }
   if(PRM){
-    updateInstancedMesh(-1);
-    updateDecorations();
-    updateEdgePositions(-1);
+    refreshScene(-1);
     renderer.render(scene,camera);
   }
 }
 
-/* ── Force sim ────────────────────────────────────────────────────────── */
-const REPULSION_K=280, SPRING_REST=30, SPRING_K=0.06, GRAVITY=0.004, DAMPING=0.86;
-
+/* ── Force simulation ─────────────────────────────────────────────────── */
+const REPULSION_K=320, SPRING_REST=28, SPRING_K=0.055, GRAVITY=0.004, DAMPING=0.86;
 function simStep(){
   const alpha=heat*Math.max(0,(SETTLE-simTick)/SETTLE);
   if(alpha<0.001&&simTick>=SETTLE){ heat=0; return; }
-
   for(let i=0;i<N;i++){
     if(pinned[i]) continue;
     for(let j=i+1;j<N;j++){
       const dx=px[j]-px[i],dy=py[j]-py[i],dz=pz[j]-pz[i];
-      const d2=dx*dx+dy*dy+dz*dz;
-      const d=Math.sqrt(d2)||0.001;
-      const minD=radii[i]+radii[j]+6;
-      if(d<minD*3){
+      const d2=dx*dx+dy*dy+dz*dz,d=Math.sqrt(d2)||0.001;
+      const minD=radii[i]+radii[j]+5;
+      if(d<minD*3.2){
         const f=(REPULSION_K/(d2+0.1))*alpha*0.5;
         const fx=dx/d*f,fy=dy/d*f,fz=dz/d*f;
-        vx[i]-=fx; vy[i]-=fy; vz[i]-=fz;
-        if(!pinned[j]){ vx[j]+=fx; vy[j]+=fy; vz[j]+=fz; }
+        vx[i]-=fx;vy[i]-=fy;vz[i]-=fz;
+        if(!pinned[j]){vx[j]+=fx;vy[j]+=fy;vz[j]+=fz;}
       }
     }
   }
-
   simEdges.forEach(({a,b})=>{
     const dx=px[b]-px[a],dy=py[b]-py[a],dz=pz[b]-pz[a];
     const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.001;
     const f=(d-SPRING_REST)/d*SPRING_K*alpha;
     const fx=dx*f,fy=dy*f,fz=dz*f;
-    if(!pinned[a]){ vx[a]+=fx; vy[a]+=fy; vz[a]+=fz; }
-    if(!pinned[b]){ vx[b]-=fx; vy[b]-=fy; vz[b]-=fz; }
+    if(!pinned[a]){vx[a]+=fx;vy[a]+=fy;vz[a]+=fz;}
+    if(!pinned[b]){vx[b]-=fx;vy[b]-=fy;vz[b]-=fz;}
   });
-
   for(let i=0;i<N;i++){
     if(pinned[i]) continue;
     vx[i]+=-px[i]*GRAVITY*alpha;
     vy[i]+=-py[i]*GRAVITY*alpha;
     vz[i]+=-pz[i]*GRAVITY*alpha;
-    vx[i]*=DAMPING; vy[i]*=DAMPING; vz[i]*=DAMPING;
-    px[i]+=vx[i]; py[i]+=vy[i]; pz[i]+=vz[i];
+    vx[i]*=DAMPING;vy[i]*=DAMPING;vz[i]*=DAMPING;
+    px[i]+=vx[i];py[i]+=vy[i];pz[i]+=vz[i];
   }
   simTick++;
 }
@@ -940,30 +997,29 @@ function simStep(){
 /* ── Renderer resize ──────────────────────────────────────────────────── */
 function resizeRenderer(){
   if(!renderer) return;
-  const w=wrap.clientWidth, h=wrap.clientHeight;
+  const w=wrap.clientWidth,h=wrap.clientHeight;
   renderer.setSize(w,h,false);
-  if(camera){ camera.aspect=w/h; camera.updateProjectionMatrix(); }
+  if(camera){camera.aspect=w/h;camera.updateProjectionMatrix();}
 }
 
 /* ── Camera helpers ───────────────────────────────────────────────────── */
 function recenterCamera(){
   if(!N) return;
   let cx=0,cy=0,cz=0;
-  for(let i=0;i<N;i++){ cx+=px[i];cy+=py[i];cz+=pz[i]; }
-  cx/=N; cy/=N; cz/=N;
+  for(let i=0;i<N;i++){cx+=px[i];cy+=py[i];cz+=pz[i];}
+  cx/=N;cy/=N;cz/=N;
   let maxR=0;
   for(let i=0;i<N;i++){
     const dx=px[i]-cx,dy=py[i]-cy,dz=pz[i]-cz;
-    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i];
+    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i]*3.5;
     if(r>maxR) maxR=r;
   }
   const fovR=camera.fov*Math.PI/180;
-  const dist=(maxR/Math.tan(fovR/2))*1.25;
+  const dist=(maxR/Math.tan(fovR/2))*1.2;
   camera.position.set(cx,cy,cz+dist);
   camera.lookAt(cx,cy,cz);
   orbitTarget.set(cx,cy,cz);
 }
-
 function deriveCameraOrbit(){
   if(!camera) return;
   const d=camera.position.clone().sub(orbitTarget);
@@ -971,102 +1027,103 @@ function deriveCameraOrbit(){
   orbitTheta=Math.atan2(d.x,d.z);
   orbitPhi=Math.acos(Math.max(-1,Math.min(1,d.y/orbitRadius)));
 }
-
 function updateCameraFromOrbit(){
   if(!camera) return;
   const x=orbitTarget.x+orbitRadius*Math.sin(orbitPhi)*Math.sin(orbitTheta);
   const y=orbitTarget.y+orbitRadius*Math.cos(orbitPhi);
   const z=orbitTarget.z+orbitRadius*Math.sin(orbitPhi)*Math.cos(orbitTheta);
-  camera.position.set(x,y,z);
-  camera.lookAt(orbitTarget);
+  camera.position.set(x,y,z);camera.lookAt(orbitTarget);
 }
 
-/* ── Node / edge update ───────────────────────────────────────────────── */
+/* ── Scene refresh (node/edge/halo positions + colors) ───────────────── */
 const dummy=new THREE.Object3D();
-
-function updateInstancedMesh(hovIdx){
+function refreshScene(hovIdx){
   if(!instancedMesh||!N) return;
   const hl=hlFilter.trim().toLowerCase();
+
   for(let i=0;i<N;i++){
     dummy.position.set(px[i],py[i],pz[i]);
     dummy.scale.setScalar(radii[i]);
     dummy.updateMatrix();
     instancedMesh.setMatrixAt(i,dummy.matrix);
 
-    let col;
+    // Core color
     const nodeLabel=(simNodes[i].label||simNodes[i].id||"").toLowerCase();
     const hlMatch=!hl||nodeLabel.includes(hl);
-
+    let col;
     if(!hlMatch){
-      // Dimmed by filter
-      col=COLOR_DIM.clone();
+      col=C_DIM_HL.clone();
     } else if(hovIdx>=0){
       const isHov=(i===hovIdx);
       const isAdj=simAdj[hovIdx]&&simAdj[hovIdx].has(i);
-      const dimmed=!isHov&&!isAdj;
-      col=isHov ? COLOR_HOT.clone() : dimmed ? nodeColors[i].clone().multiplyScalar(0.18) : nodeColors[i];
-    }else{
-      col=nodeColors[i];
+      if(isHov) col=C_WHITE.clone();
+      else if(isAdj) col=lerpC(nodeColors[i],C_WHITE,0.55);
+      else col=nodeColors[i].clone().multiplyScalar(0.14);
+    } else {
+      // Normal: heat-ramp brightened toward white
+      col=lerpC(nodeColors[i],C_WHITE,0.35);
     }
     instancedMesh.setColorAt(i,col);
+
+    // Glow sprite position + visibility
+    if(glowSprites[i]){
+      glowSprites[i].position.set(px[i],py[i],pz[i]);
+      // Dim glow when filtered out or when distant nodes are hovered
+      const glowVis=hlMatch&&(hovIdx<0||i===hovIdx||simAdj[hovIdx]&&simAdj[hovIdx].has(i));
+      glowSprites[i].material.opacity = glowVis
+        ? (nodeHot[i]?0.82:0.62)
+        : (hlMatch ? 0.10 : 0.04);
+    }
   }
   instancedMesh.instanceMatrix.needsUpdate=true;
   instancedMesh.instanceColor.needsUpdate=true;
-}
 
-function updateDecorations(){
-  haloMeshes.forEach(({mesh,idx})=>{
-    mesh.position.set(px[idx],py[idx],pz[idx]);
-  });
+  // Labels
   nodeLabelSprites.forEach(entry=>{
     if(!entry) return;
-    const {sprite,idx}=entry;
-    sprite.position.set(px[idx],py[idx]+radii[idx]+2.5,pz[idx]);
+    const{sprite,idx}=entry;
+    sprite.position.set(px[idx],py[idx]+radii[idx]+3.0,pz[idx]);
     sprite.visible=true;
   });
-}
 
-function updateEdgePositions(hovIdx){
+  // Edges
   if(!edgeGeo||!hlEdgeGeo||!simEdges.length) return;
-  const hl=hlFilter.trim().toLowerCase();
   const mainPos=edgeGeo.attributes.position.array;
-  const hlPos=hlEdgeGeo.attributes.position.array;
+  const hlPosArr=hlEdgeGeo.attributes.position.array;
   let base=0,hlBase=0,hlCount=0;
+  const hlActive=hl!=="";
 
   simEdges.forEach(({a,b})=>{
     const isHov=hovIdx>=0&&(a===hovIdx||b===hovIdx);
-    // Also dim edges when filter active and neither endpoint matches
-    const aLabel=(simNodes[a]&&(simNodes[a].label||simNodes[a].id)||"").toLowerCase();
-    const bLabel=(simNodes[b]&&(simNodes[b].label||simNodes[b].id)||"").toLowerCase();
-    const hlActive=hl!=="";
-    const edgeMatch=!hlActive||(aLabel.includes(hl)||bLabel.includes(hl));
-
+    const aLbl=(simNodes[a]&&(simNodes[a].label||simNodes[a].id)||"").toLowerCase();
+    const bLbl=(simNodes[b]&&(simNodes[b].label||simNodes[b].id)||"").toLowerCase();
+    const edgeMatch=!hlActive||(aLbl.includes(hl)||bLbl.includes(hl));
     mainPos[base  ]=px[a];mainPos[base+1]=py[a];mainPos[base+2]=pz[a];
     mainPos[base+3]=px[b];mainPos[base+4]=py[b];mainPos[base+5]=pz[b];
     base+=6;
-
     if(isHov&&edgeMatch){
-      hlPos[hlBase  ]=px[a];hlPos[hlBase+1]=py[a];hlPos[hlBase+2]=pz[a];
-      hlPos[hlBase+3]=px[b];hlPos[hlBase+4]=py[b];hlPos[hlBase+5]=pz[b];
-      hlBase+=6; hlCount++;
+      hlPosArr[hlBase  ]=px[a];hlPosArr[hlBase+1]=py[a];hlPosArr[hlBase+2]=pz[a];
+      hlPosArr[hlBase+3]=px[b];hlPosArr[hlBase+4]=py[b];hlPosArr[hlBase+5]=pz[b];
+      hlBase+=6;hlCount++;
     }
   });
-
   edgeGeo.attributes.position.needsUpdate=true;
   edgeGeo.setDrawRange(0,simEdges.length*2);
   hlEdgeGeo.attributes.position.needsUpdate=true;
   hlEdgeGeo.setDrawRange(0,hlCount*2);
+
+  // Edge opacity: hover dims base, highlights accent
+  if(edgeMat) edgeMat.opacity=hovIdx>=0?0.09:0.22;
 }
 
-/* ── Metrics overlay update ───────────────────────────────────────────── */
-function updateMetrics(nodes, edges, meta){
-  if(!nodes||!nodes.length){ metricsEl.textContent=""; return; }
-  const hotNode=nodes.reduce((best,n)=>(n.weight||0)>(best.weight||0)?n:best, nodes[0]);
-  const hotLabel=hotNode.label||(hotNode.id.split("/").pop())||hotNode.id;
-  let txt=`${nodes.length} nodes · ${edges.length} edges   hot: ${hotLabel}`;
+/* ── Metrics overlay ──────────────────────────────────────────────────── */
+function updateMetrics(nodes,edges,meta){
+  if(!nodes||!nodes.length){metricsEl.textContent="";return;}
+  const hotNode=nodes.reduce((b,n)=>(n.weight||0)>(b.weight||0)?n:b,nodes[0]);
+  const hotLbl=hotNode.label||(hotNode.id.split("/").pop())||hotNode.id;
+  let txt=`${nodes.length} nodes · ${edges.length} edges   hot: ${hotLbl}`;
   if(meta&&currentMode==="call"){
-    const fl=meta.focusLabel||meta.focus||"";
-    txt+=`\nfocus: ${fl} · ${meta.direction} · depth ${meta.depth}`;
+    txt+=`\nfocus: ${meta.focusLabel||meta.focus||""} · ${meta.direction} · depth ${meta.depth}`;
     if(meta.truncated) txt+=" · truncated";
   }
   metricsEl.textContent=txt;
@@ -1078,11 +1135,8 @@ const mouse2D=new THREE.Vector2();
 let hoveredIdx=-1;
 
 function getXY(e){
-  const rect=renderer.domElement.getBoundingClientRect();
-  return{
-    x:((e.clientX-rect.left)/rect.width)*2-1,
-    y:-((e.clientY-rect.top)/rect.height)*2+1
-  };
+  const r=renderer.domElement.getBoundingClientRect();
+  return{x:((e.clientX-r.left)/r.width)*2-1, y:-((e.clientY-r.top)/r.height)*2+1};
 }
 function pickNode(e){
   if(!instancedMesh||!camera) return -1;
@@ -1092,7 +1146,6 @@ function pickNode(e){
   const hits=raycaster.intersectObject(instancedMesh);
   return hits.length?hits[0].instanceId:-1;
 }
-
 function nodeTooltip(idx){
   if(idx<0||!simNodes[idx]) return "";
   const n=simNodes[idx];
@@ -1105,10 +1158,8 @@ function nodeTooltip(idx){
 
 /* ── Drag / orbit controls ────────────────────────────────────────────── */
 let isDragging=false,isNodeDrag=false,draggedIdx=-1;
-let dragStartX=0,dragStartY=0;
-let lastTheta=0,lastPhi=0;
-const dragPlane=new THREE.Plane();
-const dragTarget=new THREE.Vector3();
+let dragStartX=0,dragStartY=0,lastTheta=0,lastPhi=0;
+const dragPlane=new THREE.Plane(),dragTarget3=new THREE.Vector3();
 
 function attachControls(){
   const el=renderer.domElement;
@@ -1119,45 +1170,35 @@ function attachControls(){
   el.addEventListener("dblclick",onDbl);
   el.addEventListener("wheel",onWheel,{passive:false});
 }
-
 function onMD(e){
   if(!camera) return;
   const idx=pickNode(e);
   isDragging=true;
-  dragStartX=e.clientX; dragStartY=e.clientY;
-  lastTheta=orbitTheta; lastPhi=orbitPhi;
+  dragStartX=e.clientX;dragStartY=e.clientY;
+  lastTheta=orbitTheta;lastPhi=orbitPhi;
   autoRotating=false;
   if(idx>=0){
-    isNodeDrag=true; draggedIdx=idx;
-    pinned[idx]=1; heat=0.4; simTick=0;
+    isNodeDrag=true;draggedIdx=idx;pinned[idx]=1;heat=0.4;simTick=0;
     renderer.domElement.style.cursor="grabbing";
-    const camDir=new THREE.Vector3();
-    camera.getWorldDirection(camDir);
-    dragPlane.setFromNormalAndCoplanarPoint(camDir,new THREE.Vector3(px[idx],py[idx],pz[idx]));
+    const cd=new THREE.Vector3();camera.getWorldDirection(cd);
+    dragPlane.setFromNormalAndCoplanarPoint(cd,new THREE.Vector3(px[idx],py[idx],pz[idx]));
   }else{
-    isNodeDrag=false;
-    renderer.domElement.style.cursor="grabbing";
+    isNodeDrag=false;renderer.domElement.style.cursor="grabbing";
   }
 }
-
 function onMM(e){
   if(!camera) return;
   if(isDragging){
     if(isNodeDrag&&draggedIdx>=0){
-      const{x,y}=getXY(e);
-      mouse2D.set(x,y);
+      const{x,y}=getXY(e);mouse2D.set(x,y);
       raycaster.setFromCamera(mouse2D,camera);
-      if(raycaster.ray.intersectPlane(dragPlane,dragTarget)){
-        px[draggedIdx]=dragTarget.x;
-        py[draggedIdx]=dragTarget.y;
-        pz[draggedIdx]=dragTarget.z;
-        heat=0.3; simTick=0;
+      if(raycaster.ray.intersectPlane(dragPlane,dragTarget3)){
+        px[draggedIdx]=dragTarget3.x;py[draggedIdx]=dragTarget3.y;pz[draggedIdx]=dragTarget3.z;
+        heat=0.3;simTick=0;
       }
     }else{
-      const dx=(e.clientX-dragStartX)*0.005;
-      const dy=(e.clientY-dragStartY)*0.005;
-      orbitTheta=lastTheta-dx;
-      orbitPhi=Math.max(0.1,Math.min(Math.PI-0.1,lastPhi+dy));
+      orbitTheta=lastTheta-(e.clientX-dragStartX)*0.005;
+      orbitPhi=Math.max(0.1,Math.min(Math.PI-0.1,lastPhi+(e.clientY-dragStartY)*0.005));
       updateCameraFromOrbit();
     }
     return;
@@ -1165,57 +1206,35 @@ function onMM(e){
   const idx=pickNode(e);
   if(idx!==hoveredIdx){
     hoveredIdx=idx;
-    if(idx>=0){
-      showTip(nodeTooltip(idx),e.clientX,e.clientY);
-      renderer.domElement.style.cursor="pointer";
-    }else{
-      hideTip();
-      renderer.domElement.style.cursor="grab";
-    }
-  }else if(idx>=0){
-    showTip(nodeTooltip(idx),e.clientX,e.clientY);
-  }
+    if(idx>=0){showTip(nodeTooltip(idx),e.clientX,e.clientY);renderer.domElement.style.cursor="pointer";}
+    else{hideTip();renderer.domElement.style.cursor="grab";}
+  }else if(idx>=0){showTip(nodeTooltip(idx),e.clientX,e.clientY);}
 }
-
 function onMU(){
-  isDragging=false; isNodeDrag=false; draggedIdx=-1;
+  isDragging=false;isNodeDrag=false;draggedIdx=-1;
   if(renderer) renderer.domElement.style.cursor="grab";
-  setTimeout(()=>{ autoRotating=!PRM; },1200);
+  setTimeout(()=>{autoRotating=!PRM;},1200);
 }
-
-function onML(){
-  if(!isDragging){ hideTip(); hoveredIdx=-1; }
-}
-
-function onDbl(e){
-  const idx=pickNode(e);
-  if(idx>=0){ pinned[idx]=0; heat=0.5; simTick=0; }
-}
-
+function onML(){ if(!isDragging){hideTip();hoveredIdx=-1;} }
+function onDbl(e){ const idx=pickNode(e); if(idx>=0){pinned[idx]=0;heat=0.5;simTick=0;} }
 function onWheel(e){
   e.preventDefault();
-  orbitRadius=Math.max(10,Math.min(300,orbitRadius+e.deltaY*0.15));
+  orbitRadius=Math.max(10,Math.min(400,orbitRadius+e.deltaY*0.15));
   updateCameraFromOrbit();
   autoRotating=false;
-  setTimeout(()=>{ autoRotating=!PRM; },1500);
+  setTimeout(()=>{autoRotating=!PRM;},1500);
 }
 
-/* ── Main render loop ─────────────────────────────────────────────────── */
+/* ── Render loop ──────────────────────────────────────────────────────── */
 function renderLoop(){
   frameId=requestAnimationFrame(renderLoop);
   if(!scene||!camera||!renderer) return;
-
   if(!PRM){
     if(heat>0) simStep();
     if(autoRotating) orbitTheta+=AUTO_ROT;
     updateCameraFromOrbit();
   }
-
-  updateInstancedMesh(hoveredIdx);
-  updateDecorations();
-  updateEdgePositions(hoveredIdx);
-  edgeMat&&(edgeMat.opacity=hoveredIdx>=0?0.10:0.22);
-
+  refreshScene(hoveredIdx);
   renderer.render(scene,camera);
 }
 
@@ -1223,9 +1242,8 @@ function renderLoop(){
 roObserver=new ResizeObserver(()=>resizeRenderer());
 roObserver.observe(wrap);
 
-/* ── Mode toggle UI ───────────────────────────────────────────────────── */
-let includeGraphData=null; // cached from /data
-
+/* ── Mode toggle ──────────────────────────────────────────────────────── */
+let includeGraphData=null;
 function switchMode(mode){
   if(mode===currentMode&&instancedMesh) return;
   btnInclude.classList.toggle("active",mode==="include");
@@ -1234,23 +1252,15 @@ function switchMode(mode){
   btnCall.setAttribute("aria-pressed",String(mode==="call"));
   cgRow.classList.toggle("visible",mode==="call");
   panelTitle.textContent=mode==="include"?"Include Graph · 3D":"Call Graph · 3D";
-
   if(mode==="include"){
-    currentMode="include";
-    callMeta=null;
-    cgErrEl.classList.remove("visible");
-    cgStatusEl.textContent="";
-    if(includeGraphData){
-      loadGraph(includeGraphData,"include",null);
-    }else{
-      emptyMsg.style.display="flex";
-    }
+    currentMode="include";callMeta=null;
+    cgErrEl.classList.remove("visible");cgStatusEl.textContent="";
+    if(includeGraphData) loadGraph(includeGraphData,"include",null);
+    else emptyMsg.style.display="flex";
   }else{
     currentMode="call";
-    // Don't tear down — wait for a trace
   }
 }
-
 btnInclude.addEventListener("click",()=>switchMode("include"));
 btnCall.addEventListener("click",()=>switchMode("call"));
 
@@ -1258,91 +1268,58 @@ btnCall.addEventListener("click",()=>switchMode("call"));
 function traceCallGraph(){
   const sym=cgSymbolEl.value.trim();
   if(!sym) return;
-  const dir=cgDirEl.value;
-  const depth=cgDepthEl.value;
-
-  cgTraceBtn.disabled=true;
-  cgStatusEl.textContent="tracing…";
+  const dir=cgDirEl.value,depth=cgDepthEl.value;
+  cgTraceBtn.disabled=true;cgStatusEl.textContent="tracing…";
   cgErrEl.classList.remove("visible");
-
   fetch("/callgraph?symbol="+encodeURIComponent(sym)+"&direction="+encodeURIComponent(dir)+"&depth="+encodeURIComponent(depth))
-    .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(r=>{if(!r.ok) throw new Error("HTTP "+r.status);return r.json();})
     .then(data=>{
-      cgStatusEl.textContent="";
-      cgTraceBtn.disabled=false;
-
+      cgStatusEl.textContent="";cgTraceBtn.disabled=false;
       if(data.error||!data.nodes||!data.nodes.length){
-        const msg=data.error||`No call hierarchy for "${sym}" — try a function/method name, or warm up the backend first.`;
-        cgErrEl.textContent=msg;
+        cgErrEl.textContent=data.error||`No call hierarchy for "${sym}" — try a function/method name, or warm up the backend first.`;
         cgErrEl.classList.add("visible");
         updateMetrics(simNodes,simEdges,callMeta);
         return;
       }
-
-      const focusNode=data.nodes.find(n=>n.focus===true);
-      const focusLabel=focusNode?(focusNode.label||focusNode.id):sym;
-      const meta={
+      const fn=data.nodes.find(n=>n.focus===true);
+      loadGraph(data,"call",{
         focus:data.focus||sym,
-        focusLabel,
+        focusLabel:fn?(fn.label||fn.id):sym,
         direction:data.direction||dir,
         depth:data.depth||depth,
         truncated:!!data.truncated
-      };
-      loadGraph(data,"call",meta);
+      });
     })
     .catch(err=>{
-      cgStatusEl.textContent="";
-      cgTraceBtn.disabled=false;
-      cgErrEl.textContent=`Error: ${err.message}`;
-      cgErrEl.classList.add("visible");
+      cgStatusEl.textContent="";cgTraceBtn.disabled=false;
+      cgErrEl.textContent=`Error: ${err.message}`;cgErrEl.classList.add("visible");
     });
 }
-
 cgTraceBtn.addEventListener("click",traceCallGraph);
-cgSymbolEl.addEventListener("keydown",e=>{ if(e.key==="Enter") traceCallGraph(); });
+cgSymbolEl.addEventListener("keydown",e=>{if(e.key==="Enter") traceCallGraph();});
 
 /* ── Highlight filter ─────────────────────────────────────────────────── */
 hlFilterEl.addEventListener("input",()=>{
   hlFilter=hlFilterEl.value;
-  // If reduced-motion, force a re-render
-  if(PRM&&renderer&&scene&&camera){
-    updateInstancedMesh(hoveredIdx);
-    updateDecorations();
-    updateEdgePositions(hoveredIdx);
-    renderer.render(scene,camera);
-  }
+  if(PRM&&renderer&&scene&&camera){refreshScene(hoveredIdx);renderer.render(scene,camera);}
 });
 
-/* ── Attach controls after renderer exists ────────────────────────────── */
-// Controls are attached once on first graph load via ensureRenderer + attachControls
+/* ── Boot ─────────────────────────────────────────────────────────────── */
 let controlsAttached=false;
 function maybeAttachControls(){
   if(controlsAttached||!renderer) return;
-  attachControls();
-  controlsAttached=true;
+  attachControls();controlsAttached=true;
 }
-
-/* ── Data handshake with 2D script ───────────────────────────────────── */
 function handleIncludeData(g){
-  includeGraphData=g;
-  maybeAttachControls();
+  includeGraphData=g;maybeAttachControls();
   if(currentMode==="include"){
-    if(!g||!g.nodes||!g.nodes.length){
-      emptyMsg.style.display="flex";
-    }else{
-      loadGraph(g,"include",null);
-    }
+    if(!g||!g.nodes||!g.nodes.length) emptyMsg.style.display="flex";
+    else loadGraph(g,"include",null);
   }
 }
-
-// Wire up: ensureRenderer is called inside loadGraph; controls need the element to exist
-// We call ensureRenderer early so the canvas is in the DOM before first data arrives
-if(ensureRenderer()) attachControls();
-controlsAttached=true;
-
+if(ensureRenderer()){attachControls();controlsAttached=true;}
 if(window.__dashPending!==null){
-  handleIncludeData(window.__dashPending);
-  window.__dashPending=null;
+  handleIncludeData(window.__dashPending);window.__dashPending=null;
 }else{
   window.__dashDispatch=handleIncludeData;
 }
