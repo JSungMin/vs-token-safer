@@ -14,7 +14,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { buildVizData, renderDashboardHtml } from "./viz.js";
-import { buildCallGraph } from "./core.js";
+import { buildCallGraph, listSymbols } from "./core.js";
 
 const LOCALHOST = "127.0.0.1"; // never 0.0.0.0 — local-only by construction
 const VENDOR_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "vendor");
@@ -41,6 +41,13 @@ export function createServer(root) {
         const a = { projectPath: q.get("projectPath") || root, symbol: q.get("symbol") || undefined, direction: q.get("direction") || "both", depth: q.get("depth") || undefined, backend: q.get("backend") || undefined };
         if (q.get("path")) { a.path = q.get("path"); a.line = q.get("line"); a.character = q.get("character"); }
         let data; try { data = await buildCallGraph(a); } catch (e) { data = { error: e && e.message ? e.message : String(e), nodes: [], links: [] }; }
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify(data));
+      } else if (url === "/symbols") {
+        // Symbol-name autocomplete for the call-graph search box. Query: ?q=<prefix>&backend=.
+        const q = new URL(req.url, "http://127.0.0.1").searchParams;
+        const a = { projectPath: q.get("projectPath") || root, q: q.get("q") || "", backend: q.get("backend") || undefined };
+        let data; try { data = await listSymbols(a); } catch (e) { data = { error: e && e.message ? e.message : String(e), symbols: [] }; }
         res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         res.end(JSON.stringify(data));
       } else if (url.startsWith("/vendor/")) {

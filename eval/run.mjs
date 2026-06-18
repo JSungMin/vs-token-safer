@@ -1421,7 +1421,13 @@ const callGraphOk =
   !!cgFocus && cgFocus.label === "Target" &&
   cg.links.length >= 4 &&
   cg.nodes.every((n) => n.file && n.line && n.id) &&                 // richer than include graph: file:line per node
-  cg.links.every((l) => cg.nodes.some((n) => n.id === l.source) && cg.nodes.some((n) => n.id === l.target)); // links resolve
+  cg.links.every((l) => cg.nodes.some((n) => n.id === l.source) && cg.nodes.some((n) => n.id === l.target)) && // links resolve
+  // CALL COUNTS: every edge carries a call-site count; Target is called by 2 (CallerA+CallerB) and calls 1 (Callee);
+  // totalCallSites sums the edges → "how much is called" is quantified, not just structural.
+  cg.links.every((l) => l.count >= 1) &&
+  (() => { const t = cg.nodes.find((n) => n.label === "Target"); return t && t.calledBy === 2 && t.calls === 1 && t.weight === 3; })() &&
+  cg.totalCallSites >= 4 &&
+  cg.nodes.every((n) => typeof n.repo === "string");              // repo grouping: each node tagged with its repository
 const cgCallers = await buildCallGraph({ symbol: "Target", direction: "callers", projectPath: process.cwd(), backend: "clangd" });
 const cgCallersOk = !cgCallers.error && cgCallers.nodes.some((n) => n.label === "CallerA") && !cgCallers.nodes.some((n) => n.label === "Callee"); // callers-only excludes the callee
 // /callgraph route
@@ -1430,8 +1436,16 @@ const cgSrv = await ssCg(process.cwd(), 0);
 const cgHttp = await new Promise((res, rej) => { http.get({ host: "127.0.0.1", port: cgSrv.port, path: "/callgraph?symbol=Target&direction=callers&backend=clangd" }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b })); }).on("error", rej); });
 let cgParsed = {}; try { cgParsed = JSON.parse(cgHttp.body); } catch { /* leave empty */ }
 const cgRouteOk = cgHttp.status === 200 && Array.isArray(cgParsed.nodes) && cgParsed.nodes.some((n) => n.label === "CallerA");
+// symbol-name autocomplete (call-graph search box): listSymbols + the /symbols route. Mock workspace/symbol
+// "Spawn" → SpawnHandler (class) + SpawnUtil (func) — both callable kinds, returned as {name,kind,file}.
+const { listSymbols } = await import("../server/core.js");
+const ls = await listSymbols({ q: "Spawn", projectPath: process.cwd(), backend: "clangd" });
+const lsOk = !ls.error && ls.symbols.length >= 2 && ls.symbols.some((x) => x.name === "SpawnHandler" && x.file) && ls.symbols.some((x) => x.name === "SpawnUtil");
+const symHttp = await new Promise((res, rej) => { http.get({ host: "127.0.0.1", port: cgSrv.port, path: "/symbols?q=Spawn&backend=clangd" }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b })); }).on("error", rej); });
+let symParsed = {}; try { symParsed = JSON.parse(symHttp.body); } catch { /* leave empty */ }
+const symRouteOk = symHttp.status === 200 && Array.isArray(symParsed.symbols) && symParsed.symbols.some((x) => x.name === "SpawnHandler");
 await new Promise((r) => cgSrv.server.close(r));
-const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk;
+const callGraphAllOk = callGraphOk && cgCallersOk && cgRouteOk && lsOk && symRouteOk;
 // guards 66/68/70/73 spawn backends AFTER the teardown above — dispose again so the process exits (no hang).
 await disposeClients();
 
@@ -1501,7 +1515,8 @@ const vizDataOk =
   !!gdSrc && gdSrc.saved === 50000 && (vd.savings.sources || []).some((x) => x.key === "vs-token-safer" && x.saved === 90000) && // per-source split
   vd.savings.tools.length === 2 && vd.savings.days.length === 30 &&
   vd.census.clangd === 3 &&                                  // a.cpp + b.cpp + hub.h all clangd
-  !!hub && hub.weight === 2 && vd.graph.links.length === 2;  // hub.h included by both → fan-in 2
+  !!hub && hub.weight === 2 && vd.graph.links.length === 2 &&  // hub.h included by both → fan-in 2
+  vd.graph.nodes.every((n) => typeof n.repo === "string");    // each node tagged with its repository (repo grouping)
 const htmlSelfContainedOk =
   /<!doctype html>/i.test(html) && /fetch\("\/data"\)/.test(html) &&
   !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html) && // no external script / CDN
@@ -1602,7 +1617,7 @@ const rows = [
   ["call hierarchy folded into find_references (direction=callers/callees, depth-bounded)", traceOk, "true", traceOk],
   ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],
   ["dashboard: 3D viz + vendored Three.js route + combined gamedev savings + 127.0.0.1", dashboardOk, "true", dashboardOk],
-  ["on-demand call graph: buildCallGraph (callHierarchy → nodes/links) + /callgraph route", callGraphAllOk, "true", callGraphAllOk],
+  ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

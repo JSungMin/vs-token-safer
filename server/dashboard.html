@@ -115,8 +115,8 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 .hl-input::placeholder{color:var(--faint)}
 .hl-input:focus{border-color:var(--accent)}
 
-/* Graph viewport */
-.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:#08080A;height:480px}
+/* Graph viewport — radial gradient bg for depth */
+.graph-wrap{position:relative;border-radius:6px;overflow:hidden;background:radial-gradient(ellipse at 50% 45%,#0E1525 0%,#05070F 65%,#020305 100%);height:480px}
 .graph-wrap canvas{display:block;width:100%;height:100%;cursor:grab;border-radius:6px}
 .graph-wrap canvas:active{cursor:grabbing}
 
@@ -128,11 +128,90 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 .graph-cg-err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--faint);font-size:12px;font-family:var(--mono);background:rgba(8,8,10,0.80);border-radius:6px;text-align:center;padding:20px;z-index:20}
 .graph-cg-err.visible{display:flex}
 
+/* Repo color legend overlay — top-right, repo mode only */
+.graph-repo-legend{
+  display:none;position:absolute;top:8px;right:10px;
+  font-family:var(--mono);font-size:9px;color:var(--faint);
+  line-height:1.8;pointer-events:none;z-index:10;
+  text-align:right;text-shadow:0 1px 3px #000;
+}
+.graph-repo-legend.visible{display:block}
+.repo-legend-row{display:flex;align-items:center;gap:5px;justify-content:flex-end}
+.repo-legend-swatch{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+
+/* Drill-down breadcrumb */
+.graph-drill{position:absolute;top:8px;left:10px;font-family:var(--mono);font-size:10px;color:var(--faint);pointer-events:none;z-index:10;line-height:1.6;text-shadow:0 1px 3px #000}
+.graph-drill-back{pointer-events:auto;cursor:pointer;color:var(--accent-light);text-decoration:none;background:none;border:none;font-family:inherit;font-size:inherit;padding:0}
+.graph-drill-back:hover{color:var(--ink)}
+
+/* Symbol autocomplete custom dropdown */
+.sym-wrap{position:relative;display:inline-block}
+.sym-dropdown{
+  display:none;position:absolute;top:calc(100% + 3px);left:0;
+  min-width:280px;max-width:420px;max-height:220px;overflow-y:auto;
+  background:var(--panel);border:1px solid var(--border);border-radius:6px;
+  z-index:500;box-shadow:0 8px 24px rgba(0,0,0,0.6);
+  font-family:var(--mono);font-size:11px;
+}
+.sym-dropdown.open{display:block}
+.sym-item{
+  display:flex;align-items:baseline;gap:6px;
+  padding:5px 10px;cursor:pointer;line-height:1.4;
+  border-bottom:1px solid #1A1A1A;white-space:nowrap;overflow:hidden;
+}
+.sym-item:last-child{border-bottom:none}
+.sym-item:hover,.sym-item.active{background:var(--panel-hover)}
+.sym-item-name{color:var(--ink);flex-shrink:0}
+.sym-item-meta{color:var(--faint);font-size:10px;overflow:hidden;text-overflow:ellipsis}
+
 /* Tooltip */
 .tooltip{position:fixed;background:#1F1F1F;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-family:var(--mono);font-size:11px;color:var(--ink);pointer-events:none;opacity:0;transition:opacity .1s;z-index:999;white-space:nowrap}
 
 /* Empty state (2D panels) */
 .empty{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:13px;min-height:120px;font-family:var(--sans)}
+
+/* Focus/expand button */
+.graph-focus-btn{font-family:var(--mono);font-size:13px;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--dim);padding:2px 7px;cursor:pointer;line-height:1.4;transition:background .1s,color .1s,border-color .1s;flex-shrink:0;margin-left:4px}
+.graph-focus-btn:hover{background:var(--inner);color:var(--ink);border-color:var(--dim)}
+.graph-focus-btn:focus-visible{outline:1px solid var(--accent);outline-offset:-2px}
+
+/* Focus mode overlay — graph panel covers full viewport */
+body.graph-focused .wrap{pointer-events:none;visibility:hidden}
+body.graph-focused .graph-overlay{
+  display:flex!important;flex-direction:column;
+  position:fixed;inset:0;z-index:200;
+  background:#020305;
+  padding:14px 18px 14px;
+  pointer-events:auto;visibility:visible;
+}
+body.graph-focused .graph-overlay .graph-panel{
+  background:transparent;border:none;padding:0;
+  display:flex;flex-direction:column;flex:1;min-height:0;
+}
+body.graph-focused .graph-overlay .graph-wrap{
+  flex:1;min-height:0;height:auto!important;
+}
+body.graph-focused .graph-overlay .graph-ctrl{margin-bottom:10px}
+/* Close hint in focus mode */
+body.graph-focused .graph-focus-btn::before{content:"✕  ";font-size:10px}
+
+/* Color mode toggle (groups / heat) */
+.color-seg{display:inline-flex;background:var(--inner);border:1px solid var(--border);border-radius:5px;overflow:hidden;flex-shrink:0}
+.color-seg-btn{font-family:var(--mono);font-size:10px;color:var(--dim);background:transparent;border:none;padding:3px 8px;cursor:pointer;line-height:1.4;transition:background .1s,color .1s;white-space:nowrap}
+.color-seg-btn:focus-visible{outline:1px solid var(--accent);outline-offset:-2px}
+.color-seg-btn.active{background:#2D2D2D;color:var(--ink)}
+.color-seg-btn:not(.active):hover{background:#222;color:var(--dim)}
+.color-seg-label{font-family:var(--mono);font-size:10px;color:var(--faint);white-space:nowrap;align-self:center}
+
+/* Keyboard hint overlay — bottom-right, visible only in focus mode */
+.graph-kb-hint{
+  display:none;
+  position:absolute;bottom:10px;right:12px;
+  font-family:var(--mono);font-size:9px;color:var(--faint);
+  line-height:1.7;text-align:right;pointer-events:none;z-index:10;
+  text-shadow:0 1px 3px #000;
+}
+body.graph-focused .graph-kb-hint{display:block}
 
 /* Focus ring */
 :focus-visible{outline:1px solid var(--accent);outline-offset:2px}
@@ -222,7 +301,10 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
     </div>
 
     <!-- Row 3: Graph panel — 3D WebGL centerpiece -->
-    <div class="col-8 panel graph-panel">
+    <!-- graph-overlay wrapper: in normal layout it's just the col-8 cell;
+         in focus mode (body.graph-focused) it becomes a fixed full-viewport overlay -->
+    <div class="col-8 graph-overlay" id="graphOverlay">
+    <div class="panel graph-panel">
       <div class="panel-title" id="graphPanelTitle">Include Graph · 3D</div>
 
       <!-- Control bar -->
@@ -235,7 +317,10 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 
         <!-- Call-graph controls (shown only in call mode) -->
         <div class="cg-row" id="cgRow" role="form" aria-label="Call graph query">
-          <input class="cg-input" id="cgSymbol" type="text" placeholder="function or class name" autocomplete="off" spellcheck="false" aria-label="Symbol name">
+          <div class="sym-wrap">
+            <input class="cg-input" id="cgSymbol" type="text" placeholder="symbol name…" autocomplete="off" spellcheck="false" aria-label="Symbol name" aria-autocomplete="list" aria-controls="symDropdown">
+            <div class="sym-dropdown" id="symDropdown" role="listbox" aria-label="Symbol suggestions"></div>
+          </div>
           <select class="cg-select" id="cgDir" aria-label="Direction">
             <option value="both">both</option>
             <option value="callers">callers</option>
@@ -256,6 +341,17 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
           <span class="hl-label">find</span>
           <input class="hl-input" id="hlFilter" type="text" placeholder="filter nodes…" autocomplete="off" spellcheck="false" aria-label="Highlight filter">
         </div>
+
+        <!-- Color mode toggle -->
+        <span class="color-seg-label">color</span>
+        <div class="color-seg" role="group" aria-label="Color mode">
+          <button class="color-seg-btn active" id="colorGroups" aria-pressed="true">groups</button>
+          <button class="color-seg-btn" id="colorRepo"   aria-pressed="false">repo</button>
+          <button class="color-seg-btn" id="colorHeat"   aria-pressed="false">heat</button>
+        </div>
+
+        <!-- Focus / expand toggle -->
+        <button class="graph-focus-btn" id="graphFocusBtn" aria-label="Expand graph to full screen" title="Expand graph (Esc to close)">⛶</button>
       </div>
 
       <!-- Graph viewport -->
@@ -266,8 +362,15 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
         <div class="graph-cg-err" id="cgErr"></div>
         <!-- Metrics overlay -->
         <div class="graph-metrics" id="graphMetrics"></div>
+        <!-- Repo legend (repo color mode only) -->
+        <div class="graph-repo-legend" id="repoLegend" aria-label="Repository color legend"></div>
+        <!-- Drill-down breadcrumb -->
+        <div class="graph-drill" id="graphDrill" aria-live="polite"></div>
+        <!-- Keyboard hint (focus mode only) -->
+        <div class="graph-kb-hint" aria-hidden="true">WASD / arrows orbit&nbsp;&nbsp;+- zoom&nbsp;&nbsp;R fit&nbsp;&nbsp;Esc exit</div>
       </div>
     </div>
+    </div><!-- /graph-overlay -->
 
   </div><!-- /grid -->
 </div><!-- /wrap -->
@@ -505,6 +608,7 @@ function renderTools(tools){
 /* ── Resize re-render (2D panels only) ───────────────────────────────── */
 let _resizeTimer=null;
 let _lastData=null;
+let _serverRoot=""; // project root from /data — forwarded to /symbols and /callgraph
 function onResize(){
   clearTimeout(_resizeTimer);
   _resizeTimer=setTimeout(function(){
@@ -531,6 +635,7 @@ fetch("/data")
   .then(data=>{
     _lastData=data;
     const root=data.root||"";
+    _serverRoot=root; // persist for /symbols and /callgraph requests
     document.getElementById("hdrRoot").textContent=root||"(no project root)";
 
     const s=data.savings||{};
@@ -580,32 +685,29 @@ fetch("/data")
 import * as THREE from "/vendor/three.module.min.js";
 
 /* ── DOM refs ─────────────────────────────────────────────────────────── */
-const wrap        = document.getElementById("graphWrap");
-const emptyMsg    = document.getElementById("graphEmpty");
-const cgErrEl     = document.getElementById("cgErr");
-const metricsEl   = document.getElementById("graphMetrics");
-const tip         = document.getElementById("tooltip");
-const panelTitle  = document.getElementById("graphPanelTitle");
-
-const btnInclude  = document.getElementById("modeInclude");
-const btnCall     = document.getElementById("modeCall");
-const cgRow       = document.getElementById("cgRow");
-const cgSymbolEl  = document.getElementById("cgSymbol");
-const cgDirEl     = document.getElementById("cgDir");
-const cgDepthEl   = document.getElementById("cgDepth");
-const cgTraceBtn  = document.getElementById("cgTrace");
-const cgStatusEl  = document.getElementById("cgStatus");
-const hlFilterEl  = document.getElementById("hlFilter");
+const wrap       = document.getElementById("graphWrap");
+const emptyMsg   = document.getElementById("graphEmpty");
+const cgErrEl    = document.getElementById("cgErr");
+const metricsEl  = document.getElementById("graphMetrics");
+const tip        = document.getElementById("tooltip");
+const panelTitle = document.getElementById("graphPanelTitle");
+const btnInclude = document.getElementById("modeInclude");
+const btnCall    = document.getElementById("modeCall");
+const cgRow      = document.getElementById("cgRow");
+const cgSymbolEl = document.getElementById("cgSymbol");
+const cgDirEl    = document.getElementById("cgDir");
+const cgDepthEl  = document.getElementById("cgDepth");
+const cgTraceBtn = document.getElementById("cgTrace");
+const cgStatusEl = document.getElementById("cgStatus");
+const hlFilterEl = document.getElementById("hlFilter");
 
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 const PRM = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-/* ── Shared utils ─────────────────────────────────────────────────────── */
+/* ── Utils ────────────────────────────────────────────────────────────── */
 function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
-
 function showTip(html,x,y){
-  tip.innerHTML=html;
-  tip.style.opacity="1";
+  tip.innerHTML=html; tip.style.opacity="1";
   const vw=window.innerWidth,vh=window.innerHeight;
   const tw=tip.offsetWidth+16,th=tip.offsetHeight+16;
   tip.style.left=clamp(x+12,4,vw-tw)+"px";
@@ -613,61 +715,234 @@ function showTip(html,x,y){
 }
 function hideTip(){ tip.style.opacity="0"; }
 
-/* ── Color helpers ────────────────────────────────────────────────────── */
-function hexToTHREE(h){ return new THREE.Color(parseInt(h.slice(1),16)); }
-function lerpTHREE(ca,cb,t){
-  return new THREE.Color(ca.r+(cb.r-ca.r)*t, ca.g+(cb.g-ca.g)*t, ca.b+(cb.b-ca.b)*t);
-}
-const COLOR_LOW = hexToTHREE("#3F3F46");
-const COLOR_MID = hexToTHREE("#0070F3");
-const COLOR_HOT = hexToTHREE("#FACC15");
-const COLOR_DIM = hexToTHREE("#1A1A1A");
+/* ── Energy color ramp ────────────────────────────────────────────────── */
+// cold=periwinkle (clearly visible on dark) → mid=sky blue → hot=amber gold
+// cold end MUST be luminous, never near-black
+function hexC(h){ return new THREE.Color(parseInt(h.slice(1),16)); }
+function lerpC(a,b,t){ return new THREE.Color(a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t); }
+
+const C_COLD   = hexC("#5C7CFA"); // periwinkle — luminous cold
+const C_MID    = hexC("#4DABF7"); // sky blue
+const C_HOT    = hexC("#FFD43B"); // amber gold
+const C_WHITE  = hexC("#FFFFFF");
+const C_DIM_HL = hexC("#1C1C28"); // near-invisible for filtered-out nodes
 
 function heatColor(norm){
-  if(norm<0.5) return lerpTHREE(COLOR_LOW,COLOR_MID,norm*2);
-  return lerpTHREE(COLOR_MID,COLOR_HOT,(norm-0.5)*2);
+  // Two-stop: cold→mid at 0..0.5, mid→hot at 0.5..1
+  if(norm<0.5) return lerpC(C_COLD,C_MID,norm*2);
+  return lerpC(C_MID,C_HOT,(norm-0.5)*2);
 }
 
-/* ── Sprite label factory ─────────────────────────────────────────────── */
-function makeLabel(text, accent){
+/* ── Color mode state ─────────────────────────────────────────────────── */
+// "groups" = union-find component hue (default); "repo" = per-repo hue; "heat" = weight ramp
+let colorMode="groups";
+
+/* ── Union-find (disjoint-set) ────────────────────────────────────────── */
+function makeUF(n){
+  const p=new Int32Array(n).map((_,i)=>i);
+  const r=new Uint8Array(n);
+  function find(x){ while(p[x]!==x){p[x]=p[p[x]];x=p[x];}return x; }
+  function union(a,b){ a=find(a);b=find(b);if(a===b)return;if(r[a]<r[b]){const t=a;a=b;b=t;}p[b]=a;if(r[a]===r[b])r[a]++; }
+  return{find,union};
+}
+
+// HSL → THREE.Color (all inputs 0-360 / 0-1 / 0-1)
+function hslC(h,s,l){
+  const c=new THREE.Color();c.setHSL(h/360,s,l);return c;
+}
+
+// Build per-node base colors from connected components (union-find).
+// Singleton nodes (isolated) get a neutral dim hue so they don't grab vivid slots.
+// Within a component, brightness is modulated by normalized weight (hot = lighter).
+function buildGroupColors(nodes, links, maxWeight){
+  const n=nodes.length;
+  const uf=makeUF(n);
+  const idToIdx=new Map(nodes.map((nd,i)=>[nd.id,i]));
+  (links||[]).forEach(l=>{
+    const a=idToIdx.get(l.source),b=idToIdx.get(l.target);
+    if(a!=null&&b!=null) uf.union(a,b);
+  });
+  // Map root → sequential component index
+  const rootToComp=new Map();
+  nodes.forEach((_,i)=>{
+    const root=uf.find(i);
+    if(!rootToComp.has(root)) rootToComp.set(root,rootToComp.size);
+  });
+  // Count component sizes to identify singletons
+  const compSize=new Map();
+  nodes.forEach((_,i)=>{ const c=rootToComp.get(uf.find(i)); compSize.set(c,(compSize.get(c)||0)+1); });
+  const GOLDEN=137.508;
+  const colors=nodes.map((nd,i)=>{
+    const compIdx=rootToComp.get(uf.find(i));
+    const size=compSize.get(compIdx)||1;
+    const w=nd.weight||0;
+    const norm=maxWeight>0?w/maxWeight:0;
+    if(size===1){
+      // Singleton: neutral slate, brightness by weight
+      const l=0.22+norm*0.22;
+      return hslC(220,0.18,l);
+    }
+    // Component hue spaced by golden angle; saturation 0.72; lightness 0.35+weight
+    const hue=(compIdx*GOLDEN)%360;
+    const l=0.32+norm*0.30; // 0.32 (cold) → 0.62 (hot)
+    return hslC(hue,0.72,l);
+  });
+  return colors;
+}
+
+/* ── Repo color function ──────────────────────────────────────────────── */
+// Assigns each unique repo string a distinct golden-angle hue.
+// Lightness modulated by weight just like group mode. "external" → neutral.
+function buildRepoColors(nodes, maxWeight){
+  const repoMap=new Map(); // repo→idx
+  nodes.forEach(n=>{
+    const r=n.repo||"external";
+    if(!repoMap.has(r)) repoMap.set(r,repoMap.size);
+  });
+  const GOLDEN=137.508;
+  return nodes.map(n=>{
+    const r=n.repo||"external";
+    const ri=repoMap.get(r);
+    const norm=maxWeight>0?(n.weight||0)/maxWeight:0;
+    if(r==="external"){
+      return hslC(220,0.15,0.25+norm*0.20); // neutral slate
+    }
+    const hue=(ri*GOLDEN)%360;
+    return hslC(hue,0.70,0.32+norm*0.28);
+  });
+}
+
+// Build a sorted repo→{count,color} map for the legend.
+function buildRepoLegend(nodes, maxWeight){
+  const repoMap=new Map();
+  const repoColors=buildRepoColors(nodes,maxWeight);
+  nodes.forEach((n,i)=>{
+    const r=n.repo||"external";
+    if(!repoMap.has(r)) repoMap.set(r,{count:0,color:repoColors[i]});
+    repoMap.get(r).count++;
+  });
+  // Sort by count desc
+  return [...repoMap.entries()].sort((a,b)=>b[1].count-a[1].count);
+}
+
+/* ── Fresnel/glow ShaderMaterial for the node cores ──────────────────── */
+// Bright near-white center, heat-tinted rim — "energy orb" look.
+// Kept for future use; actual cores use MeshBasicMaterial + setColorAt (instanceColor).
+const CORE_VERT = `
+varying vec3 vNormal;
+varying vec3 vViewDir;
+void main(){
+  vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position,1.0);
+  vNormal   = normalize(normalMatrix * (mat3(instanceMatrix) * normal));
+  vViewDir  = normalize(-mvPos.xyz);
+  gl_Position = projectionMatrix * mvPos;
+}`;
+const CORE_FRAG = `
+uniform vec3 uColor;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+void main(){
+  float rim = 1.0 - clamp(dot(vNormal, vViewDir), 0.0, 1.0);
+  rim = pow(rim, 1.8);
+  // Center is near-white, rim is heat color
+  vec3 col = mix(vec3(0.96,0.98,1.0), uColor, rim);
+  // Slight overall brightness boost
+  col = col * 1.15;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+// MeshBasicMaterial with setColorAt/instanceColor (vertexColors:false) drives core color.
+// The "orb" effect comes from the radial-gradient glow sprites + bright core.
+
+/* ── Glow sprite texture factory (radial gradient, additive) ─────────── */
+// Returns a cached CanvasTexture keyed by hex color string.
+const _glowCache = new Map();
+function glowTex(col){
+  const key = col.getHexString();
+  if(_glowCache.has(key)) return _glowCache.get(key);
+  const SZ = 128;
+  const c = document.createElement("canvas");
+  c.width = SZ; c.height = SZ;
+  const ctx = c.getContext("2d");
+  const cx2 = SZ/2;
+  const grad = ctx.createRadialGradient(cx2,cx2,0,cx2,cx2,cx2);
+  const r=Math.round(col.r*255),g=Math.round(col.g*255),b=Math.round(col.b*255);
+  grad.addColorStop(0,   `rgba(${r},${g},${b},0.95)`);
+  grad.addColorStop(0.25,`rgba(${r},${g},${b},0.55)`);
+  grad.addColorStop(0.55,`rgba(${r},${g},${b},0.18)`);
+  grad.addColorStop(1,   `rgba(${r},${g},${b},0.0)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,SZ,SZ);
+  const tex = new THREE.CanvasTexture(c);
+  _glowCache.set(key,tex);
+  return tex;
+}
+
+/* ── Label sprite factory ─────────────────────────────────────────────── */
+// faint=true → small dim label for secondary nodes (LOD-faded by distance in refreshScene)
+// faint=false → full-brightness label for hot/top nodes
+function makeLabel(text, accentHex, faint){
   const c=document.createElement("canvas");
   const ctx=c.getContext("2d");
-  const fs=22;
+  const fs=faint?16:28;
   ctx.font=`${fs}px ui-monospace,Menlo,Consolas,monospace`;
-  const mw=Math.ceil(ctx.measureText(text).width)+20;
-  const mh=fs+12;
+  const mw=Math.ceil(ctx.measureText(text).width)+(faint?12:20);
+  const mh=fs+(faint?8:12);
   c.width=mw; c.height=mh;
   ctx.font=`${fs}px ui-monospace,Menlo,Consolas,monospace`;
-  ctx.fillStyle="rgba(23,23,23,0.85)";
-  ctx.beginPath();
-  if(ctx.roundRect) ctx.roundRect(0,0,mw,mh,4); else ctx.rect(0,0,mw,mh);
-  ctx.fill();
-  ctx.fillStyle=accent||"#EDEDED";
+  if(!faint){
+    ctx.fillStyle="rgba(8,8,18,0.88)";
+    ctx.beginPath();
+    if(ctx.roundRect) ctx.roundRect(0,0,mw,mh,4); else ctx.rect(0,0,mw,mh);
+    ctx.fill();
+  }
+  ctx.fillStyle=accentHex||(faint?"#8899BB":"#E2E8FF");
   ctx.textBaseline="middle";
-  ctx.fillText(text,10,mh/2);
+  ctx.fillText(text,faint?6:10,mh/2);
   const tex=new THREE.CanvasTexture(c);
-  const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false});
+  const scale=faint?0.028:0.042;
+  const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false,sizeAttenuation:true,opacity:faint?0.28:1.0});
   const sp=new THREE.Sprite(mat);
-  const sc=0.035;
-  sp.scale.set(mw*sc,mh*sc,1);
-  return sp;
+  sp.scale.set(mw*scale,mh*scale,1);
+  // aspectRatio = width/height of the canvas texture; used by refreshScene for
+  // screen-constant scale (we keep width proportional to height at runtime).
+  return {sprite:sp, aspectRatio:mw/mh};
 }
 
-/* ── Global WebGL renderer (created once, reused across graph loads) ──── */
-let renderer=null;
-let rendererOk=false;
+/* ── Starfield (cheap Points cloud for parallax depth) ───────────────── */
+let starField=null;
+function buildStarfield(){
+  if(starField) return;
+  const STARS=500;
+  const pos=new Float32Array(STARS*3);
+  for(let i=0;i<STARS;i++){
+    const theta=Math.random()*Math.PI*2;
+    const phi=Math.acos(2*Math.random()-1);
+    const r=120+Math.random()*280;
+    pos[i*3]  =r*Math.sin(phi)*Math.cos(theta);
+    pos[i*3+1]=r*Math.sin(phi)*Math.sin(theta);
+    pos[i*3+2]=r*Math.cos(phi);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute("position",new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color:0x8899CC,size:0.28,sizeAttenuation:true,transparent:true,opacity:0.35});
+  starField=new THREE.Points(geo,mat);
+  starField.frustumCulled=false;
+  scene.add(starField);
+}
 
+/* ── Global renderer (created once) ──────────────────────────────────── */
+let renderer=null, rendererOk=false;
 function ensureRenderer(){
   if(renderer) return rendererOk;
   try{
     const tc=document.createElement("canvas");
-    if(!tc.getContext("webgl2")&&!tc.getContext("webgl")) throw new Error("no webgl");
-    renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+    if(!tc.getContext("webgl2")&&!tc.getContext("webgl")) throw new Error("no ctx");
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-    renderer.setClearColor(0x08080A,1);
-    renderer.domElement.style.width="100%";
-    renderer.domElement.style.height="100%";
-    renderer.domElement.style.cursor="grab";
+    // Transparent so the CSS radial-gradient bg shows through
+    renderer.setClearColor(0x000000,0);
+    renderer.domElement.style.cssText="display:block;width:100%;height:100%;cursor:grab;border-radius:6px;";
     wrap.appendChild(renderer.domElement);
     rendererOk=true;
   }catch(e){
@@ -678,86 +953,85 @@ function ensureRenderer(){
   return rendererOk;
 }
 
-/* ── Scene state — lives across mode switches ─────────────────────────── */
+/* ── Scene (persistent across mode switches) ──────────────────────────── */
 let scene=null, camera=null;
 let orbitTarget=new THREE.Vector3();
 let orbitTheta=0, orbitPhi=Math.PI/2, orbitRadius=80;
+// Dynamic zoom ceiling — updated by updateCameraLimits() after each loadGraph
+// so the user can always pull back far enough to see the whole shell.
+let ORBIT_MAX=400;
 let autoRotating=true;
 const AUTO_ROT=0.0004;
 
-// Per-load GPU objects — disposed on each new load
-let instancedMesh=null, edgeLines=null, hlEdgeLines=null;
-let haloMeshes=[], nodeLabelSprites=[];
-let sphereGeo=null, sphereMat=null;
-let haloGeo=null;
+/* ── Near-fade (proportional to orbitRadius, computed per-frame) ─────── */
+// Band = fraction of current orbit distance so zoom-to-fit never darkens the cloud.
+
+/* ── Per-load GPU objects ─────────────────────────────────────────────── */
+// Cores are individual Mesh objects (not InstancedMesh) so each can have its
+// own material opacity for per-node near-fade.
+let nodeMeshes=[];             // THREE.Mesh[] — one per node, bright colored core sphere
+let glowSprites=[];            // THREE.Sprite[] — one per node, additive glow
+let edgeLines=null, hlEdgeLines=null;
+let nodeLabelSprites=[];       // label sprites with LOD fade
+let sphereGeo=null;            // shared geometry (one alloc, N meshes reference it)
 let edgeGeo=null, edgeMat=null, hlEdgeGeo=null, hlEdgeMat=null;
 
-// Per-load sim state
-let simNodes=[];       // [{id,label,file,line,kind,weight,focus,hot}]
-let simEdges=[];       // [{a,b}]
-let simAdj=[];         // Set[] per node
-let nodeColors=[];     // THREE.Color[]
-let px,py,pz,vx,vy,vz,radii,pinned; // Float32Array / Uint8Array
-let N=0;
-let simTick=0, heat=0;
-const SETTLE=150;
+/* ── Per-load sim state ───────────────────────────────────────────────── */
+let simNodes=[], simEdges=[], simAdj=[];
+let nodeColors=[];  // THREE.Color[] base heat color per node
+let nodeHot=[];     // bool[]
+let px,py,pz,vx,vy,vz,radii,pinned;
+let N=0, simTick=0, heat=0;
+const SETTLE=220;
 
-// Render loop
-let frameId=null;
-let roObserver=null;
-let sceneInitialized=false;
+let frameId=null, roObserver=null, sceneInitialized=false;
+let currentMode="include", callMeta=null, hlFilter="";
+// Drill-down stack: each entry = {visibleSet:Set<idx>|null, focusIdx:int, label:string}
+let drillStack=[];
+let drillVisible=null; // Set<idx> or null (null = show all)
 
-// Mode + current meta
-let currentMode="include";  // "include" | "call"
-let callMeta=null;          // {focus,direction,depth,truncated,focusLabel}
-
-// Highlight filter
-let hlFilter="";
-
-/* ── Dispose previous GPU objects ────────────────────────────────────── */
+/* ── disposeGPU: clean up all per-load objects ────────────────────────── */
 function disposeGPU(){
-  if(instancedMesh){ scene && scene.remove(instancedMesh); instancedMesh.dispose(); instancedMesh=null; }
-  if(edgeLines){     scene && scene.remove(edgeLines); }
-  if(hlEdgeLines){   scene && scene.remove(hlEdgeLines); }
-  if(sphereGeo){  sphereGeo.dispose();  sphereGeo=null; }
-  if(sphereMat){  sphereMat.dispose();  sphereMat=null; }
-  if(haloGeo){    haloGeo.dispose();    haloGeo=null; }
-  if(edgeGeo){    edgeGeo.dispose();    edgeGeo=null; }
-  if(edgeMat){    edgeMat.dispose();    edgeMat=null; }
-  if(hlEdgeGeo){  hlEdgeGeo.dispose();  hlEdgeGeo=null; }
-  if(hlEdgeMat){  hlEdgeMat.dispose();  hlEdgeMat=null; }
-  haloMeshes.forEach(({mesh})=>{
-    scene && scene.remove(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  // Per-node core meshes — each has its own material; shared geometry disposed once
+  nodeMeshes.forEach(m=>{ scene&&scene.remove(m); m.material.dispose(); });
+  nodeMeshes=[];
+  if(sphereGeo){ sphereGeo.dispose(); sphereGeo=null; }
+  if(edgeLines){   scene&&scene.remove(edgeLines); }
+  if(hlEdgeLines){ scene&&scene.remove(hlEdgeLines); }
+  if(edgeGeo){   edgeGeo.dispose();   edgeGeo=null; }
+  if(edgeMat){   edgeMat.dispose();   edgeMat=null; }
+  if(hlEdgeGeo){ hlEdgeGeo.dispose(); hlEdgeGeo=null; }
+  if(hlEdgeMat){ hlEdgeMat.dispose(); hlEdgeMat=null; }
+  glowSprites.forEach(sp=>{
+    scene&&scene.remove(sp);
+    sp.material.map&&sp.material.map.dispose();
+    sp.material.dispose();
   });
-  haloMeshes=[];
+  glowSprites=[];
   nodeLabelSprites.forEach(entry=>{
     if(!entry) return;
-    scene && scene.remove(entry.sprite);
-    entry.sprite.material.map && entry.sprite.material.map.dispose();
+    scene&&scene.remove(entry.sprite);
+    entry.sprite.material.map&&entry.sprite.material.map.dispose();
     entry.sprite.material.dispose();
   });
   nodeLabelSprites=[];
 }
 
-/* ── Build / rebuild a scene from a graph data payload ───────────────── */
+/* ── loadGraph: build scene from graph payload ────────────────────────── */
 function loadGraph(graph, mode, meta){
   if(!ensureRenderer()) return;
-
   disposeGPU();
+  resetDrill();
 
-  // Ensure scene + camera exist (created once)
   if(!scene){
     scene=new THREE.Scene();
-    scene.fog=new THREE.FogExp2(0x08080A,0.018);
-    camera=new THREE.PerspectiveCamera(60,1,0.1,1000);
+    // No fog — depth comes from perspective + proportional near-fade only.
+    camera=new THREE.PerspectiveCamera(60,1,0.1,1200);
     camera.position.set(0,0,80);
+    buildStarfield();
   }
 
-  currentMode=mode;
-  callMeta=meta||null;
-
+  currentMode=mode; callMeta=meta||null;
   N=graph.nodes.length;
   if(!N){
     emptyMsg.style.display="flex";
@@ -766,97 +1040,180 @@ function loadGraph(graph, mode, meta){
   }
   emptyMsg.style.display="none";
   cgErrEl.classList.remove("visible");
+  SHELL_R=shellRadius(N); // preliminary count-only estimate; recalculated with radii below
 
-  // Physics arrays
   px=new Float32Array(N); py=new Float32Array(N); pz=new Float32Array(N);
   vx=new Float32Array(N); vy=new Float32Array(N); vz=new Float32Array(N);
   radii=new Float32Array(N);
   pinned=new Uint8Array(N);
-  simNodes=graph.nodes;
-  nodeColors=[];
+  simNodes=graph.nodes; nodeColors=[]; nodeHot=[];
 
   const maxWeight=Math.max(...graph.nodes.map(n=>n.weight||0),1);
   const nonZero=graph.nodes.map(n=>n.weight||0).filter(w=>w>0).sort((a,b)=>b-a);
   const rawP90=nonZero[Math.floor(nonZero.length*0.1)]||maxWeight;
   const p90t=Math.max(rawP90,maxWeight*0.5);
-
   const idToIdx=new Map();
 
-  // Geometries
-  sphereGeo=new THREE.SphereGeometry(1,12,8);
-  sphereMat=new THREE.MeshBasicMaterial({vertexColors:true});
-  instancedMesh=new THREE.InstancedMesh(sphereGeo,sphereMat,N);
-  instancedMesh.frustumCulled=false;
-  scene.add(instancedMesh);
+  // Pre-rank nodes by weight for label LOD: top LABEL_ALWAYS get full labels,
+  // remaining get faint labels. Ranking index set built before the main loop.
+  const LABEL_ALWAYS=Math.min(30,N);
+  const sortedByWeight=[...graph.nodes.map((n,i)=>({i,w:n.weight||0}))]
+    .sort((a,b)=>b.w-a.w);
+  const topIdxSet=new Set(sortedByWeight.slice(0,LABEL_ALWAYS).map(x=>x.i));
 
-  haloGeo=new THREE.SphereGeometry(1,10,6);
+  // Pre-compute all color arrays up-front (outside the node loop).
+  const groupColors=buildGroupColors(graph.nodes, graph.links||[], maxWeight);
+  const repoColorsLoad=buildRepoColors(graph.nodes, maxWeight); // always cheap
+
+  // Core spheres — one Mesh per node (≤200) so each can carry its own material
+  // opacity for per-node near-fade. Shared geometry; each Mesh gets its own
+  // MeshBasicMaterial so color + opacity are independently controllable per frame.
+  sphereGeo=new THREE.SphereGeometry(1,14,9);
 
   graph.nodes.forEach((n,i)=>{
     idToIdx.set(n.id,i);
     const w=n.weight||0;
     const norm=w/maxWeight;
-    // For call-graph, focus node gets the largest radius regardless
     const isFocus=mode==="call"&&n.focus===true;
-    const r=isFocus ? Math.max(4.5, 1.2+Math.sqrt(w)*1.6) : Math.max(1.2, 1.2+Math.sqrt(w)*1.6);
+    // Min radius ensures even fan-in-0 nodes are visible (~2 world units)
+    const r=isFocus ? Math.max(5.0,2.0+Math.sqrt(w)*1.8)
+                    : 2.0+Math.sqrt(w)*1.8;
     radii[i]=r;
 
-    // Scatter in a sphere
-    const theta=Math.random()*Math.PI*2;
-    const phi=Math.acos(2*Math.random()-1);
-    const dist=15+Math.random()*25;
-    px[i]=dist*Math.sin(phi)*Math.cos(theta);
-    py[i]=dist*Math.sin(phi)*Math.sin(theta);
-    pz[i]=dist*Math.cos(phi);
+    // Fibonacci-sphere initial position on the shell surface.
+    // Distributes N points evenly on a sphere of radius SHELL_R so the sim
+    // settles quickly without exploding outward from a central clump.
+    {
+      const golden=Math.PI*(3-Math.sqrt(5)); // ~2.399 rad golden angle
+      const y2=1-((i/(Math.max(N-1,1)))*2); // y in [-1,1]
+      const r2=Math.sqrt(Math.max(0,1-y2*y2));
+      const theta2=golden*i;
+      px[i]=SHELL_R*r2*Math.cos(theta2);
+      py[i]=SHELL_R*y2;
+      pz[i]=SHELL_R*r2*Math.sin(theta2);
+    }
 
-    const col=heatColor(norm);
-    nodeColors.push(col);
-    instancedMesh.setColorAt(i,col);
+    // Core color: mode-aware — groups / repo / heat.
+    // isFocus nodes always get amber to stand out in call-graph mode.
+    const heatBase=heatColor(norm);
+    const hc=isFocus ? hexC("#FFD43B") :
+              colorMode==="groups" ? groupColors[i] :
+              colorMode==="repo"   ? repoColorsLoad[i] : heatBase;
+    const coreCol=lerpC(hc,C_WHITE,0.35); // near-white center
+    nodeColors.push(hc); // store base for hover/drill dimming
+
+    // Per-node Mesh with its own material (transparent:true for near-fade)
+    const mat=new THREE.MeshBasicMaterial({color:coreCol, transparent:true, opacity:1.0});
+    const mesh=new THREE.Mesh(sphereGeo,mat);
+    mesh.position.set(px[i],py[i],pz[i]);
+    mesh.scale.setScalar(r);
+    mesh.frustumCulled=false;
+    scene.add(mesh);
+    nodeMeshes.push(mesh);
 
     const hot=(w>=p90t&&w>0)||isFocus;
+    nodeHot.push(hot);
 
-    if(hot){
-      // Halo
-      const hm=new THREE.MeshBasicMaterial({
-        color: isFocus ? 0xFACC15 : 0x0070F3,
-        transparent:true, opacity:isFocus?0.18:0.11,
-        blending:THREE.AdditiveBlending, depthWrite:false
-      });
-      const halo=new THREE.Mesh(haloGeo.clone(),hm);
-      halo.scale.setScalar(r+2.5);
-      halo.frustumCulled=false;
-      scene.add(halo);
-      haloMeshes.push({mesh:halo,idx:i,isFocus});
+    // ── Glow sprite — EVERY node gets one ──────────────────────────────
+    const glowRadius=hot ? r*3.2 : r*2.6;
+    // Glow uses same mode-aware color as core
+    const glowColor=hc;
+    const gTex=glowTex(glowColor);
+    const gMat=new THREE.SpriteMaterial({
+      map:gTex, transparent:true,
+      blending:THREE.AdditiveBlending, depthWrite:false,
+      opacity: hot ? 0.82 : 0.62
+    });
+    const gSp=new THREE.Sprite(gMat);
+    gSp.scale.set(glowRadius*2, glowRadius*2, 1);
+    gSp.frustumCulled=false;
+    scene.add(gSp);
+    glowSprites.push(gSp);
 
-      // Always-on label
+    // ── Labels: every node gets one. Top LABEL_ALWAYS → bright; rest → faint. ──
+    // Faint labels gain full opacity on hover (handled in refreshScene).
+    {
       const lbl=n.label||(n.id.split("/").pop())||n.id;
-      const sp=makeLabel(lbl, isFocus?"#FACC15":undefined);
+      const isTop=topIdxSet.has(i)||hot;
+      const faint=!isTop;
+      const accentHex=isFocus?"#FFD43B":(isTop?"#7DD3FC":undefined);
+      const {sprite:sp,aspectRatio:ar}=makeLabel(lbl,accentHex,faint);
       sp.frustumCulled=false;
       scene.add(sp);
-      nodeLabelSprites.push({sprite:sp,idx:i,always:true});
-    }else{
-      nodeLabelSprites.push(null);
+      nodeLabelSprites.push({sprite:sp,idx:i,always:isTop,faint,aspectRatio:ar});
     }
   });
-  instancedMesh.instanceColor.needsUpdate=true;
 
-  // Edges
+  // ── Recalculate SHELL_R with actual node footprint, then re-seat positions ──
+  // Now that radii[] is fully populated, recompute the shell so large-radius
+  // hubs claim proportionally more surface area.
+  SHELL_R=shellRadius(N, radii);
+  {
+    const golden=Math.PI*(3-Math.sqrt(5));
+    for(let i=0;i<N;i++){
+      const y2=1-((i/Math.max(N-1,1))*2);
+      const r2=Math.sqrt(Math.max(0,1-y2*y2));
+      const theta2=golden*i;
+      px[i]=SHELL_R*r2*Math.cos(theta2);
+      py[i]=SHELL_R*y2;
+      pz[i]=SHELL_R*r2*Math.sin(theta2);
+      // reset velocities — positions just changed
+      vx[i]=0;vy[i]=0;vz[i]=0;
+    }
+  }
+
+  // ── Update camera limits to match new SHELL_R ─────────────────────────
+  // ORBIT_MAX = enough to see the entire shell + biggest node radius with margin.
+  // camera.far must reach at least ORBIT_MAX + SHELL_R so nothing clips.
+  {
+    const maxR=radii.length?Math.max(...radii):5;
+    ORBIT_MAX=Math.max(400, (SHELL_R+maxR)*4.5);
+    if(camera){
+      camera.far=ORBIT_MAX+SHELL_R*2+maxR*4;
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  // ── Edges ─────────────────────────────────────────────────────────────
   simEdges=[];
-  const validLinks=(graph.links||[]).filter(l=>idToIdx.has(l.source)&&idToIdx.has(l.target));
-  validLinks.forEach(l=>simEdges.push({a:idToIdx.get(l.source),b:idToIdx.get(l.target)}));
+  const rawEdges=(graph.links||[]).filter(l=>idToIdx.has(l.source)&&idToIdx.has(l.target));
+  const maxEdgeCount=Math.max(...rawEdges.map(l=>l.count||1),1);
+  rawEdges.forEach(l=>simEdges.push({a:idToIdx.get(l.source),b:idToIdx.get(l.target),cnt:l.count||1,normCnt:(l.count||1)/maxEdgeCount}));
 
   const EP=simEdges.length;
-  const edgePos=new Float32Array(EP*2*3);
+  const ePos=new Float32Array(EP*2*3);
+  const eCol=new Float32Array(EP*2*3);
   edgeGeo=new THREE.BufferGeometry();
-  edgeGeo.setAttribute("position",new THREE.BufferAttribute(edgePos,3));
-  edgeMat=new THREE.LineBasicMaterial({color:0x3A3A3A,transparent:true,opacity:0.22});
+  edgeGeo.setAttribute("position",new THREE.BufferAttribute(ePos,3));
+  edgeGeo.setAttribute("color",new THREE.BufferAttribute(eCol,3));
+  // Energy threads: vertexColors drives per-edge brightness by call count
+  edgeMat=new THREE.LineBasicMaterial({
+    vertexColors:true, transparent:true, opacity:0.22,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  });
   edgeLines=new THREE.LineSegments(edgeGeo,edgeMat);
   edgeLines.frustumCulled=false;
   scene.add(edgeLines);
+  {
+    const colAttr=edgeGeo.attributes.color.array;
+    simEdges.forEach(({normCnt},ei)=>{
+      const r=0.18+(0.9-0.18)*normCnt;
+      const g=0.36+(0.75-0.36)*normCnt;
+      const b=0.55+(0.15-0.55)*normCnt;
+      const base=ei*6;
+      colAttr[base  ]=r;colAttr[base+1]=g;colAttr[base+2]=b;
+      colAttr[base+3]=r;colAttr[base+4]=g;colAttr[base+5]=b;
+    });
+    edgeGeo.attributes.color.needsUpdate=true;
+  }
 
-  const hlPos=new Float32Array(EP*2*3);
+  const hlPos2=new Float32Array(EP*2*3);
   hlEdgeGeo=new THREE.BufferGeometry();
-  hlEdgeGeo.setAttribute("position",new THREE.BufferAttribute(hlPos,3));
-  hlEdgeMat=new THREE.LineBasicMaterial({color:0x0070F3,transparent:true,opacity:0.9});
+  hlEdgeGeo.setAttribute("position",new THREE.BufferAttribute(hlPos2,3));
+  hlEdgeMat=new THREE.LineBasicMaterial({
+    color:0xFFD43B, transparent:true, opacity:0.90,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  });
   hlEdgeLines=new THREE.LineSegments(hlEdgeGeo,hlEdgeMat);
   hlEdgeLines.frustumCulled=false;
   scene.add(hlEdgeLines);
@@ -864,106 +1221,174 @@ function loadGraph(graph, mode, meta){
   simAdj=new Array(N).fill(null).map(()=>new Set());
   simEdges.forEach(({a,b})=>{ simAdj[a].add(b); simAdj[b].add(a); });
 
-  // Sim
+  // Settle sim
   simTick=0; heat=1.0;
   if(PRM){ for(let t=0;t<SETTLE;t++) simStep(); }
 
-  // Camera
   if(!sceneInitialized){
     sceneInitialized=true;
     resizeRenderer();
-    recenterCamera();
-    deriveCameraOrbit();
-  }else{
-    recenterCamera();
-    deriveCameraOrbit();
   }
+  recenterCamera();
+  deriveCameraOrbit();
+  updateMetrics(graph.nodes,simEdges,callMeta);
+  updateRepoLegend();
 
-  // Update metrics overlay
-  updateMetrics(graph.nodes, simEdges, callMeta);
-
-  // Start/continue render loop
-  if(!frameId&&!PRM){
-    frameId=requestAnimationFrame(renderLoop);
-  }
+  if(!frameId&&!PRM){ frameId=requestAnimationFrame(renderLoop); }
   if(PRM){
-    updateInstancedMesh(-1);
-    updateDecorations();
-    updateEdgePositions(-1);
+    refreshScene(-1);
     renderer.render(scene,camera);
   }
 }
 
-/* ── Force sim ────────────────────────────────────────────────────────── */
-const REPULSION_K=280, SPRING_REST=30, SPRING_K=0.06, GRAVITY=0.004, DAMPING=0.86;
+/* ── Force simulation — spherical-shell layout ────────────────────────── */
+// Nodes are attracted to a shell of radius SHELL_R (scales with sqrt(N)).
+// Center-point gravity is removed; shell force replaces it so nodes spread
+// across the sphere surface instead of collapsing to the origin.
+const REPULSION_K=900, SPRING_K=0.035, DAMPING=0.82;
+const SHELL_K=0.014;       // shell force strength (gentle — edges can pull off-shell)
+const SPRING_REST_FACTOR=1.1; // rest length as fraction of SHELL_R*2/sqrt(N)
+
+// Compute target shell radius based on node count + total node footprint.
+// A graph with many large-radius hubs gets a bigger sphere so they don't crowd.
+// radiiArr is optional (only available after the node loop in loadGraph).
+let SHELL_R=40;
+function shellRadius(n, radiiArr){
+  const countTerm=9.0*Math.sqrt(n);
+  let footprintTerm=0;
+  if(radiiArr){
+    let sumR2=0;
+    for(let i=0;i<radiiArr.length;i++) sumR2+=radiiArr[i]*radiiArr[i];
+    footprintTerm=4.5*Math.sqrt(sumR2); // larger shell so nodes have room to spread
+  }
+  return Math.max(24, countTerm, footprintTerm);
+}
+
+// PAD between node surfaces (world units); halo extend ~1.4× radius so we
+// add a bit extra so halos don't visually merge.
+const COLLISION_PAD=3.5;
+
+// Resting shell-restore strength — much gentler than SHELL_K used during
+// layout settlement, but always on so nodes drift back to SHELL_R after a
+// cam-push zoom-out without jittering the settled graph.
+const SHELL_K_REST=0.004;
 
 function simStep(){
+  // alpha: settlement force that fades out over SETTLE ticks
   const alpha=heat*Math.max(0,(SETTLE-simTick)/SETTLE);
-  if(alpha<0.001&&simTick>=SETTLE){ heat=0; return; }
+  const settling=alpha>0.001;
+  if(!settling&&simTick>=SETTLE) heat=0;
 
+  // camForce: 0–1, independent of alpha — active whenever camera is inside shell.
+  // Pushes nodes apart so they're individually selectable when zoomed in.
+  // Fades to 0 as camera pulls back to shell radius (camRatio → 1).
+  const camRatio=SHELL_R>0?orbitRadius/SHELL_R:2;
+  const camForce=camRatio<0.25 ? 1.0
+               : camRatio<1.0  ? (1.0-camRatio)/0.75
+               : 0;
+  const CAM_K=REPULSION_K*6;
+
+  // ── Repulsion: settlement + camera layers ────────────────────────────────
   for(let i=0;i<N;i++){
     if(pinned[i]) continue;
     for(let j=i+1;j<N;j++){
       const dx=px[j]-px[i],dy=py[j]-py[i],dz=pz[j]-pz[i];
-      const d2=dx*dx+dy*dy+dz*dz;
-      const d=Math.sqrt(d2)||0.001;
-      const minD=radii[i]+radii[j]+6;
-      if(d<minD*3){
-        const f=(REPULSION_K/(d2+0.1))*alpha*0.5;
+      const d2=dx*dx+dy*dy+dz*dz,d=Math.sqrt(d2)||0.001;
+      const desired=radii[i]+radii[j]+COLLISION_PAD;
+      const ratio=desired/d;
+      let f=0;
+      if(settling&&d<desired*3.0)
+        f+=REPULSION_K*ratio*ratio/(d2+0.1)*alpha*0.5;
+      if(camForce>0&&d<desired*4.0)
+        f+=CAM_K*camForce*ratio*ratio/(d2+0.1)*0.5;
+      if(f>0){
         const fx=dx/d*f,fy=dy/d*f,fz=dz/d*f;
-        vx[i]-=fx; vy[i]-=fy; vz[i]-=fz;
-        if(!pinned[j]){ vx[j]+=fx; vy[j]+=fy; vz[j]+=fz; }
+        vx[i]-=fx;vy[i]-=fy;vz[i]-=fz;
+        if(!pinned[j]){vx[j]+=fx;vy[j]+=fy;vz[j]+=fz;}
       }
     }
   }
 
-  simEdges.forEach(({a,b})=>{
-    const dx=px[b]-px[a],dy=py[b]-py[a],dz=pz[b]-pz[a];
-    const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.001;
-    const f=(d-SPRING_REST)/d*SPRING_K*alpha;
-    const fx=dx*f,fy=dy*f,fz=dz*f;
-    if(!pinned[a]){ vx[a]+=fx; vy[a]+=fy; vz[a]+=fz; }
-    if(!pinned[b]){ vx[b]-=fx; vy[b]-=fy; vz[b]-=fz; }
-  });
+  // ── Edge spring (settlement only) ────────────────────────────────────────
+  if(settling){
+    const arcRest=SHELL_R*2*SPRING_REST_FACTOR/Math.max(1,Math.sqrt(N));
+    simEdges.forEach(({a,b})=>{
+      const desired=radii[a]+radii[b]+COLLISION_PAD;
+      const springRest=Math.max(arcRest,desired*1.05);
+      const dx=px[b]-px[a],dy=py[b]-py[a],dz=pz[b]-pz[a];
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.001;
+      const f=(d-springRest)/d*SPRING_K*alpha;
+      const fx=dx*f,fy=dy*f,fz=dz*f;
+      if(!pinned[a]){vx[a]+=fx;vy[a]+=fy;vz[a]+=fz;}
+      if(!pinned[b]){vx[b]-=fx;vy[b]-=fy;vz[b]-=fz;}
+    });
+  }
 
+  // ── Shell force — ALWAYS ACTIVE ───────────────────────────────────────────
+  // Uses full SHELL_K during settlement, gentle SHELL_K_REST afterwards.
+  // This is what pulls displaced nodes back to SHELL_R when zooming out —
+  // without it, nodes stay wherever the cam-push scattered them.
+  const shellStrength=settling ? SHELL_K*alpha : SHELL_K_REST;
+  const dampFactor=camForce>0 ? Math.max(0.72, DAMPING-camForce*0.12) : DAMPING;
   for(let i=0;i<N;i++){
     if(pinned[i]) continue;
-    vx[i]+=-px[i]*GRAVITY*alpha;
-    vy[i]+=-py[i]*GRAVITY*alpha;
-    vz[i]+=-pz[i]*GRAVITY*alpha;
-    vx[i]*=DAMPING; vy[i]*=DAMPING; vz[i]*=DAMPING;
-    px[i]+=vx[i]; py[i]+=vy[i]; pz[i]+=vz[i];
+    const pr=Math.sqrt(px[i]*px[i]+py[i]*py[i]+pz[i]*pz[i])||0.001;
+    const shellF=(pr-SHELL_R)/pr*shellStrength;
+    vx[i]-=px[i]*shellF; vy[i]-=py[i]*shellF; vz[i]-=pz[i]*shellF;
+    vx[i]*=dampFactor;vy[i]*=dampFactor;vz[i]*=dampFactor;
+    px[i]+=vx[i];py[i]+=vy[i];pz[i]+=vz[i];
   }
+
+  // ── Collision resolution (positional, post-integration) ──────────────────
+  // Hard constraint: if two nodes still overlap after velocity updates, push
+  // them apart by half the penetration depth weighted by radius (bigger node
+  // moves less). This runs every tick and is the final guarantee of no overlap.
+  for(let i=0;i<N;i++){
+    for(let j=i+1;j<N;j++){
+      const dx=px[j]-px[i],dy=py[j]-py[i],dz=pz[j]-pz[i];
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.001;
+      const minSep=radii[i]+radii[j]+COLLISION_PAD;
+      if(d<minSep){
+        const pen=(minSep-d)/d; // penetration depth / d
+        const ri=radii[i],rj=radii[j],rtot=ri+rj||1;
+        // Bigger node absorbs less of the correction
+        const wi=rj/rtot, wj=ri/rtot;
+        const cx=dx*pen,cy=dy*pen,cz=dz*pen;
+        if(!pinned[i]){px[i]-=cx*wi;py[i]-=cy*wi;pz[i]-=cz*wi;}
+        if(!pinned[j]){px[j]+=cx*wj;py[j]+=cy*wj;pz[j]+=cz*wj;}
+      }
+    }
+  }
+
   simTick++;
 }
 
 /* ── Renderer resize ──────────────────────────────────────────────────── */
 function resizeRenderer(){
   if(!renderer) return;
-  const w=wrap.clientWidth, h=wrap.clientHeight;
+  const w=wrap.clientWidth,h=wrap.clientHeight;
   renderer.setSize(w,h,false);
-  if(camera){ camera.aspect=w/h; camera.updateProjectionMatrix(); }
+  if(camera){camera.aspect=w/h;camera.updateProjectionMatrix();}
 }
 
 /* ── Camera helpers ───────────────────────────────────────────────────── */
 function recenterCamera(){
   if(!N) return;
   let cx=0,cy=0,cz=0;
-  for(let i=0;i<N;i++){ cx+=px[i];cy+=py[i];cz+=pz[i]; }
-  cx/=N; cy/=N; cz/=N;
+  for(let i=0;i<N;i++){cx+=px[i];cy+=py[i];cz+=pz[i];}
+  cx/=N;cy/=N;cz/=N;
   let maxR=0;
   for(let i=0;i<N;i++){
     const dx=px[i]-cx,dy=py[i]-cy,dz=pz[i]-cz;
-    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i];
+    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i]*3.5;
     if(r>maxR) maxR=r;
   }
   const fovR=camera.fov*Math.PI/180;
-  const dist=(maxR/Math.tan(fovR/2))*1.25;
+  const dist=(maxR/Math.tan(fovR/2))*1.2;
   camera.position.set(cx,cy,cz+dist);
   camera.lookAt(cx,cy,cz);
   orbitTarget.set(cx,cy,cz);
 }
-
 function deriveCameraOrbit(){
   if(!camera) return;
   const d=camera.position.clone().sub(orbitTarget);
@@ -971,103 +1396,161 @@ function deriveCameraOrbit(){
   orbitTheta=Math.atan2(d.x,d.z);
   orbitPhi=Math.acos(Math.max(-1,Math.min(1,d.y/orbitRadius)));
 }
-
 function updateCameraFromOrbit(){
   if(!camera) return;
   const x=orbitTarget.x+orbitRadius*Math.sin(orbitPhi)*Math.sin(orbitTheta);
   const y=orbitTarget.y+orbitRadius*Math.cos(orbitPhi);
   const z=orbitTarget.z+orbitRadius*Math.sin(orbitPhi)*Math.cos(orbitTheta);
-  camera.position.set(x,y,z);
-  camera.lookAt(orbitTarget);
+  camera.position.set(x,y,z);camera.lookAt(orbitTarget);
 }
 
-/* ── Node / edge update ───────────────────────────────────────────────── */
-const dummy=new THREE.Object3D();
-
-function updateInstancedMesh(hovIdx){
-  if(!instancedMesh||!N) return;
+/* ── Scene refresh (node/edge/halo positions + colors + near-fade) ───── */
+function refreshScene(hovIdx){
+  if(!nodeMeshes.length||!N) return;
   const hl=hlFilter.trim().toLowerCase();
-  for(let i=0;i<N;i++){
-    dummy.position.set(px[i],py[i],pz[i]);
-    dummy.scale.setScalar(radii[i]);
-    dummy.updateMatrix();
-    instancedMesh.setMatrixAt(i,dummy.matrix);
+  const camPos=camera?camera.position:null;
 
-    let col;
+  for(let i=0;i<N;i++){
+    const mesh=nodeMeshes[i];
+    mesh.position.set(px[i],py[i],pz[i]);
+    mesh.scale.setScalar(radii[i]);
+
+    // Per-node near-fade: only fade nodes you literally fly INTO.
+    // Band is proportional to orbitRadius so zoom-to-fit never darkens the cloud.
+    let nearAlpha=1.0;
+    if(camPos){
+      const nfStart=orbitRadius*0.18;
+      const nfEnd  =orbitRadius*0.06;
+      const dx=px[i]-camPos.x,dy=py[i]-camPos.y,dz=pz[i]-camPos.z;
+      const dist=Math.sqrt(dx*dx+dy*dy+dz*dz)-radii[i];
+      nearAlpha=clamp((dist-nfEnd)/(nfStart-nfEnd),0,1);
+    }
+
+    // Core color + highlight filter + drill isolation
     const nodeLabel=(simNodes[i].label||simNodes[i].id||"").toLowerCase();
     const hlMatch=!hl||nodeLabel.includes(hl);
-
-    if(!hlMatch){
-      // Dimmed by filter
-      col=COLOR_DIM.clone();
+    const drillMatch=!drillVisible||drillVisible.has(i);
+    const visible=hlMatch&&drillMatch;
+    let col;
+    if(!visible){
+      col=C_DIM_HL.clone();
     } else if(hovIdx>=0){
       const isHov=(i===hovIdx);
       const isAdj=simAdj[hovIdx]&&simAdj[hovIdx].has(i);
-      const dimmed=!isHov&&!isAdj;
-      col=isHov ? COLOR_HOT.clone() : dimmed ? nodeColors[i].clone().multiplyScalar(0.18) : nodeColors[i];
-    }else{
-      col=nodeColors[i];
+      if(isHov)       col=C_WHITE.clone();
+      else if(isAdj)  col=lerpC(nodeColors[i],C_WHITE,0.55);
+      else            col=nodeColors[i].clone().multiplyScalar(0.14);
+    } else {
+      col=lerpC(nodeColors[i],C_WHITE,0.35);
     }
-    instancedMesh.setColorAt(i,col);
-  }
-  instancedMesh.instanceMatrix.needsUpdate=true;
-  instancedMesh.instanceColor.needsUpdate=true;
-}
+    mesh.material.color.copy(col);
+    mesh.material.opacity=nearAlpha*(visible?1.0:0.04);
 
-function updateDecorations(){
-  haloMeshes.forEach(({mesh,idx})=>{
-    mesh.position.set(px[idx],py[idx],pz[idx]);
-  });
+    // Glow sprite position + opacity (near-fade + filter + drill + hover)
+    if(glowSprites[i]){
+      glowSprites[i].position.set(px[i],py[i],pz[i]);
+      const glowVis=visible&&(hovIdx<0||i===hovIdx||(simAdj[hovIdx]&&simAdj[hovIdx].has(i)));
+      const baseGlow=glowVis?(nodeHot[i]?0.82:0.62):0.03;
+      glowSprites[i].material.opacity=baseGlow*nearAlpha;
+    }
+  }
+
+  // Labels — per-frame: constant screen-size scaling + LOD opacity
+  // Sprite world-scale ∝ distance → projected pixel size stays roughly constant.
+  // TARGET_PX_H: desired label height in CSS pixels; tuned per label tier.
   nodeLabelSprites.forEach(entry=>{
     if(!entry) return;
-    const {sprite,idx}=entry;
+    const{sprite,idx,always,faint}=entry;
     sprite.position.set(px[idx],py[idx]+radii[idx]+2.5,pz[idx]);
-    sprite.visible=true;
-  });
-}
+    const isHov=(idx===hovIdx);
 
-function updateEdgePositions(hovIdx){
+    // Distance from camera to label position (not node center)
+    let dist=orbitRadius; // fallback
+    if(camPos){
+      const dx=px[idx]-camPos.x,dy=py[idx]-camPos.y,dz=pz[idx]-camPos.z;
+      dist=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+    }
+
+    // Screen-constant scale: world_size = dist * tan(fov/2) * (targetScreenFrac)
+    // targetScreenFrac chosen so label fills ~3.5% of viewport height for always,
+    // ~2.2% for faint. Clamp to avoid huge close labels or invisible far ones.
+    const fovTan=Math.tan((camera?camera.fov:60)*Math.PI/360);
+    const screenFrac=always?0.035:0.022;
+    const worldH=dist*fovTan*screenFrac;
+    // sprite was created with scale mw*scale × mh*scale where scale=0.042/0.028.
+    // We override both axes to maintain aspect ratio using stored creation scale.
+    const creationScale=entry.creationScale||1;
+    const scaleH=Math.max(0.5,Math.min(worldH, dist*0.08)); // clamp min 0.5 max 8% dist
+    sprite.scale.set(scaleH*entry.aspectRatio, scaleH, 1);
+
+    if(isHov){
+      sprite.material.opacity=1.0;
+      sprite.visible=true;
+    }else if(always){
+      const nodeLabel=(simNodes[idx].label||simNodes[idx].id||"").toLowerCase();
+      const hlMatch=!hl||nodeLabel.includes(hl);
+      const drillOk=!drillVisible||drillVisible.has(idx);
+      sprite.material.opacity=(hlMatch&&drillOk)?0.92:0.08;
+      sprite.visible=true;
+    }else if(faint){
+      const nodeLabel=(simNodes[idx].label||simNodes[idx].id||"").toLowerCase();
+      const hlMatch=!hl||nodeLabel.includes(hl);
+      const drillOk2=!drillVisible||drillVisible.has(idx);
+      if(!hlMatch||!drillOk2){sprite.visible=false;return;}
+      // Faint LOD: fade out when very far relative to orbitRadius
+      const relDist=dist/(orbitRadius||1);
+      const distFactor=1.0-Math.min(1,Math.max(0,(relDist-0.6)/0.8));
+      sprite.material.opacity=0.28*distFactor;
+      sprite.visible=distFactor>0.05;
+    }
+  });
+
+  // Edges
   if(!edgeGeo||!hlEdgeGeo||!simEdges.length) return;
-  const hl=hlFilter.trim().toLowerCase();
   const mainPos=edgeGeo.attributes.position.array;
-  const hlPos=hlEdgeGeo.attributes.position.array;
+  const hlPosArr=hlEdgeGeo.attributes.position.array;
   let base=0,hlBase=0,hlCount=0;
+  const hlActive=hl!=="";
 
   simEdges.forEach(({a,b})=>{
     const isHov=hovIdx>=0&&(a===hovIdx||b===hovIdx);
-    // Also dim edges when filter active and neither endpoint matches
-    const aLabel=(simNodes[a]&&(simNodes[a].label||simNodes[a].id)||"").toLowerCase();
-    const bLabel=(simNodes[b]&&(simNodes[b].label||simNodes[b].id)||"").toLowerCase();
-    const hlActive=hl!=="";
-    const edgeMatch=!hlActive||(aLabel.includes(hl)||bLabel.includes(hl));
-
+    const aLbl=(simNodes[a]&&(simNodes[a].label||simNodes[a].id)||"").toLowerCase();
+    const bLbl=(simNodes[b]&&(simNodes[b].label||simNodes[b].id)||"").toLowerCase();
+    const edgeMatch=!hlActive||(aLbl.includes(hl)||bLbl.includes(hl));
+    const drillEdge=!drillVisible||(drillVisible.has(a)&&drillVisible.has(b));
+    if(!drillEdge){
+      mainPos[base  ]=0;mainPos[base+1]=0;mainPos[base+2]=0;
+      mainPos[base+3]=0;mainPos[base+4]=0;mainPos[base+5]=0;
+      base+=6;return;
+    }
     mainPos[base  ]=px[a];mainPos[base+1]=py[a];mainPos[base+2]=pz[a];
     mainPos[base+3]=px[b];mainPos[base+4]=py[b];mainPos[base+5]=pz[b];
     base+=6;
-
     if(isHov&&edgeMatch){
-      hlPos[hlBase  ]=px[a];hlPos[hlBase+1]=py[a];hlPos[hlBase+2]=pz[a];
-      hlPos[hlBase+3]=px[b];hlPos[hlBase+4]=py[b];hlPos[hlBase+5]=pz[b];
-      hlBase+=6; hlCount++;
+      hlPosArr[hlBase  ]=px[a];hlPosArr[hlBase+1]=py[a];hlPosArr[hlBase+2]=pz[a];
+      hlPosArr[hlBase+3]=px[b];hlPosArr[hlBase+4]=py[b];hlPosArr[hlBase+5]=pz[b];
+      hlBase+=6;hlCount++;
     }
   });
-
   edgeGeo.attributes.position.needsUpdate=true;
   edgeGeo.setDrawRange(0,simEdges.length*2);
   hlEdgeGeo.attributes.position.needsUpdate=true;
   hlEdgeGeo.setDrawRange(0,hlCount*2);
+
+  // Edge opacity: drill dims non-neighborhood edges; hover dims further
+  if(edgeMat) edgeMat.opacity=drillVisible?(hovIdx>=0?0.06:0.18):(hovIdx>=0?0.09:0.22);
 }
 
-/* ── Metrics overlay update ───────────────────────────────────────────── */
-function updateMetrics(nodes, edges, meta){
-  if(!nodes||!nodes.length){ metricsEl.textContent=""; return; }
-  const hotNode=nodes.reduce((best,n)=>(n.weight||0)>(best.weight||0)?n:best, nodes[0]);
-  const hotLabel=hotNode.label||(hotNode.id.split("/").pop())||hotNode.id;
-  let txt=`${nodes.length} nodes · ${edges.length} edges   hot: ${hotLabel}`;
+/* ── Metrics overlay ──────────────────────────────────────────────────── */
+function updateMetrics(nodes,edges,meta){
+  if(!nodes||!nodes.length){metricsEl.textContent="";return;}
+  const hotNode=nodes.reduce((b,n)=>(n.weight||0)>(b.weight||0)?n:b,nodes[0]);
+  const hotLbl=hotNode.label||(hotNode.id.split("/").pop())||hotNode.id;
+  let txt=`${nodes.length} nodes · ${edges.length} edges   hot: ${hotLbl}`;
   if(meta&&currentMode==="call"){
-    const fl=meta.focusLabel||meta.focus||"";
-    txt+=`\nfocus: ${fl} · ${meta.direction} · depth ${meta.depth}`;
+    txt+=`\nfocus: ${meta.focusLabel||meta.focus||""} · ${meta.direction} · depth ${meta.depth}`;
     if(meta.truncated) txt+=" · truncated";
+    if(meta.totalCallSites) txt+=` · ${meta.totalCallSites} call sites`;
   }
   metricsEl.textContent=txt;
 }
@@ -1078,37 +1561,37 @@ const mouse2D=new THREE.Vector2();
 let hoveredIdx=-1;
 
 function getXY(e){
-  const rect=renderer.domElement.getBoundingClientRect();
-  return{
-    x:((e.clientX-rect.left)/rect.width)*2-1,
-    y:-((e.clientY-rect.top)/rect.height)*2+1
-  };
+  const r=renderer.domElement.getBoundingClientRect();
+  return{x:((e.clientX-r.left)/r.width)*2-1, y:-((e.clientY-r.top)/r.height)*2+1};
 }
 function pickNode(e){
-  if(!instancedMesh||!camera) return -1;
+  if(!nodeMeshes.length||!camera) return -1;
   const{x,y}=getXY(e);
   mouse2D.set(x,y);
   raycaster.setFromCamera(mouse2D,camera);
-  const hits=raycaster.intersectObject(instancedMesh);
-  return hits.length?hits[0].instanceId:-1;
+  const hits=raycaster.intersectObjects(nodeMeshes,false);
+  if(!hits.length) return -1;
+  return nodeMeshes.indexOf(hits[0].object);
 }
-
 function nodeTooltip(idx){
   if(idx<0||!simNodes[idx]) return "";
   const n=simNodes[idx];
   const lbl=n.label||(n.id.split("/").pop())||n.id;
-  if(currentMode==="call"&&(n.file||n.line)){
-    return `${lbl}<br><span style="color:#737373">${n.file||""}${n.line?":"+n.line:""} (${n.kind||"symbol"})</span>`;
+  const repoTag=n.repo?` <span style="color:#737373">\xb7 ${n.repo}</span>`:"";
+  if(currentMode==="call"){
+    const loc=(n.file||n.line)?`<br><span style="color:#737373">${n.file||""}${n.line?":"+n.line:""} (${n.kind||"symbol"})</span>`:"";
+    const counts=(n.calledBy!=null||n.calls!=null)
+      ?`<br><span style="color:#A0C4FF">called ${n.calledBy??0}\xd7</span> <span style="color:#737373">\xb7</span> <span style="color:#FFD43B">calls ${n.calls??0}\xd7</span>`
+      :"";
+    return lbl+repoTag+loc+counts;
   }
-  return `${lbl}<br><span style="color:#737373">fan-in: ${n.weight||0}</span>`;
+  return `${lbl}${repoTag}<br><span style="color:#737373">fan-in: ${n.weight||0}</span>`;
 }
 
 /* ── Drag / orbit controls ────────────────────────────────────────────── */
 let isDragging=false,isNodeDrag=false,draggedIdx=-1;
-let dragStartX=0,dragStartY=0;
-let lastTheta=0,lastPhi=0;
-const dragPlane=new THREE.Plane();
-const dragTarget=new THREE.Vector3();
+let dragStartX=0,dragStartY=0,lastTheta=0,lastPhi=0;
+const dragPlane=new THREE.Plane(),dragTarget3=new THREE.Vector3();
 
 function attachControls(){
   const el=renderer.domElement;
@@ -1119,45 +1602,35 @@ function attachControls(){
   el.addEventListener("dblclick",onDbl);
   el.addEventListener("wheel",onWheel,{passive:false});
 }
-
 function onMD(e){
   if(!camera) return;
   const idx=pickNode(e);
   isDragging=true;
-  dragStartX=e.clientX; dragStartY=e.clientY;
-  lastTheta=orbitTheta; lastPhi=orbitPhi;
+  dragStartX=e.clientX;dragStartY=e.clientY;
+  lastTheta=orbitTheta;lastPhi=orbitPhi;
   autoRotating=false;
   if(idx>=0){
-    isNodeDrag=true; draggedIdx=idx;
-    pinned[idx]=1; heat=0.4; simTick=0;
+    isNodeDrag=true;draggedIdx=idx;pinned[idx]=1;heat=0.4;simTick=0;
     renderer.domElement.style.cursor="grabbing";
-    const camDir=new THREE.Vector3();
-    camera.getWorldDirection(camDir);
-    dragPlane.setFromNormalAndCoplanarPoint(camDir,new THREE.Vector3(px[idx],py[idx],pz[idx]));
+    const cd=new THREE.Vector3();camera.getWorldDirection(cd);
+    dragPlane.setFromNormalAndCoplanarPoint(cd,new THREE.Vector3(px[idx],py[idx],pz[idx]));
   }else{
-    isNodeDrag=false;
-    renderer.domElement.style.cursor="grabbing";
+    isNodeDrag=false;renderer.domElement.style.cursor="grabbing";
   }
 }
-
 function onMM(e){
   if(!camera) return;
   if(isDragging){
     if(isNodeDrag&&draggedIdx>=0){
-      const{x,y}=getXY(e);
-      mouse2D.set(x,y);
+      const{x,y}=getXY(e);mouse2D.set(x,y);
       raycaster.setFromCamera(mouse2D,camera);
-      if(raycaster.ray.intersectPlane(dragPlane,dragTarget)){
-        px[draggedIdx]=dragTarget.x;
-        py[draggedIdx]=dragTarget.y;
-        pz[draggedIdx]=dragTarget.z;
-        heat=0.3; simTick=0;
+      if(raycaster.ray.intersectPlane(dragPlane,dragTarget3)){
+        px[draggedIdx]=dragTarget3.x;py[draggedIdx]=dragTarget3.y;pz[draggedIdx]=dragTarget3.z;
+        heat=0.3;simTick=0;
       }
     }else{
-      const dx=(e.clientX-dragStartX)*0.005;
-      const dy=(e.clientY-dragStartY)*0.005;
-      orbitTheta=lastTheta-dx;
-      orbitPhi=Math.max(0.1,Math.min(Math.PI-0.1,lastPhi+dy));
+      orbitTheta=lastTheta-(e.clientX-dragStartX)*0.005;
+      orbitPhi=Math.max(0.1,Math.min(Math.PI-0.1,lastPhi+(e.clientY-dragStartY)*0.005));
       updateCameraFromOrbit();
     }
     return;
@@ -1165,57 +1638,62 @@ function onMM(e){
   const idx=pickNode(e);
   if(idx!==hoveredIdx){
     hoveredIdx=idx;
-    if(idx>=0){
-      showTip(nodeTooltip(idx),e.clientX,e.clientY);
-      renderer.domElement.style.cursor="pointer";
-    }else{
-      hideTip();
-      renderer.domElement.style.cursor="grab";
-    }
-  }else if(idx>=0){
-    showTip(nodeTooltip(idx),e.clientX,e.clientY);
+    if(idx>=0){showTip(nodeTooltip(idx),e.clientX,e.clientY);renderer.domElement.style.cursor="pointer";}
+    else{hideTip();renderer.domElement.style.cursor="grab";}
+  }else if(idx>=0){showTip(nodeTooltip(idx),e.clientX,e.clientY);}
+}
+function onMU(e){
+  const wasDrag=Math.abs(e.clientX-dragStartX)>4||Math.abs(e.clientY-dragStartY)>4;
+  isDragging=false;isNodeDrag=false;draggedIdx=-1;
+  if(renderer) renderer.domElement.style.cursor="grab";
+  setTimeout(()=>{autoRotating=!PRM;},1200);
+  if(!wasDrag){
+    const idx=pickNode(e);
+    if(idx>=0){ drillInto(idx); }
+    else if(drillStack.length){ drillBack(); }
   }
 }
-
-function onMU(){
-  isDragging=false; isNodeDrag=false; draggedIdx=-1;
-  if(renderer) renderer.domElement.style.cursor="grab";
-  setTimeout(()=>{ autoRotating=!PRM; },1200);
-}
-
-function onML(){
-  if(!isDragging){ hideTip(); hoveredIdx=-1; }
-}
-
-function onDbl(e){
-  const idx=pickNode(e);
-  if(idx>=0){ pinned[idx]=0; heat=0.5; simTick=0; }
-}
-
+function onML(){ if(!isDragging){hideTip();hoveredIdx=-1;} }
+function onDbl(e){ const idx=pickNode(e); if(idx>=0){pinned[idx]=0;heat=0.5;simTick=0;} }
 function onWheel(e){
   e.preventDefault();
-  orbitRadius=Math.max(10,Math.min(300,orbitRadius+e.deltaY*0.15));
+  const prevR=orbitRadius;
+  // Distance-proportional zoom: far away → large steps, close → fine steps.
+  // Use a multiplicative factor so each wheel tick moves a fixed % of current radius.
+  const zoomPct=e.deltaY>0 ? 0.10 : -0.10; // 10% per tick
+  orbitRadius=Math.max(10,Math.min(ORBIT_MAX, orbitRadius*(1+zoomPct)));
   updateCameraFromOrbit();
   autoRotating=false;
-  setTimeout(()=>{ autoRotating=!PRM; },1500);
+  // cam-repulsion is now alpha-independent (runs whenever orbitRadius/SHELL_R < 1)
+  // so no heat re-ignition needed here — the renderLoop condition handles it.
+  setTimeout(()=>{autoRotating=!PRM;},1500);
 }
 
-/* ── Main render loop ─────────────────────────────────────────────────── */
+/* ── Render loop ──────────────────────────────────────────────────────── */
 function renderLoop(){
   frameId=requestAnimationFrame(renderLoop);
   if(!scene||!camera||!renderer) return;
-
   if(!PRM){
-    if(heat>0) simStep();
+    // Run sim when: settling (heat>0), OR camera inside shell (cam-repulsion),
+    // OR any node is displaced from shell (shell-restore needs to run).
+    if(N>0){
+      const _cr=SHELL_R>0?orbitRadius/SHELL_R:2;
+      const _needCam=_cr<1.0;
+      let _needRestore=false;
+      if(!_needCam&&heat<=0){
+        // Check if any node is far enough off-shell to need restoring.
+        // Only sample — full O(n) check every frame is fine at ≤200 nodes.
+        for(let _i=0;_i<N;_i++){
+          const _pr=Math.sqrt(px[_i]*px[_i]+py[_i]*py[_i]+pz[_i]*pz[_i]);
+          if(Math.abs(_pr-SHELL_R)>0.5){_needRestore=true;break;}
+        }
+      }
+      if(heat>0||_needCam||_needRestore) simStep();
+    }
     if(autoRotating) orbitTheta+=AUTO_ROT;
     updateCameraFromOrbit();
   }
-
-  updateInstancedMesh(hoveredIdx);
-  updateDecorations();
-  updateEdgePositions(hoveredIdx);
-  edgeMat&&(edgeMat.opacity=hoveredIdx>=0?0.10:0.22);
-
+  refreshScene(hoveredIdx);
   renderer.render(scene,camera);
 }
 
@@ -1223,34 +1701,25 @@ function renderLoop(){
 roObserver=new ResizeObserver(()=>resizeRenderer());
 roObserver.observe(wrap);
 
-/* ── Mode toggle UI ───────────────────────────────────────────────────── */
-let includeGraphData=null; // cached from /data
-
+/* ── Mode toggle ──────────────────────────────────────────────────────── */
+let includeGraphData=null;
 function switchMode(mode){
-  if(mode===currentMode&&instancedMesh) return;
+  if(mode===currentMode&&nodeMeshes.length) return;
   btnInclude.classList.toggle("active",mode==="include");
   btnCall.classList.toggle("active",mode==="call");
   btnInclude.setAttribute("aria-pressed",String(mode==="include"));
   btnCall.setAttribute("aria-pressed",String(mode==="call"));
   cgRow.classList.toggle("visible",mode==="call");
   panelTitle.textContent=mode==="include"?"Include Graph · 3D":"Call Graph · 3D";
-
   if(mode==="include"){
-    currentMode="include";
-    callMeta=null;
-    cgErrEl.classList.remove("visible");
-    cgStatusEl.textContent="";
-    if(includeGraphData){
-      loadGraph(includeGraphData,"include",null);
-    }else{
-      emptyMsg.style.display="flex";
-    }
+    currentMode="include";callMeta=null;
+    cgErrEl.classList.remove("visible");cgStatusEl.textContent="";
+    if(includeGraphData) loadGraph(includeGraphData,"include",null);
+    else emptyMsg.style.display="flex";
   }else{
     currentMode="call";
-    // Don't tear down — wait for a trace
   }
 }
-
 btnInclude.addEventListener("click",()=>switchMode("include"));
 btnCall.addEventListener("click",()=>switchMode("call"));
 
@@ -1258,91 +1727,376 @@ btnCall.addEventListener("click",()=>switchMode("call"));
 function traceCallGraph(){
   const sym=cgSymbolEl.value.trim();
   if(!sym) return;
-  const dir=cgDirEl.value;
-  const depth=cgDepthEl.value;
-
-  cgTraceBtn.disabled=true;
-  cgStatusEl.textContent="tracing…";
+  const dir=cgDirEl.value,depth=cgDepthEl.value;
+  cgTraceBtn.disabled=true;cgStatusEl.textContent="tracing…";
   cgErrEl.classList.remove("visible");
-
-  fetch("/callgraph?symbol="+encodeURIComponent(sym)+"&direction="+encodeURIComponent(dir)+"&depth="+encodeURIComponent(depth))
-    .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+  fetch("/callgraph?symbol="+encodeURIComponent(sym)+"&direction="+encodeURIComponent(dir)+"&depth="+encodeURIComponent(depth)+(_serverRoot?"&projectPath="+encodeURIComponent(_serverRoot):""))
+    .then(r=>{if(!r.ok) throw new Error("HTTP "+r.status);return r.json();})
     .then(data=>{
-      cgStatusEl.textContent="";
-      cgTraceBtn.disabled=false;
-
+      cgStatusEl.textContent="";cgTraceBtn.disabled=false;
       if(data.error||!data.nodes||!data.nodes.length){
-        const msg=data.error||`No call hierarchy for "${sym}" — try a function/method name, or warm up the backend first.`;
-        cgErrEl.textContent=msg;
+        cgErrEl.textContent=data.error||`No call hierarchy for "${sym}" — try a function/method name, or warm up the backend first.`;
         cgErrEl.classList.add("visible");
         updateMetrics(simNodes,simEdges,callMeta);
         return;
       }
-
-      const focusNode=data.nodes.find(n=>n.focus===true);
-      const focusLabel=focusNode?(focusNode.label||focusNode.id):sym;
-      const meta={
+      const fn=data.nodes.find(n=>n.focus===true);
+      loadGraph(data,"call",{
         focus:data.focus||sym,
-        focusLabel,
+        focusLabel:fn?(fn.label||fn.id):sym,
         direction:data.direction||dir,
         depth:data.depth||depth,
-        truncated:!!data.truncated
-      };
-      loadGraph(data,"call",meta);
+        truncated:!!data.truncated,
+        totalCallSites:data.totalCallSites||0
+      });
     })
     .catch(err=>{
-      cgStatusEl.textContent="";
-      cgTraceBtn.disabled=false;
-      cgErrEl.textContent=`Error: ${err.message}`;
-      cgErrEl.classList.add("visible");
+      cgStatusEl.textContent="";cgTraceBtn.disabled=false;
+      cgErrEl.textContent=`Error: ${err.message}`;cgErrEl.classList.add("visible");
     });
 }
-
 cgTraceBtn.addEventListener("click",traceCallGraph);
-cgSymbolEl.addEventListener("keydown",e=>{ if(e.key==="Enter") traceCallGraph(); });
+// Enter-to-trace is handled by the custom autocomplete block below (owned there).
 
 /* ── Highlight filter ─────────────────────────────────────────────────── */
 hlFilterEl.addEventListener("input",()=>{
   hlFilter=hlFilterEl.value;
-  // If reduced-motion, force a re-render
-  if(PRM&&renderer&&scene&&camera){
-    updateInstancedMesh(hoveredIdx);
-    updateDecorations();
-    updateEdgePositions(hoveredIdx);
-    renderer.render(scene,camera);
+  if(PRM&&renderer&&scene&&camera){refreshScene(hoveredIdx);renderer.render(scene,camera);}
+});
+
+/* ── Symbol autocomplete — custom dropdown (#symDropdown) ────────────── */
+// Replaces the native <datalist> which doesn't reliably surface in all browsers.
+// Debounce 180ms; ≥1 char → /symbols?q=; empty focus → /symbols?q= (browse).
+// Click or Enter picks a symbol and immediately traces it.
+{
+  const symInput = document.getElementById("cgSymbol");
+  const symDrop  = document.getElementById("symDropdown");
+  let acTimer=null, acItems=[], acActive=-1;
+
+  function closeDropdown(){
+    symDrop.classList.remove("open");
+    acItems=[]; acActive=-1;
+  }
+
+  function pickItem(name){
+    symInput.value=name;
+    closeDropdown();
+    traceCallGraph(); // immediately fetch + render
+  }
+
+  function setActive(idx){
+    acItems.forEach((el,i)=>el.classList.toggle("active",i===idx));
+    acActive=idx;
+    if(idx>=0) acItems[idx].scrollIntoView({block:"nearest"});
+  }
+
+  function buildDropdown(symbols){
+    const seen=new Set();
+    const frag=document.createDocumentFragment();
+    acItems=[];
+    let count=0;
+    for(const s of symbols){
+      if(seen.has(s.name)||count>=30) continue;
+      seen.add(s.name); count++;
+      const row=document.createElement("div");
+      row.className="sym-item"; row.setAttribute("role","option");
+      const base=s.file?s.file.split(/[\\/]/).pop():"";
+      const meta=[s.kind,base].filter(Boolean).join("  ·  ");
+      row.innerHTML=`<span class="sym-item-name">${s.name}</span>`+
+                    (meta?`<span class="sym-item-meta">· ${meta}</span>`:"");
+      row.addEventListener("mousedown",ev=>{ev.preventDefault();pickItem(s.name);});
+      frag.appendChild(row);
+      acItems.push(row);
+    }
+    symDrop.innerHTML="";
+    if(count){symDrop.appendChild(frag);symDrop.classList.add("open");}
+    else closeDropdown();
+    acActive=-1;
+  }
+
+  function fetchSymbols(q){
+    fetch("/symbols?q="+encodeURIComponent(q)+(_serverRoot?"&projectPath="+encodeURIComponent(_serverRoot):""))
+      .then(r=>{if(!r.ok)throw new Error("");return r.json();})
+      .then(data=>{
+        if(data.error||!Array.isArray(data.symbols)||!data.symbols.length){closeDropdown();return;}
+        buildDropdown(data.symbols);
+      })
+      .catch(closeDropdown);
+  }
+
+  // Input: debounce 180ms, ≥1 char
+  symInput.addEventListener("input",()=>{
+    clearTimeout(acTimer);
+    const val=symInput.value.trim();
+    if(!val){closeDropdown();return;}
+    acTimer=setTimeout(()=>fetchSymbols(val),180);
+  });
+
+  // Focus empty → browse top symbols
+  symInput.addEventListener("focus",()=>{
+    if(!symInput.value.trim()) fetchSymbols("");
+  });
+
+  // Keyboard: Up/Down navigate, Enter picks, Esc closes
+  symInput.addEventListener("keydown",e=>{
+    if(e.key==="ArrowDown"){
+      e.preventDefault();
+      setActive(Math.min(acActive+1,acItems.length-1));
+    }else if(e.key==="ArrowUp"){
+      e.preventDefault();
+      setActive(Math.max(acActive-1,0));
+    }else if(e.key==="Enter"){
+      if(acActive>=0&&acItems[acActive]){
+        e.stopPropagation(); // don't also fire the traceCallGraph keydown below
+        const name=acItems[acActive].querySelector(".sym-item-name").textContent;
+        pickItem(name);
+      } else {
+        closeDropdown();
+        traceCallGraph();
+      }
+    }else if(e.key==="Escape"){
+      closeDropdown();
+    }
+  });
+
+  // Close when clicking outside
+  document.addEventListener("mousedown",e=>{
+    if(!symInput.contains(e.target)&&!symDrop.contains(e.target)) closeDropdown();
+  });
+}
+
+/* ── Drill-down: click-to-isolate neighborhood ───────────────────────── */
+const drillEl=document.getElementById("graphDrill");
+
+function drillInto(idx){
+  if(idx<0||!simNodes[idx]) return;
+  const nbrs=simAdj[idx]?new Set(simAdj[idx]):new Set();
+  nbrs.add(idx);
+  const lbl=simNodes[idx].label||(simNodes[idx].id.split("/").pop())||simNodes[idx].id;
+  // Snapshot current camera state so drillBack can restore it exactly.
+  const camSnap={
+    theta:orbitTheta, phi:orbitPhi, radius:orbitRadius,
+    tx:orbitTarget.x, ty:orbitTarget.y, tz:orbitTarget.z
+  };
+  drillStack.push({visibleSet:drillVisible?new Set(drillVisible):null, focusIdx:idx, label:lbl, camSnap});
+  drillVisible=nbrs;
+  fitToVisible();
+  updateDrillUI();
+}
+
+function drillBack(){
+  if(!drillStack.length) return;
+  const prev=drillStack.pop();
+  drillVisible=prev.visibleSet;
+  if(prev.camSnap){
+    // Restore the exact camera orientation that was active before drillInto.
+    orbitTheta=prev.camSnap.theta;
+    orbitPhi=prev.camSnap.phi;
+    orbitRadius=prev.camSnap.radius;
+    orbitTarget.set(prev.camSnap.tx,prev.camSnap.ty,prev.camSnap.tz);
+    updateCameraFromOrbit();
+  } else {
+    fitToVisible();
+  }
+  updateDrillUI();
+}
+
+function fitToVisible(){
+  if(!N||!camera) return;
+  let cx=0,cy=0,cz=0,cnt=0;
+  for(let i=0;i<N;i++){
+    if(drillVisible&&!drillVisible.has(i)) continue;
+    cx+=px[i];cy+=py[i];cz+=pz[i];cnt++;
+  }
+  if(!cnt) return;
+  cx/=cnt;cy/=cnt;cz/=cnt;
+  let maxR=0;
+  for(let i=0;i<N;i++){
+    if(drillVisible&&!drillVisible.has(i)) continue;
+    const dx=px[i]-cx,dy=py[i]-cy,dz=pz[i]-cz;
+    const r=Math.sqrt(dx*dx+dy*dy+dz*dz)+radii[i]*3.5;
+    if(r>maxR) maxR=r;
+  }
+  const fovR=camera.fov*Math.PI/180;
+  const dist=(maxR/Math.tan(fovR/2))*1.25;
+  camera.position.set(cx,cy,cz+dist);
+  camera.lookAt(cx,cy,cz);
+  orbitTarget.set(cx,cy,cz);
+  deriveCameraOrbit();
+}
+
+function updateDrillUI(){
+  if(!drillStack.length){ drillEl.innerHTML=""; return; }
+  const top=drillStack[drillStack.length-1];
+  const depth=drillStack.length;
+  drillEl.innerHTML=
+    `<button class="graph-drill-back" id="drillBackBtn" aria-label="Back to full graph">↩ back (${depth})</button>`+
+    `  <span style="color:var(--dim)">${top.label}</span>`+
+    `  <span style="color:var(--faint);font-size:9px"> · click empty to pop · Backspace</span>`;
+  document.getElementById("drillBackBtn").addEventListener("click",drillBack);
+}
+
+function resetDrill(){
+  drillStack=[];drillVisible=null;
+  // drillEl may not exist yet during first loadGraph before DOM module runs
+  if(typeof drillEl!=="undefined"&&drillEl) drillEl.innerHTML="";
+}
+
+/* ── Color mode toggle (groups / repo / heat) ────────────────────────── */
+const btnColorGroups=document.getElementById("colorGroups");
+const btnColorRepo  =document.getElementById("colorRepo");
+const btnColorHeat  =document.getElementById("colorHeat");
+const repoLegendEl  =document.getElementById("repoLegend");
+
+function updateRepoLegend(){
+  if(colorMode!=="repo"||!simNodes.length){
+    repoLegendEl.classList.remove("visible");
+    repoLegendEl.innerHTML="";
+    return;
+  }
+  const maxW=Math.max(...simNodes.map(n=>n.weight||0),1);
+  const legend=buildRepoLegend(simNodes,maxW);
+  const rows=legend.slice(0,12).map(([repo,{count,color}])=>{
+    const hex="#"+color.getHexString();
+    return `<div class="repo-legend-row">`+
+      `<span style="color:var(--faint)">${repo} <span style="color:var(--dim)">(${count})</span></span>`+
+      `<span class="repo-legend-swatch" style="background:${hex}"></span>`+
+      `</div>`;
+  }).join("");
+  repoLegendEl.innerHTML=rows;
+  repoLegendEl.classList.add("visible");
+}
+
+// Re-paint nodeColors[] and mesh materials to match colorMode.
+function applyColorMode(){
+  if(!N||!simNodes.length) return;
+  const maxW=Math.max(...simNodes.map(n=>n.weight||0),1);
+  const linkLike=simEdges.map(({a,b})=>({source:simNodes[a].id,target:simNodes[b].id}));
+  const gColors=colorMode==="groups"?buildGroupColors(simNodes,linkLike,maxW):null;
+  const rColors=colorMode==="repo"  ?buildRepoColors(simNodes,maxW):null;
+  simNodes.forEach((n,i)=>{
+    const norm=(n.weight||0)/maxW;
+    const isFocus=currentMode==="call"&&n.focus===true;
+    const heatBase=heatColor(norm);
+    const hc=isFocus?hexC("#FFD43B"):
+              colorMode==="groups"?gColors[i]:
+              colorMode==="repo"  ?rColors[i]:heatBase;
+    nodeColors[i]=hc;
+    if(nodeMeshes[i]) nodeMeshes[i].material.color.copy(lerpC(hc,C_WHITE,0.35));
+    if(glowSprites[i]) glowSprites[i].material.map=glowTex(hc);
+  });
+  updateRepoLegend();
+  if(PRM&&renderer&&scene&&camera){refreshScene(hoveredIdx);renderer.render(scene,camera);}
+}
+
+function setColorMode(mode){
+  colorMode=mode;
+  btnColorGroups.classList.toggle("active",mode==="groups");
+  btnColorRepo  .classList.toggle("active",mode==="repo");
+  btnColorHeat  .classList.toggle("active",mode==="heat");
+  btnColorGroups.setAttribute("aria-pressed",String(mode==="groups"));
+  btnColorRepo  .setAttribute("aria-pressed",String(mode==="repo"));
+  btnColorHeat  .setAttribute("aria-pressed",String(mode==="heat"));
+  applyColorMode();
+}
+
+btnColorGroups.addEventListener("click",()=>setColorMode("groups"));
+btnColorRepo  .addEventListener("click",()=>setColorMode("repo"));
+btnColorHeat  .addEventListener("click",()=>setColorMode("heat"));
+
+/* ── Focus / expand mode ──────────────────────────────────────────────── */
+let graphFocused=false;
+const focusBtn=document.getElementById("graphFocusBtn");
+
+function setGraphFocus(on){
+  graphFocused=on;
+  document.body.classList.toggle("graph-focused",on);
+  focusBtn.setAttribute("aria-label",on?"Collapse graph":"Expand graph to full screen");
+  focusBtn.setAttribute("title",on?"Collapse graph (Esc)":"Expand graph (Esc to close)");
+  // Give the CSS layout time to apply, then resize the renderer to fill new dims
+  requestAnimationFrame(()=>{
+    resizeRenderer();
+    // Re-fit camera to the cloud so it fills the new (larger) viewport
+    if(N&&camera){ recenterCamera(); deriveCameraOrbit(); }
+    if(PRM&&renderer&&scene&&camera){ refreshScene(hoveredIdx); renderer.render(scene,camera); }
+  });
+}
+
+focusBtn.addEventListener("click",()=>setGraphFocus(!graphFocused));
+
+/* ── Keyboard camera controls ─────────────────────────────────────────── */
+// Guard: skip when an input/select/textarea has focus (user is typing)
+function inputFocused(){
+  const t=document.activeElement&&document.activeElement.tagName;
+  return t==="INPUT"||t==="SELECT"||t==="TEXTAREA";
+}
+
+const KB_ORBIT_STEP = 0.055;  // radians per keydown
+const KB_ZOOM_STEP  = 0.08;   // fraction of orbitRadius per keydown
+
+document.addEventListener("keydown",e=>{
+  // Esc always exits focus mode regardless of where focus is
+  if(e.key==="Escape"){
+    if(graphFocused) setGraphFocus(false);
+    return;
+  }
+
+  // All other keys: skip if typing in an input
+  if(inputFocused()) return;
+
+  // Skip if graph canvas wrapper doesn't have the pointer (only steal keys when
+  // the user is interacting with the graph area, i.e. not the 2D panels)
+  // Actually we want global key bindings when focus mode is active OR the graph
+  // panel is the last interacted element. Simplest guard: skip only when input focused.
+
+  let handled=true;
+  switch(e.key){
+    // Orbit — azimuth
+    case "ArrowLeft": case "a": case "A":
+      orbitTheta-=KB_ORBIT_STEP; autoRotating=false; break;
+    case "ArrowRight":case "d": case "D":
+      orbitTheta+=KB_ORBIT_STEP; autoRotating=false; break;
+    // Orbit — elevation
+    case "ArrowUp":  case "w": case "W":
+      orbitPhi=Math.max(0.08,orbitPhi-KB_ORBIT_STEP); autoRotating=false; break;
+    case "ArrowDown":case "s": case "S":
+      orbitPhi=Math.min(Math.PI-0.08,orbitPhi+KB_ORBIT_STEP); autoRotating=false; break;
+    // Dolly zoom
+    case "+": case "=":
+      orbitRadius=Math.max(10,orbitRadius*(1-KB_ZOOM_STEP)); break;
+    case "-": case "_":
+      orbitRadius=Math.min(ORBIT_MAX,orbitRadius*(1+KB_ZOOM_STEP)); break;
+    // Fit / reset
+    case "r": case "R":
+      if(N&&camera){ recenterCamera(); deriveCameraOrbit(); } break;
+    case "Backspace":
+      if(drillStack.length){ drillBack(); handled=true; } break;
+    default:
+      handled=false;
+  }
+  if(handled){
+    e.preventDefault();
+    updateCameraFromOrbit();
+    if(PRM&&renderer&&scene&&camera){refreshScene(hoveredIdx);renderer.render(scene,camera);}
   }
 });
 
-/* ── Attach controls after renderer exists ────────────────────────────── */
-// Controls are attached once on first graph load via ensureRenderer + attachControls
+/* ── Boot ─────────────────────────────────────────────────────────────── */
 let controlsAttached=false;
 function maybeAttachControls(){
   if(controlsAttached||!renderer) return;
-  attachControls();
-  controlsAttached=true;
+  attachControls();controlsAttached=true;
 }
-
-/* ── Data handshake with 2D script ───────────────────────────────────── */
 function handleIncludeData(g){
-  includeGraphData=g;
-  maybeAttachControls();
+  includeGraphData=g;maybeAttachControls();
   if(currentMode==="include"){
-    if(!g||!g.nodes||!g.nodes.length){
-      emptyMsg.style.display="flex";
-    }else{
-      loadGraph(g,"include",null);
-    }
+    if(!g||!g.nodes||!g.nodes.length) emptyMsg.style.display="flex";
+    else loadGraph(g,"include",null);
   }
 }
-
-// Wire up: ensureRenderer is called inside loadGraph; controls need the element to exist
-// We call ensureRenderer early so the canvas is in the DOM before first data arrives
-if(ensureRenderer()) attachControls();
-controlsAttached=true;
-
+if(ensureRenderer()){attachControls();controlsAttached=true;}
 if(window.__dashPending!==null){
-  handleIncludeData(window.__dashPending);
-  window.__dashPending=null;
+  handleIncludeData(window.__dashPending);window.__dashPending=null;
 }else{
   window.__dashDispatch=handleIncludeData;
 }
