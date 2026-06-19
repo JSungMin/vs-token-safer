@@ -3,20 +3,69 @@
   "version": "0.33.3",
   "type": "module",
   "description": "Force code search through an official language server's index (clangd for C/C++, Roslyn for C#/.NET, tsserver for JS/TS, pyright for Python) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
-  "keywords": ["clangd", "roslyn", "tsserver", "pyright", "lsp", "code-search", "cpp", "csharp", "typescript", "javascript", "python", "unreal", "visual-studio", "mcp", "claude", "claude-code", "grep", "token-efficiency"],
+  "keywords": [
+    "clangd",
+    "roslyn",
+    "tsserver",
+    "pyright",
+    "lsp",
+    "code-search",
+    "cpp",
+    "csharp",
+    "typescript",
+    "javascript",
+    "python",
+    "unreal",
+    "visual-studio",
+    "mcp",
+    "claude",
+    "claude-code",
+    "grep",
+    "token-efficiency"
+  ],
   "homepage": "https://github.com/JSungMin/vs-token-safer",
-  "repository": { "type": "git", "url": "git+https://github.com/JSungMin/vs-token-safer.git", "directory": "server" },
-  "bugs": { "url": "https://github.com/JSungMin/vs-token-safer/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JSungMin/vs-token-safer.git",
+    "directory": "server"
+  },
+  "bugs": {
+    "url": "https://github.com/JSungMin/vs-token-safer/issues"
+  },
   "license": "MIT",
-  "author": { "name": "JSungMin" },
-  "bin": { "vts": "cli.js", "vs-token-safer": "index.js" },
-  "files": ["index.js", "cli.js", "core.js", "lsp.js", "sdk.js", "resolve-bin.js", "warmset.js", "ensure-deps.mjs", "backends/"],
-  "scripts": { "start": "node index.js", "test": "node ../eval/run.mjs" },
+  "author": {
+    "name": "JSungMin"
+  },
+  "bin": {
+    "vts": "cli.js",
+    "vs-token-safer": "index.js"
+  },
+  "files": [
+    "index.js",
+    "cli.js",
+    "core.js",
+    "lsp.js",
+    "sdk.js",
+    "resolve-bin.js",
+    "warmset.js",
+    "treesitter.js",
+    "symindex.js",
+    "ensure-deps.mjs",
+    "backends/"
+  ],
+  "scripts": {
+    "start": "node index.js",
+    "test": "node ../eval/run.mjs"
+  },
   "optionalDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "typescript-language-server": "^5.0.0",
+    "pyright": "^1.1.400",
     "typescript": "^6.0.3",
-    "pyright": "^1.1.400"
+    "typescript-language-server": "^5.0.0",
+    "web-tree-sitter": "^0.25.10",
+    "tree-sitter-wasms": "^0.1.13"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }

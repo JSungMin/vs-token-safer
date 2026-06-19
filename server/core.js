@@ -12,13 +12,15 @@ import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled } from "./backends/index.js";
-import { scopeStats } from "./scope.js";
+import { scopeStats, inScope } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
+import { tsSearchSymbols, tsAvailable } from "./treesitter.js";
+import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -1047,8 +1049,14 @@ function factorCommonPrefix(lines) {
 function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false } = {}) {
   if (!certOn()) return "";
+  // The SYNTACTIC tier (tree-sitter / committed index) finds DECLARATIONS without a toolchain, but it does not
+  // resolve references, overloads, or types — so even a "complete" syntactic answer is not the semantic
+  // certainty the LSP gives. Label it as such so the agent knows a language server would tighten it.
+  if (syntactic && truncated !== "cap" && !(total != null && shown < total)) {
+    return `\n[completeness: SYNTACTIC — tree-sitter found ${shown} declaration(s) with zero project setup; this tier locates decls but does NOT resolve references/overloads/types. Install a language server (or generate compile_commands.json) for semantic certainty.]`;
+  }
   // When an indexing scope is active, a semantic COMPLETE (or authoritative 0) is complete WITHIN THE SCOPE,
   // not across the whole project — qualify it so the agent doesn't read it as project-wide coverage.
   const within = scoped ? " within the configured indexing scope (not the whole project — widen or unset the scope for full coverage)" : "";
@@ -1474,6 +1482,26 @@ function scanTextUnder(root, q, max, accept) {
   else if (timedOut) out.truncated = "time";
   return out;
 }
+// SYNTACTIC fallback tier — between the semantic LSP and the literal text scan. When no LSP backend resolves
+// (or it answers from open files and missed the symbol), this returns real DECLARATIONS for 36 languages with
+// zero project setup: first a committed `.vts-index/symbols.jsonl` (instant, team-shareable), else a live
+// tree-sitter AST walk. Strictly better than the literal `grep <name>` it precedes — that returns every usage
+// LINE and can't tell a class from a comment; this returns the decls, ranked exact-before-substring.
+// Returns { lines: ["file:line: kind name", …], source, truncated, total } or null when neither tier hits.
+// Best-effort: any failure returns null so the caller still falls through to the literal scan.
+async function syntacticSymbols(root, q, max) {
+  try {
+    let hits = searchSymIndex(root, String(q), { max });
+    let source = hits && hits.length ? "committed index (.vts-index)" : null;
+    if (!source) {
+      hits = await tsSearchSymbols(root, String(q), { max, skipDir });
+      source = hits && hits.length ? "tree-sitter (syntactic)" : null;
+    }
+    if (!source) return null;
+    const lines = hits.map((h) => `${h.file}:${h.line}: ${h.kind} ${h.name}`);
+    return { lines, source, truncated: hits.truncated || null, total: hits.length };
+  } catch { return null; }
+}
 // Counterfactual shadow measurement (opt-in VTS_COUNTERFACTUAL=1): run a LOCAL literal grep for the same
 // symbol NAME, compare what grep WOULD have returned (tokens + match positions) against the vts answer, and
 // record the comparison. The grep output is DISCARDED — only the numbers reach the local ledger, never the
@@ -1746,6 +1774,26 @@ export async function runTool(name, a = {}) {
           : `\n(Optional: install the full LLVM toolchain — it bundles clangd-indexer — then \`vts preindex --static\` builds an instant-load --index-file.\n   install:  scoop install llvm   |   winget install LLVM.LLVM   |   https://github.com/llvm/llvm-project/releases  ·  or VTS_CLANGD_INDEXER_CMD=/path/to/clangd-indexer)`;
       return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + staticHint);
     }
+    if (name === "vts_index") {
+      // Build / inspect the COMMITTABLE symbol index (.vts-index/symbols.jsonl) — the cold-start accelerator.
+      // tree-sitter walks the scope and writes a portable, git-committable, team-shareable JSONL of every
+      // declaration; a later search_symbol on a toolchain-less machine (or before clangd's index is built)
+      // answers from it instantly. status=true just reports the current file; otherwise it (re)builds.
+      const root = resolveRoot(a);
+      if (a.status === true || a.status === "true") {
+        const idx = loadSymIndex(root);
+        if (!idx) return out(`No committed symbol index at ${symIndexPath(root)}. Build one: vts index  (commit .vts-index/ to share it with the team / speed cold starts).`);
+        const built = idx.meta.built ? new Date(idx.meta.built).toISOString() : "unknown";
+        return out(`Committed symbol index: ${symIndexPath(root)}\n  ${idx.entries.length} symbol(s) over ${idx.meta.files ?? "?"} file(s), built ${built}${idx.meta.partial ? " (PARTIAL — time-boxed; rebuild for full coverage)" : ""}.\n  Used as the instant cold-start tier for search_symbol when no language server has indexed yet.`);
+      }
+      if (!tsAvailable()) return err(`vts index needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms). They install with the plugin; if missing, run \`npm install\` in the server dir.`);
+      const dirs = scopeDirsFor(root);
+      const within = dirs.length ? (p) => inScope(p, dirs) : undefined;
+      const t0 = Date.now();
+      const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now() });
+      const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
+      return out(`Built committable symbol index${scopeNote}: ${r.symbols} symbol(s) over ${r.files} file(s) → ${r.path} in ${((Date.now() - t0) / 1000).toFixed(1)}s.${r.partial ? " (PARTIAL — time-boxed; raise VTS via a narrower scope or rerun.)" : ""}\n  Commit .vts-index/ to share it / speed teammates' cold starts. It answers search_symbol instantly until a language server indexes (which then supersedes it).`);
+    }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
       // no-DB text mode. DRY RUN by default (prints the exact command); apply=true runs it (minutes).
@@ -1918,6 +1966,10 @@ export async function runTool(name, a = {}) {
     if (!backendName && name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
       const max = Number(a.maxResults) || MAX_RESULTS;
+      // No toolchain — try the SYNTACTIC tier (committed index / tree-sitter AST) before the literal scan: it
+      // returns real declarations for 36 languages with zero setup, vastly better than a usage-line grep.
+      const syn = await syntacticSymbols(root, a.q, Math.min(max, 40));
+      if (syn) return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
       const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
       if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
       return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
@@ -1946,11 +1998,14 @@ export async function runTool(name, a = {}) {
         // clangd returns nothing without a usable compile_commands.json. In all three, fall back to a
         // bounded literal text search so the name is still locatable. (roslyn indexes the whole solution.)
         if (backendName === "typescript" || backendName === "pyright" || backendName === "clangd") {
+          const why = backendName === "clangd"
+            ? "clangd has no usable index here (missing/empty compile_commands.json)"
+            : `${backendName} answers from open/indexed files, so a symbol whose file isn't open yet (or a non-exported local) can be missed`;
+          // SYNTACTIC tier first (real decls, 36 langs, no setup), then the literal scan as a last resort.
+          const syn = await syntacticSymbols(root, a.q, Math.min(max, 40));
+          if (syn) return finishOut(syn.lines, adv + `No indexed symbol for "${a.q}" — ${why}. ${syn.source} declaration matches instead:\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
           const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
           if (hits.length) {
-            const why = backendName === "clangd"
-              ? "clangd has no usable index here (missing/empty compile_commands.json)"
-              : `${backendName} answers from open/indexed files, so a symbol whose file isn't open yet (or a non-exported local) can be missed`;
             return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${why}. Literal text matches instead (file:line of the name, not a semantic decl):\n` + hits.join("\n"));
           }
         }
