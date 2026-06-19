@@ -1781,7 +1781,7 @@ const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
 // literal usage grep. Skips gracefully if the optional tree-sitter deps aren't installed (CI without them).
-const { tsFileSymbols, tsSearchSymbols, tsAvailable } = await import("../server/treesitter.js");
+const { tsFileSymbols, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
 const { buildSymIndex, loadSymIndex, searchSymIndex, hasSymIndex } = await import("../server/symindex.js");
 let tsTierOk = true;
 if (tsAvailable()) {
@@ -1807,7 +1807,15 @@ if (tsAvailable()) {
   const idxLoadOk = !!loaded && loaded.meta.v === 1 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4;
   const idxHits = searchSymIndex(tsDir, "buildWidgetTree");
   const idxSearchOk = !!idxHits && idxHits.fromIndex && idxHits.length === 1 && /b\.ts$/.test(idxHits[0].file) && idxHits[0].line === 2;
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk;
+  // (d) tree-sitter REFERENCES (tags-query call-site capture): the syntactic find_references fallback. A
+  // caller in Python + a caller in TS — both call sites captured, the decl line itself is NOT a reference.
+  fs.writeFileSync(path.join(tsDir, "sub", "d.py"), "from a import x\ndef caller():\n    return build_widget(3)\n");
+  fs.writeFileSync(path.join(tsDir, "sub", "e.ts"), "import { buildWidgetTree } from './b';\nexport const z = buildWidgetTree();\n");
+  const pyRefs = await tsSearchReferences(tsDir, "build_widget", { skipDir: (n) => SKIP.has(n) });
+  const tsRefs = await tsSearchReferences(tsDir, "buildWidgetTree", { skipDir: (n) => SKIP.has(n) });
+  const refOk = pyRefs.some((r) => /d\.py$/.test(r.file) && r.line === 3) && !pyRefs.some((r) => /c\.py$/.test(r.file)) // the def is not a ref
+    && tsRefs.some((r) => /e\.ts$/.test(r.file) && r.line === 2);
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
