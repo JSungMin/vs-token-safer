@@ -772,7 +772,9 @@ function clangdShardCount(cdbDir) {
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_INDEX_ADVISORY ?? "1"))) return "";
-  let cdbDir; try { cdbDir = resolveCdbDir(root); } catch { cdbDir = null; }
+  // Use the EFFECTIVE (scoped) CDB so the TU count + shard % reflect the scope — else a scoped project still
+  // reports the full ~26k TUs and tells the user to scope when they already have.
+  let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
   if (!cdbDir) return ""; // the no-DB case is already covered by compileDbAdvisory
   const db = loadCdb(cdbDir);
   if (!db) return "";
@@ -1713,27 +1715,34 @@ export async function runTool(name, a = {}) {
       return out(lines.join("\n"));
     }
     if (name === "vts_preindex") {
-      // Pre-build the index so the first real query is instant. clangd + clangd-indexer → an offline static
-      // index loaded via --index-file (no lazy crawl); otherwise a full warm pass that persists the background
-      // index. Honors the configured scope, so on a huge tree only the chosen subset is indexed.
+      // Pre-build the index so the first real query is instant. DEFAULT = a scoped background-index warm pass
+      // (no extra build step; works with the clangd everyone has). The clangd-indexer STATIC index is the
+      // heavy, OPT-IN path (`static=true`): it parses every in-scope TU offline and can take TENS OF MINUTES on
+      // a large scope, so it is never triggered just because the binary exists. Either way the scope is
+      // honored, and clangd auto-loads an EXISTING vts-static.idx via --index-file (cheap) regardless.
       const root = resolveRoot(a);
       const backendName = a.backend || BACKEND || pickBackend(root);
       if (!backendName) return err(`No backend to pre-index. Pass backend=clangd|roslyn|typescript|pyright or ensure ${root} has a build artifact.`);
       const dirs = scopeDirsFor(root);
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : " (whole tree — set a scope via vts setup --scope to index a subset faster)";
-      if (backendName === "clangd" && hasClangdIndexer()) {
+      const wantStatic = a.static === true || a.static === "true";
+      if (backendName === "clangd" && wantStatic) {
+        if (!hasClangdIndexer()) return err(`preindex static: clangd-indexer not found. Install the full LLVM toolchain (scoop install llvm | winget install LLVM.LLVM) or set VTS_CLANGD_INDEXER_CMD. Or omit static=true for the background-index warm pass.`);
         const r = buildStaticIndex(root);
         if (r.error) return err(`preindex: ${r.error}`);
         const t0 = Date.now();
         try { await getClient(root, backendName); } catch { /* warm best-effort */ }
-        return out(`Built static clangd index${scopeNote}: ${r.tus} TU(s) → ${r.path} in ${(r.ms / 1000).toFixed(1)}s, loaded via --index-file (no background crawl wait). Warm in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
+        return out(`Built STATIC clangd index${scopeNote}: ${r.tus} TU(s) → ${r.path} in ${(r.ms / 1000).toFixed(1)}s, loaded via --index-file (no background crawl wait). Warm in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
       }
       const t0 = Date.now();
       await getClient(root, backendName);
-      const adv = backendName === "clangd" && !hasClangdIndexer()
-        ? `\n(For INSTANT pre-indexing install the full LLVM toolchain — it bundles clangd-indexer — then re-run vts preindex; it builds a static --index-file instead of the slower background crawl.\n   install:  scoop install llvm   |   winget install LLVM.LLVM   |   https://github.com/llvm/llvm-project/releases\n   already have it elsewhere? point vts at it: VTS_CLANGD_INDEXER_CMD=/path/to/clangd-indexer)`
-        : "";
-      return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + adv);
+      // After a default warm pass, point at the heavier static option ONLY as a hint (with the time caveat) —
+      // never auto-run it. Install advice when clangd has no indexer at all.
+      const staticHint = backendName !== "clangd" ? ""
+        : hasClangdIndexer()
+          ? `\n(Want instant COLD starts across sessions? \`vts preindex --static\` builds a one-time monolithic --index-file via clangd-indexer — but it parses every in-scope TU and can take tens of minutes on a large scope, so run it in the background / CI. The scoped background index above is usually enough.)`
+          : `\n(Optional: install the full LLVM toolchain — it bundles clangd-indexer — then \`vts preindex --static\` builds an instant-load --index-file.\n   install:  scoop install llvm   |   winget install LLVM.LLVM   |   https://github.com/llvm/llvm-project/releases  ·  or VTS_CLANGD_INDEXER_CMD=/path/to/clangd-indexer)`;
+      return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + staticHint);
     }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
