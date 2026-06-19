@@ -1627,6 +1627,99 @@ const raLedger = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")); 
 const readAvoidOk = !!(raLedger.tools && raLedger.tools.read_symbol && raLedger.tools.read_symbol.rawTok >= 2000); // whole-file baseline, not the tiny {file,range}
 try { fs.rmSync(raDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const effectiveCutsOk = focusUnitOk && conceptUnitOk && conceptIntOk && readAvoidOk;
+
+// 76) completeness certificate — the semantic guarantee grep can't give: every result-bearing tool labels its
+// answer COMPLETE / PARTIAL / INCONCLUSIVE. The load-bearing distinction is PARTIAL (known, recoverable
+// remainder) vs INCONCLUSIVE (a bounded walk that may have missed — a 0 is not authoritative). Pure-fn modes +
+// a live search_text integration (a small, non-truncated scan certifies COMPLETE) + the VTS_CERT=0 toggle.
+const { completenessCert } = await import("../server/core.js");
+const certComplete = completenessCert({ shown: 3, total: 3, truncated: null, semantic: true }).includes("COMPLETE");
+const certPartial = (() => { const s = completenessCert({ shown: 60, total: 200, truncated: "cap", semantic: true }); return s.includes("PARTIAL") && s.includes("60 of 200"); })();
+const certTime = completenessCert({ shown: 0, truncated: "time", semantic: false }).includes("INCONCLUSIVE");
+const certIndex = completenessCert({ truncated: "index" }).includes("INCONCLUSIVE"); // partial-index 0 (ts/py) ≠ authoritative 0
+const certOff = (() => { const prev = process.env.VTS_CERT; process.env.VTS_CERT = "0"; const s = completenessCert({ shown: 1, total: 1 }); if (prev === undefined) delete process.env.VTS_CERT; else process.env.VTS_CERT = prev; return s === ""; })();
+const certDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-cert`);
+fs.mkdirSync(certDir, { recursive: true });
+fs.writeFileSync(path.join(certDir, "c.js"), "const certToken123 = 1;\n");
+const certScan = await runTool("search_text", { q: "certToken123", projectPath: certDir }); // pure FS, no backend
+const certWired = /\[completeness: COMPLETE/.test(certScan.text || "");
+try { fs.rmSync(certDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired;
+
+// 77) counterfactual shadow measurement — the quasi-controlled answer to "did vts reach the same answer as
+// grep?". relateSets classifies vts's answer set against grep's; maybeCounterfactual (opt-in
+// VTS_COUNTERFACTUAL=1) runs a local shadow grep, compares, and records — the grep output never reaches the
+// model. We assert the set algebra + the live wiring (a semantic hit that REFINES grep → "subset") + report.
+const { relateSets, readCounterfactual, counterfactualReport, counterfactualOn, recordCounterfactual } = await import("../server/counterfactual.js");
+const { maybeCounterfactual } = await import("../server/core.js");
+const relSubset = relateSets(["a:1"], ["a:1", "a:2"]) === "subset";       // vts ⊂ grep (refinement — the goal)
+const relSuperset = relateSets(["a:1", "a:2"], ["a:1"]) === "superset";   // vts ⊃ grep (found referents grep missed)
+const relEqual = relateSets(["a:1"], ["a:1"]) === "equal";
+const relEmptyGrep = relateSets(["a:1"], []) === "superset";              // grep found nothing literal; vts did
+const relDisjoint = relateSets(["a:1"], ["b:2"]) === "disjoint";
+const relSetsOk = relSubset && relSuperset && relEqual && relEmptyGrep && relDisjoint;
+const cfPrevOn = process.env.VTS_COUNTERFACTUAL, cfPrevFile = process.env.VTS_COUNTERFACTUAL_FILE;
+const cfFile = path.join(os.tmpdir(), `vts-eval-cf-${process.pid}.json`);
+process.env.VTS_COUNTERFACTUAL = "1"; process.env.VTS_COUNTERFACTUAL_FILE = cfFile;
+const cfToggleOk = counterfactualOn() === true;
+const cfDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-cf`);
+fs.mkdirSync(cfDir, { recursive: true });
+const cfSrc = path.join(cfDir, "x.js");
+fs.writeFileSync(cfSrc, "const a = 1;\nfunction MyCounterSym() {}\nconst b = 2;\n// see MyCounterSym above\n"); // decl @ line 2, comment @ line 4
+const cfUri = cfSrc.replace(/\\/g, "/");
+maybeCounterfactual("search_symbol", "MyCounterSym", cfDir, [{ uri: cfUri, range: { start: { line: 1 } } }], "fake vts body"); // vts found ONLY the decl (line 2)
+const cfL = readCounterfactual();
+const cfRecorded = cfL.runs === 1 && cfL.tools && cfL.tools.search_symbol && cfL.tools.search_symbol.rel && cfL.tools.search_symbol.rel.subset === 1; // grep also hit the comment → vts ⊂ grep
+const cfReport = counterfactualReport(cfL);
+const cfReportOk = cfReport.includes("Counterfactual") && cfReport.includes("subset");
+// EDGE (UE-tree found): a truncated shadow-grep baseline must NOT yield a misleading subset/disjoint verdict
+// — it is recorded as "baseline-truncated" and the report flags the grep tokens as a lower bound.
+recordCounterfactual("search_symbol", { grepTok: 999, vtsTok: 10, relation: "baseline-truncated", truncatedBaseline: true });
+const cfTrunc = readCounterfactual();
+const cfTruncReport = counterfactualReport(cfTrunc);
+const cfTruncOk = cfTrunc.tools.search_symbol.truncatedBaseline === 1 &&
+  cfTrunc.tools.search_symbol.rel["baseline-truncated"] === 1 &&
+  cfTruncReport.includes("baseline-truncated") && cfTruncReport.includes("lower bound");
+if (cfPrevOn === undefined) delete process.env.VTS_COUNTERFACTUAL; else process.env.VTS_COUNTERFACTUAL = cfPrevOn;
+if (cfPrevFile === undefined) delete process.env.VTS_COUNTERFACTUAL_FILE; else process.env.VTS_COUNTERFACTUAL_FILE = cfPrevFile;
+try { fs.rmSync(cfDir, { recursive: true, force: true }); fs.rmSync(cfFile, { force: true }); } catch { /* ignore */ }
+const counterfactualEvalOk = relSetsOk && cfToggleOk && cfRecorded && cfReportOk && cfTruncOk;
+
+// 78) adaptive escalation controller — the closed loop over the edit-adoption ledger. decideEscalation picks
+// warn-vs-block from MEASURED per-modality conversion (self-correcting: stay soft when warns work; escalate
+// when warns fail and the block is untried/better; BACK OFF when the block was tried and isn't helping — the
+// documented "agent fights the wall" failure). We assert the policy across the regimes + the conversion
+// crediting (a symbol-edit credits the last-shown modality) + the report line.
+const ELc = await import("../server/edit-ledger.js");
+const mkEsc = (streak, w, b) => ({ streak, mod: { warn: { shown: w[0], converted: w[1] }, block: { shown: b[0], converted: b[1] } } });
+const escOff = ELc.decideEscalation(mkEsc(5, [0, 0], [0, 0]), 0) === false;                  // threshold 0 → off
+const escFloor = ELc.decideEscalation(mkEsc(1, [10, 0], [0, 0]), 3) === false;               // below patience floor
+const escWarnsWork = ELc.decideEscalation(mkEsc(3, [10, 8], [0, 0]), 3) === false;           // warns converting → stay soft
+const escTryBlock = ELc.decideEscalation(mkEsc(3, [10, 0], [0, 0]), 3) === true;             // warns fail, block untried → escalate
+const escBackOff = ELc.decideEscalation(mkEsc(3, [6, 2], [8, 0]), 3) === false;              // block tried & not converting → back off
+const escBothFail = ELc.decideEscalation(mkEsc(6, [3, 0], [3, 0]), 3) === false;             // BOTH failing, block tried ≥2 → absolute back-off (live-sim regression)
+const escBlockWins = ELc.decideEscalation(mkEsc(3, [8, 0], [4, 3]), 3) === true;             // block proven better → escalate
+const escPolicyOk = escOff && escFloor && escWarnsWork && escTryBlock && escBackOff && escBothFail && escBlockWins;
+const elPrev = process.env.VTS_EDIT_LEDGER;
+const elFresh = path.join(os.tmpdir(), `vts-eval-elctrl-${process.pid}.json`);
+try { fs.rmSync(elFresh, { force: true }); } catch { /* ignore */ }
+process.env.VTS_EDIT_LEDGER = elFresh;
+ELc.recordSteerShown("warn");
+const elAfterWarn = ELc.readEditLedger();
+ELc.recordEditEvent("symbol-edit"); // the agent switched → credit the pending "warn"
+const elAfterConv = ELc.readEditLedger();
+ELc.recordSteerShown("block");
+ELc.recordEditEvent("builtin-warn"); // a built-in edit instead → block shown but NOT converted
+const elAfterMiss = ELc.readEditLedger();
+const ctrlCreditOk =
+  elAfterWarn.mod.warn.shown === 1 && elAfterWarn.pending === "warn" &&
+  elAfterConv.symbol === 1 && elAfterConv.mod.warn.converted === 1 && elAfterConv.pending === null &&
+  elAfterMiss.mod.block.shown === 1 && elAfterMiss.mod.block.converted === 0 && elAfterMiss.builtin === 1;
+const ctrlReportOk = ELc.controllerReport(elAfterMiss).includes("warn 1/1") && ELc.controllerReport(elAfterMiss).includes("block 0/1");
+if (elPrev === undefined) delete process.env.VTS_EDIT_LEDGER; else process.env.VTS_EDIT_LEDGER = elPrev;
+try { fs.rmSync(elFresh, { force: true }); } catch { /* ignore */ }
+const adaptiveCtrlOk = escPolicyOk && ctrlCreditOk && ctrlReportOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1706,6 +1799,9 @@ const rows = [
   ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
   ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
   ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],
+  ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
+  ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
+  ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
