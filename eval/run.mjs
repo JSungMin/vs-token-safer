@@ -1643,8 +1643,12 @@ fs.mkdirSync(certDir, { recursive: true });
 fs.writeFileSync(path.join(certDir, "c.js"), "const certToken123 = 1;\n");
 const certScan = await runTool("search_text", { q: "certToken123", projectPath: certDir }); // pure FS, no backend
 const certWired = /\[completeness: COMPLETE/.test(certScan.text || "");
+// scoped: a semantic COMPLETE under an active indexing scope must say it's complete WITHIN the scope, not
+// project-wide (so the agent doesn't over-trust a scoped 0/N).
+const certScopedOk = completenessCert({ shown: 3, total: 3, semantic: true, scoped: true }).includes("within the configured indexing scope")
+  && !completenessCert({ shown: 3, total: 3, semantic: true, scoped: false }).includes("within the configured");
 try { fs.rmSync(certDir, { recursive: true, force: true }); } catch { /* ignore */ }
-const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired;
+const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired && certScopedOk;
 
 // 77) counterfactual shadow measurement — the quasi-controlled answer to "did vts reach the same answer as
 // grep?". relateSets classifies vts's answer set against grep's; maybeCounterfactual (opt-in

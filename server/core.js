@@ -1045,8 +1045,11 @@ function factorCommonPrefix(lines) {
 function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false } = {}) {
   if (!certOn()) return "";
+  // When an indexing scope is active, a semantic COMPLETE (or authoritative 0) is complete WITHIN THE SCOPE,
+  // not across the whole project — qualify it so the agent doesn't read it as project-wide coverage.
+  const within = scoped ? " within the configured indexing scope (not the whole project — widen or unset the scope for full coverage)" : "";
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
     return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete; narrow the scope or use a semantic tool (search_symbol/find_references) to certify.]`;
@@ -1058,7 +1061,7 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
     const more = total != null ? `${shown} of ${total}` : `the top ${shown}`;
     return `\n[completeness: PARTIAL — showing ${more}; the remainder is known and recoverable (raise the cap or read the tee file).]`;
   }
-  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match (${shown}).]`;
+  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match${within} (${shown}).]`;
 }
 export { completenessCert };
 function fmtLocations(locs, max, label) {
@@ -1728,7 +1731,7 @@ export async function runTool(name, a = {}) {
       const t0 = Date.now();
       await getClient(root, backendName);
       const adv = backendName === "clangd" && !hasClangdIndexer()
-        ? `\n(For INSTANT pre-indexing install the full LLVM release — it bundles clangd-indexer — then re-run vts preindex; it builds a static --index-file instead of the slower background crawl.)`
+        ? `\n(For INSTANT pre-indexing install the full LLVM toolchain — it bundles clangd-indexer — then re-run vts preindex; it builds a static --index-file instead of the slower background crawl.\n   install:  scoop install llvm   |   winget install LLVM.LLVM   |   https://github.com/llvm/llvm-project/releases\n   already have it elsewhere? point vts at it: VTS_CLANGD_INDEXER_CMD=/path/to/clangd-indexer)`
         : "";
       return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + adv);
     }
@@ -1941,7 +1944,7 @@ export async function runTool(name, a = {}) {
           }
         }
         const partialIdx = backendName === "typescript" || backendName === "pyright" || (backendName === "clangd" && !hasCompileDb(root));
-        const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true });
+        const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert);
       }
       // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
@@ -1949,7 +1952,7 @@ export async function runTool(name, a = {}) {
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
-      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
+      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
       const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert;
       maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
       return finishOut(syms, symBody);
@@ -2029,7 +2032,7 @@ export async function runTool(name, a = {}) {
       // detail=file|dir → a blast-radius summary (dependents grouped + ranked) instead of the per-line list.
       const detail = String(a.detail || "").toLowerCase();
       const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
-      const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true });
+      const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
       const refBodyFull = backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert;
       if (a.symbol) maybeCounterfactual("find_references", String(a.symbol), root, locList, refBodyFull); // by-name → a NAME to shadow-grep
       return finishOut(locs, refBodyFull);
