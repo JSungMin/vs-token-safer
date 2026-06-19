@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled } from "./backends/index.js";
 import { scopeStats } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
@@ -35,7 +35,7 @@ export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd", "scope"];
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd", "scope", "clangdIndexer"];
 
 // ---- per-call project root resolution ----
 // The MCP server is ONE long-lived process serving every repo a session touches, so a single configured
@@ -1727,7 +1727,9 @@ export async function runTool(name, a = {}) {
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : " (whole tree — set a scope via vts setup --scope to index a subset faster)";
       const wantStatic = a.static === true || a.static === "true";
       if (backendName === "clangd" && wantStatic) {
-        if (!hasClangdIndexer()) return err(`preindex static: clangd-indexer not found. Install the full LLVM toolchain (scoop install llvm | winget install LLVM.LLVM) or set VTS_CLANGD_INDEXER_CMD. Or omit static=true for the background-index warm pass.`);
+        if (!hasClangdIndexer()) return err(!indexerEnabled()
+          ? `preindex static: clangd-indexer is DISABLED on this machine (clangdIndexer="off" / VTS_CLANGD_INDEXER=off). Re-enable with \`vts setup --clangdIndexer on\`, or omit static for the background-index warm pass.`
+          : `preindex static: clangd-indexer not found. Install the full LLVM toolchain (scoop install llvm | winget install LLVM.LLVM) or set VTS_CLANGD_INDEXER_CMD. Or omit static for the background-index warm pass.`);
         const r = buildStaticIndex(root);
         if (r.error) return err(`preindex: ${r.error}`);
         const t0 = Date.now();
