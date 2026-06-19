@@ -58,12 +58,13 @@ export function relateSets(vtsKeys, grepKeys) {
 }
 
 // Record one comparison into the per-tool ledger.
-export function recordCounterfactual(tool, { grepTok = 0, vtsTok = 0, relation = "n/a" } = {}) {
+export function recordCounterfactual(tool, { grepTok = 0, vtsTok = 0, relation = "n/a", truncatedBaseline = false } = {}) {
   const o = readCounterfactual();
   o.runs = (o.runs || 0) + 1;
   o.tools = o.tools || {};
-  const t = (o.tools[tool] = o.tools[tool] || { runs: 0, grepTok: 0, vtsTok: 0, rel: {} });
+  const t = (o.tools[tool] = o.tools[tool] || { runs: 0, grepTok: 0, vtsTok: 0, truncatedBaseline: 0, rel: {} });
   t.runs++; t.grepTok += grepTok; t.vtsTok += vtsTok;
+  if (truncatedBaseline) t.truncatedBaseline = (t.truncatedBaseline || 0) + 1;
   t.rel = t.rel || {};
   t.rel[relation] = (t.rel[relation] || 0) + 1;
   write(o);
@@ -75,14 +76,21 @@ export { tok as cfTok };
 // Returns "" when no counterfactual data exists (the feature is opt-in, so this is the common case).
 export function counterfactualReport(o = readCounterfactual()) {
   if (!o.runs) return "";
-  let grepTok = 0, vtsTok = 0; const rel = {};
+  let grepTok = 0, vtsTok = 0, truncated = 0; const rel = {};
   for (const t of Object.values(o.tools || {})) {
-    grepTok += t.grepTok || 0; vtsTok += t.vtsTok || 0;
+    grepTok += t.grepTok || 0; vtsTok += t.vtsTok || 0; truncated += t.truncatedBaseline || 0;
     for (const [k, n] of Object.entries(t.rel || {})) rel[k] = (rel[k] || 0) + n;
   }
   const ratio = vtsTok > 0 ? (grepTok / vtsTok).toFixed(1) : "∞";
   const relStr = Object.entries(rel).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "—";
+  // On a giant tree the shadow grep truncates, so its token figure is a LOWER bound and its set relation is
+  // not comparable — say so rather than present a misleading "disjoint".
+  const caveat = truncated
+    ? `\n  note: ${truncated} comparison(s) had a TRUNCATED grep baseline (capped/time-boxed on a large tree) ` +
+      `— for those the grep tokens are a lower bound and the set relation is recorded as "baseline-truncated", not a verdict`
+    : "";
   return `\n\nCounterfactual (shadow grep, ${o.runs} comparison(s) — opt-in VTS_COUNTERFACTUAL=1):` +
     `\n  grep would have spent ~${grepTok.toLocaleString()} tok vs vts ~${vtsTok.toLocaleString()} tok (~${ratio}× smaller)` +
-    `\n  answer-set vs grep: ${relStr}  (subset = vts refined grep's textual hits; superset = vts found referents grep missed)`;
+    `\n  answer-set vs grep: ${relStr}  (subset = vts refined grep's textual hits; superset = vts found referents grep missed)` +
+    caveat;
 }

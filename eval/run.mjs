@@ -1650,7 +1650,7 @@ const certOk = certComplete && certPartial && certTime && certIndex && certOff &
 // grep?". relateSets classifies vts's answer set against grep's; maybeCounterfactual (opt-in
 // VTS_COUNTERFACTUAL=1) runs a local shadow grep, compares, and records — the grep output never reaches the
 // model. We assert the set algebra + the live wiring (a semantic hit that REFINES grep → "subset") + report.
-const { relateSets, readCounterfactual, counterfactualReport, counterfactualOn } = await import("../server/counterfactual.js");
+const { relateSets, readCounterfactual, counterfactualReport, counterfactualOn, recordCounterfactual } = await import("../server/counterfactual.js");
 const { maybeCounterfactual } = await import("../server/core.js");
 const relSubset = relateSets(["a:1"], ["a:1", "a:2"]) === "subset";       // vts ⊂ grep (refinement — the goal)
 const relSuperset = relateSets(["a:1", "a:2"], ["a:1"]) === "superset";   // vts ⊃ grep (found referents grep missed)
@@ -1672,10 +1672,18 @@ const cfL = readCounterfactual();
 const cfRecorded = cfL.runs === 1 && cfL.tools && cfL.tools.search_symbol && cfL.tools.search_symbol.rel && cfL.tools.search_symbol.rel.subset === 1; // grep also hit the comment → vts ⊂ grep
 const cfReport = counterfactualReport(cfL);
 const cfReportOk = cfReport.includes("Counterfactual") && cfReport.includes("subset");
+// EDGE (UE-tree found): a truncated shadow-grep baseline must NOT yield a misleading subset/disjoint verdict
+// — it is recorded as "baseline-truncated" and the report flags the grep tokens as a lower bound.
+recordCounterfactual("search_symbol", { grepTok: 999, vtsTok: 10, relation: "baseline-truncated", truncatedBaseline: true });
+const cfTrunc = readCounterfactual();
+const cfTruncReport = counterfactualReport(cfTrunc);
+const cfTruncOk = cfTrunc.tools.search_symbol.truncatedBaseline === 1 &&
+  cfTrunc.tools.search_symbol.rel["baseline-truncated"] === 1 &&
+  cfTruncReport.includes("baseline-truncated") && cfTruncReport.includes("lower bound");
 if (cfPrevOn === undefined) delete process.env.VTS_COUNTERFACTUAL; else process.env.VTS_COUNTERFACTUAL = cfPrevOn;
 if (cfPrevFile === undefined) delete process.env.VTS_COUNTERFACTUAL_FILE; else process.env.VTS_COUNTERFACTUAL_FILE = cfPrevFile;
 try { fs.rmSync(cfDir, { recursive: true, force: true }); fs.rmSync(cfFile, { force: true }); } catch { /* ignore */ }
-const counterfactualEvalOk = relSetsOk && cfToggleOk && cfRecorded && cfReportOk;
+const counterfactualEvalOk = relSetsOk && cfToggleOk && cfRecorded && cfReportOk && cfTruncOk;
 
 // 78) adaptive escalation controller — the closed loop over the edit-adoption ledger. decideEscalation picks
 // warn-vs-block from MEASURED per-modality conversion (self-correcting: stay soft when warns work; escalate

@@ -1482,7 +1482,14 @@ export function maybeCounterfactual(tool, name, root, locs, vtsBody) {
     const vtsTok = tok(vtsBody);
     const vtsKeys = (locs || []).map((l) => locKey(l.uri, l.range)).filter(Boolean);
     const grepKeys = grepHits.map(grepKey).filter(Boolean);
-    recordCounterfactual(tool, { grepTok, vtsTok, relation: relateSets(vtsKeys, grepKeys) });
+    // EDGE CASE (UE-tree dogfood): on a giant tree the shadow grep itself hits its cap or 4s time-box, so the
+    // grep BASELINE is truncated. Comparing the vts set against a truncated baseline is unreliable — the two
+    // can look "disjoint" merely because grep only reached other directories. So when the baseline truncated,
+    // do NOT compute a set relation (record "baseline-truncated"); the token figure is then a LOWER bound on
+    // what a complete grep would have spent, flagged as such in the report.
+    const truncatedBaseline = !!grepHits.truncated;
+    const relation = truncatedBaseline ? "baseline-truncated" : relateSets(vtsKeys, grepKeys);
+    recordCounterfactual(tool, { grepTok, vtsTok, relation, truncatedBaseline });
   } catch { /* best-effort — never break a query for a measurement */ }
 }
 // Filename glob (* ?) → a predicate over basenames, for a TARGETED text search (`search_text glob=*.md`).
