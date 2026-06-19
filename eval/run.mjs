@@ -1752,6 +1752,22 @@ const scNoMatchOk = scopedCdb(scDir, scDir, scopeDirs(scDir, "Nonexistent"), scO
 try { fs.rmSync(scDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk && scNoScopeOk && scNoMatchOk;
 
+// 80) unified tool-routing policy — vts COMPLEMENTS Claude Code's native tools. shouldSuppressSteer stays
+// silent on generated/build-output paths (CC-native is fine there); routingDigest is the single
+// when-to-use-what decision tree + live adoption posture re-injected at SessionStart.
+const { shouldSuppressSteer, routingDigest, suppressOn } = await import("../server/policy.js");
+const supGen = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === true;   // build output → suppress
+const supDotGen = shouldSuppressSteer("/p/Source/Foo.generated.h") === true;        // generated header → suppress
+const supNodeMod = shouldSuppressSteer("/p/node_modules/x/y.js") === true;          // vendored dep → suppress
+const supReal = shouldSuppressSteer("/p/Source/TSGame/Weapon.cpp") === false;       // real source → steer as usual
+const supTogglePrev = process.env.VTS_SUPPRESS;
+process.env.VTS_SUPPRESS = "0";
+const supOff = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === false && suppressOn() === false; // toggle off
+if (supTogglePrev === undefined) delete process.env.VTS_SUPPRESS; else process.env.VTS_SUPPRESS = supTogglePrev;
+const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
+const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig); // tree + posture
+const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1835,6 +1851,7 @@ const rows = [
   ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
   ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
   ["indexing scope: scopeDirs/inScope + scopedCdb prune (in-scope TUs only) + stats + no-scope/no-match fallback", scopeOk, "true", scopeOk],
+  ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
