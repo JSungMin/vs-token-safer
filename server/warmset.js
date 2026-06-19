@@ -81,7 +81,9 @@ export function recordQueryResults(root, files) {
   try { fs.mkdirSync(path.dirname(HIST_FILE), { recursive: true }); fs.writeFileSync(HIST_FILE, JSON.stringify(h)); } catch { /* best-effort */ }
 }
 
-function histRank(root) {
+// Exported so core.js can use the SAME query-history signal (LFU+recency) to RERANK live search results,
+// not only to order the warm-up open-set — a file that answered past searches is a strong relevance prior.
+export function histRank(root) {
   const bucket = readHist()[norm(root)];
   const m = new Map();
   if (!bucket) return m;

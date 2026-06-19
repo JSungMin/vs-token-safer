@@ -12,7 +12,7 @@ import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
 import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
-import { recordQueryResults, languageCensus } from "./warmset.js";
+import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { classifyDeclEdit } from "./edit-detect.js";
 import { recordEditEvent } from "./edit-ledger.js";
@@ -923,6 +923,67 @@ function fmtSymbols(syms, max) {
   }
   return rows.map((r) => `${r.head}  @ ${r.loc}`).join("\n") + tail;
 }
+
+// ---- result RERANK (Semble-inspired, charter-pure) ----------------------------------------------------
+// Semble (cited) shows lexical+semantic FUSION + code-aware reranking beats either alone. We adopt the
+// RANKING idea WITHOUT its embeddings/persistent vector index (those are the cbm-style rejects: a second
+// semantic source + a storage/transmission surface). This reranks the OFFICIAL engine's own results, so it
+// is zero-transmission, holds no index, and changes no MCP surface. It matters because search_symbol CAPS to
+// top-N — order decides which rows survive the cap, i.e. whether the answer the model wants is even shown.
+// Score = lexical tier (exact > prefix > word/camel boundary > substring) + a callable-kind nudge + a
+// query-history boost (the SAME warmset LFU+recency signal that orders prewarm). Tiers are spaced so the
+// history boost only re-orders near-ties WITHIN a tier and can never flip a clearly-better lexical match.
+// STABLE: equal scores keep the LSP's original order, so behavior is unchanged when nothing out-ranks.
+// VTS_RANK=0 disables. Pure function (no I/O) — the caller supplies the history map.
+const rankEnabled = () => { const v = process.env.VTS_RANK; return v === undefined || v === "" ? true : !/^(0|false|off|no)$/i.test(v); };
+function lexScore(name, q) {
+  if (!name || !q) return 0;
+  const n = name.toLowerCase(), s = q.toLowerCase();
+  if (n === s) return 100;            // exact name
+  if (n.startsWith(s)) return 30;     // prefix
+  let i = n.indexOf(s);
+  if (i < 0) return 0;
+  while (i >= 0) {                     // any occurrence at a word/camel boundary
+    const prev = name[i - 1], cur = name[i];
+    if (i === 0 || prev === "_" || /[^A-Za-z0-9]/.test(prev) || (/[A-Z]/.test(cur) && /[a-z0-9]/.test(prev || ""))) return 10;
+    i = n.indexOf(s, i + 1);
+  }
+  return 3;                            // plain substring, no boundary
+}
+export function rankSymbols(query, syms, histMap) {
+  if (!Array.isArray(syms) || syms.length < 2) return syms;
+  const hist = histMap instanceof Map && histMap.size ? histMap : null;
+  const maxHist = hist ? Math.max(...hist.values()) : 0;
+  const scoreOf = (sm) => {
+    let sc = lexScore(sm && sm.name, query);
+    if (sm && CALLABLE_KIND.has(sm.kind)) sc += 2; // a symbol hunt usually wants a func/class/type, not a local
+    if (hist && maxHist > 0 && sm && sm.location) {
+      const key = fromUri(sm.location.uri).replace(/\\/g, "/").toLowerCase();
+      const h = hist.get(key);
+      if (h) sc += 2.5 * (h / maxHist); // < tier gap, so it only breaks near-ties / nudges within a tier
+    }
+    return sc;
+  };
+  return syms.map((s, i) => ({ s, i, sc: scoreOf(s) }))
+    .sort((a, b) => (b.sc - a.sc) || (a.i - b.i)) // stable: equal score keeps the engine's original order
+    .map((x) => x.s);
+}
+
+// CONFIDENCE-ADAPTIVE FOCUS: rerank lets us go one step further than Semble — once an EXACT-name match is in
+// a big result set, the model almost certainly wanted that one symbol (the "locate a known symbol" query,
+// the most common shape), so showing 60 rows wastes tokens on a tail it won't read. When an exact match
+// exists among many results, tighten the SHOWN count to the exact matches + a small head (the rest stay in
+// the "… N more (raise maxResults)" tail + the recovery tee — no silent cap). Broad/substring browses (no
+// exact match) keep the full cap. search_symbol ONLY — find_references must show every site. VTS_FOCUS=0 off.
+const focusEnabled = () => { const v = process.env.VTS_FOCUS; return v === undefined || v === "" ? true : !/^(0|false|off|no)$/i.test(v); };
+export function focusCap(query, syms, max) {
+  const FOCUS_N = envInt("VTS_FOCUS_N", 6);
+  if (!focusEnabled() || !Array.isArray(syms) || syms.length <= FOCUS_N) return max;
+  const ql = String(query || "").toLowerCase();
+  const exact = syms.filter((s) => (s && s.name ? s.name.toLowerCase() : "") === ql).length;
+  return exact >= 1 ? Math.min(max, Math.max(exact, FOCUS_N)) : max; // exact target → show it + a few, not the long tail
+}
+
 // Output-cap v2 (caveman "collapse repetition"): a refs-heavy result repeats the same long path on every
 // line. Collapse it — one line per FILE with all its line numbers joined, then factor a common DIRECTORY
 // prefix so a deep shared tree is printed ONCE. Every location is preserved and recoverable (full path =
@@ -1318,6 +1379,36 @@ const trimMatchLine = (s) => { const t = String(s).trim(); return t.length > 200
 // Doc/text extensions — the non-code text a grep over README/docs/config hits. Off by default (search_text
 // stays code-only per its contract); `docs=true` widens the sweep so a docs-grep can be compacted too.
 const DOC_EXTS = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|md|markdown|txt|json|ya?ml|toml|ini|cfg|conf|xml|html?|csv|rst|tex)$/i;
+// CONCEPT (lexical-fuzzy) SEARCH — the charter-pure slice of the "find code that does X" gap. A true
+// semantic search needs embeddings (a second semantic source + a storage/transmission surface = the cbm/
+// Semble reject we DON'T adopt). But a MULTI-TERM query can be served lexically with no index and no
+// transmission: gather lines matching ANY term, then RANK by how many DISTINCT terms each line carries
+// (BM25-style coverage). It collapses the several greps a concept hunt would take into one ranked answer.
+// It is NOT synonym-aware — clearly labeled "lexical, ranked by term coverage". VTS_CONCEPT=0 disables.
+// conceptTerms(q) returns the term list when q LOOKS conceptual (≥2 whitespace tokens, each an alpha-led
+// word ≥3 chars, no regex metacharacters), else null (so a single token / a regex stays a literal scan).
+export function conceptTerms(q) {
+  const v = process.env.VTS_CONCEPT;
+  if (v !== undefined && v !== "" && /^(0|false|off|no)$/i.test(v)) return null;
+  const s = String(q || "");
+  if (/[.*+?^${}()|[\]\\<>:]/.test(s)) return null; // a regex / scope / template hunt → not a prose concept query
+  const toks = s.split(/\s+/).filter(Boolean);
+  if (toks.length < 2 || toks.length > 8) return null;
+  if (!toks.every((t) => /^[A-Za-z][A-Za-z0-9_]{2,}$/.test(t))) return null; // alpha-led words only
+  return [...new Set(toks.map((t) => t.toLowerCase()))];
+}
+// Rank lines by distinct-term coverage. Reuses scanTextUnder with an OR-regex to gather a wide pool, then
+// sorts by how many of the query's terms appear on each line (a line hitting all terms is most on-concept).
+function conceptScan(root, terms, max, accept) {
+  const safe = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pool = scanTextUnder(root, safe.join("|"), Math.min(Math.max(max * 8, 80), 600), accept);
+  const scored = pool
+    .map((line) => { const low = line.toLowerCase(); return { line, cov: terms.filter((t) => low.includes(t)).length }; })
+    .sort((a, b) => b.cov - a.cov); // most distinct terms first; stable within equal coverage (original walk order)
+  const out = scored.slice(0, max).map((x) => x.line);
+  out.truncated = pool.truncated || (scored.length > max ? "cap" : undefined);
+  return out;
+}
 function scanTextUnder(root, q, max, accept) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
   // `accept` decides which files to read: a RegExp tested against the filename (the ext set — code by
@@ -1633,8 +1724,15 @@ export async function runTool(name, a = {}) {
         scopeLabel = `glob ${String(a.glob)}`;
       } else {
         const ext = docs ? DOC_EXTS : undefined;
-        runScan = (n) => scanTextUnder(root, String(a.q), n, ext);
-        scopeLabel = docs ? "text+docs" : "text; for symbols prefer search_symbol";
+        const terms = conceptTerms(String(a.q));
+        if (terms) {
+          // multi-word query → lexical concept search: gather any-term hits, rank by distinct-term coverage.
+          runScan = (n) => conceptScan(root, terms, n, ext);
+          scopeLabel = docs ? "concept (text+docs, ranked by term coverage)" : "concept (lexical, ranked by term coverage)";
+        } else {
+          runScan = (n) => scanTextUnder(root, String(a.q), n, ext);
+          scopeLabel = docs ? "text+docs" : "text; for symbols prefer search_symbol";
+        }
       }
       const hits = runScan(max);
       if (!hits.length) {
@@ -1718,8 +1816,12 @@ export async function runTool(name, a = {}) {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
       const c = await getClient(root, backendName);
       const persisted = backendName === "clangd" && hasPersistedIndex(root);
-      const syms = await symbolReady(c, String(a.q), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
-      try { recordQueryResults(root, syms.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
+      const syms0 = await symbolReady(c, String(a.q), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
+      // Read the history signal BEFORE recording THIS query's results, so a result can't boost its own rank.
+      const histMap = rankEnabled() ? histRank(root) : null;
+      try { recordQueryResults(root, syms0.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
+      // Rerank the engine's results before fmtSymbols caps to top-N (Semble-inspired, zero-transmission).
+      const syms = histMap ? rankSymbols(String(a.q), syms0, histMap) : syms0;
       const adv = backendAdvisory(backendName, root);
       if (!syms.length) {
         // tsserver / pyright answer workspace/symbol from the files they have OPEN/indexed, so a symbol
@@ -1740,9 +1842,12 @@ export async function runTool(name, a = {}) {
         }
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null));
       }
-      const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), max);
+      // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
+      const focusN = focusCap(String(a.q), syms, max);
+      const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
-      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${symTee}:\n` + fmtSymbols(syms, max) + symEdit);
+      const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
+      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit);
     }
     if (name === "find_references") {
       const c = await getClient(root, backendName);
@@ -1914,7 +2019,10 @@ export async function runTool(name, a = {}) {
       const fp = r.file.replace(/\\/g, "/");
       const ambl = r.ambiguous > 1 ? ` (${r.ambiguous} same-named — pass line= to disambiguate)` : "";
       try { recordQueryResults(root, [r.file]); } catch { /* best-effort */ }
-      return finishOut({ file: r.file, range: r.ds.range }, backendAdvisory(backendName, root) + `${SYMBOL_KIND[r.ds.kind] || "symbol"} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${backendName}):\n` + body + note);
+      // #4 read-avoidance framing (Semble's "combined with file reading"): read_symbol's real win is the
+      // WHOLE-FILE Read it replaces, so the savings baseline is the whole file (not the tiny {file,range}) —
+      // the ledger then credits the avoided read, not ~0. (search/refs keep their index baseline.)
+      return finishOut(all.join("\n"), backendAdvisory(backendName, root) + `${SYMBOL_KIND[r.ds.kind] || "symbol"} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${backendName}):\n` + body + note);
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");
