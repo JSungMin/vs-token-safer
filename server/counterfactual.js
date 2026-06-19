@@ -13,7 +13,6 @@ import os from "node:os";
 import path from "node:path";
 import { canonFsPath } from "./lsp.js";
 
-const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4); // core.js:119 parity
 export const counterfactualOn = () => /^(1|true|on|yes)$/i.test(String(process.env.VTS_COUNTERFACTUAL ?? "0"));
 const LEDGER = () => process.env.VTS_COUNTERFACTUAL_FILE || path.join(os.homedir(), ".vs-token-safer", "counterfactual.json");
 
@@ -70,7 +69,6 @@ export function recordCounterfactual(tool, { grepTok = 0, vtsTok = 0, relation =
   write(o);
   return o;
 }
-export { tok as cfTok };
 
 // A `vts savings`-style section: tokens grep WOULD have spent vs vts, and the distribution of set relations.
 // Returns "" when no counterfactual data exists (the feature is opt-in, so this is the common case).
