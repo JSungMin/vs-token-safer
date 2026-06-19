@@ -433,6 +433,25 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 경로/심볼/프로젝트 식별자) 없이 보내 주세요. 새 코드 경로에는 `eval/run.mjs` 가드를 더해 주세요.
 [CONTRIBUTING.md](CONTRIBUTING.md) 참고. 토큰을 아꼈다면 별 하나가 다른 사람에게 도움이 됩니다. ⭐
 
+## 감사의 글 (Acknowledgments)
+
+vs-token-safer는 오픈소스 코드-인텔리전스 커뮤니티의 아이디어 위에 서 있습니다. 감사드립니다:
+
+- **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** (DeusData) — tree-sitter
+  `tags.scm` 호출지점 방식, 다중-홉 콜계층(`trace_path`) 형태, 콘텐츠-해시 키 캐싱. _우리 차이:_ **공식 언어
+  서버**를 의미의 원천으로 두고 tree-sitter는 그 **아래** 제로-셋업 구문 티어로만 사용 — 타입해소 재구현·영구
+  의미DB 없음, 전부 로컬·무전송.
+- **Codeix** (montanetech) — 평문·git 커밋 가능 JSONL 심볼 인덱스 아이디어. _우리 차이:_ 언어 서버가 인덱싱을
+  마치면 자동으로 대체되는 cold-start 가속기.
+- **Code Context Engine** (elara-labs) — AI 코드검색의 토큰 절감 프레이밍. _우리 차이:_ 임베딩/벡터 0(가장
+  가깝지만 틀린 검색 없음) — 정확한 `file:line`, 토큰캡.
+- **[Serena](https://github.com/oraios/serena)** — 심볼단위 편집(`replace_symbol_body` / `insert_symbol` /
+  `safe_delete`), 우리는 LSP 위에 preview-by-default로 얹음.
+- **tree-sitter** 프로젝트와 **tree-sitter-wasms** — 구문 티어를 구동하는 사전빌드 문법.
+
+이들 모두가 vs-token-safer를 더 낫게 만들었습니다. 감사합니다. (여기서의 재사용은 항상 헌장을 지킵니다: 분석은
+공식 엔진이, 출력은 토큰캡 `file:line`, 아무것도 기기를 떠나지 않음.)
+
 ## 라이선스
 
 MIT © 2026 JSungMin
