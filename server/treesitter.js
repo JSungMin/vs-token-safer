@@ -504,3 +504,154 @@ export async function tsSearchSymbols(
   sliced.filesParsed = filesParsed;
   return sliced;
 }
+
+// ── REFERENCES (tree-sitter tags-query, the codebase-memory-mcp lesson). The node-type walk above finds
+// DECLARATIONS; tree-sitter's `tags.scm` convention also captures call SITES. So even with no language
+// server, find_references gets a real *call reference* fallback — strictly better than the literal `grep
+// <name>` it replaces (a call site, not every textual mention). Still SYNTACTIC: it does not resolve which
+// overload/scope, so the LSP stays the source of truth above it. Queries validated per grammar (11 langs);
+// a grammar without one (or a query that fails to construct) simply yields no syntactic refs (graceful).
+const REF_QUERIES = {
+  python: `(call function: [(identifier) @ref (attribute attribute: (identifier) @ref)])`,
+  javascript: `(call_expression function: [(identifier) @ref (member_expression property: (property_identifier) @ref)])`,
+  typescript: `(call_expression function: [(identifier) @ref (member_expression property: (property_identifier) @ref)])`,
+  tsx: `(call_expression function: [(identifier) @ref (member_expression property: (property_identifier) @ref)])`,
+  go: `(call_expression function: [(identifier) @ref (selector_expression field: (field_identifier) @ref)])`,
+  java: `(method_invocation name: (identifier) @ref)`,
+  c_sharp: `(invocation_expression (member_access_expression name: (identifier) @ref)) (invocation_expression function: (identifier) @ref)`,
+  c: `(call_expression function: (identifier) @ref)`,
+  cpp: `(call_expression function: [(identifier) @ref (field_expression field: (field_identifier) @ref) (qualified_identifier name: (identifier) @ref)])`,
+  rust: `(call_expression function: (identifier) @ref) (macro_invocation macro: (identifier) @ref)`,
+  ruby: `(call method: (identifier) @ref)`,
+};
+const _refQueryCache = new Map(); // wasm base → constructed Query | null
+
+async function refQueryFor(wasmBase) {
+  if (_refQueryCache.has(wasmBase)) return _refQueryCache.get(wasmBase);
+  const src = REF_QUERIES[wasmBase];
+  const lang = src ? await loadLanguage(wasmBase) : null;
+  let q = null;
+  if (lang && _TS) {
+    try {
+      q = new _TS.Query(lang, src);
+    } catch {
+      q = null;
+    }
+  }
+  _refQueryCache.set(wasmBase, q);
+  return q;
+}
+
+// Capture call references to `name` in one file. Returns [{ name, line (1-based), col }]. Best-effort → [].
+export async function tsFileReferences(absPath, name, { maxBytes = 2_000_000 } = {}) {
+  const entry = EXT_MAP[extOf(absPath)];
+  if (!entry) return [];
+  const wasmBase = entry[0];
+  const q = await refQueryFor(wasmBase);
+  if (!q) return [];
+  let src;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.size > maxBytes) return [];
+    src = fs.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  const lang = await loadLanguage(wasmBase);
+  if (!lang) return [];
+  let parser, tree;
+  try {
+    parser = new _TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return [];
+  }
+  const out = [];
+  const want = String(name);
+  try {
+    for (const c of q.captures(tree.rootNode)) {
+      if (c.node.text === want)
+        out.push({ name: want, line: c.node.startPosition.row + 1, col: c.node.startPosition.column });
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    tree.delete && tree.delete();
+    parser.delete && parser.delete();
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+// Walk a subtree and collect call references to `name` across files (bounded). Same shape/markers as
+// tsSearchSymbols ({ name, line, col, file } + `.truncated`/`.filesParsed`; `.unavailable` if deps absent).
+export async function tsSearchReferences(
+  root,
+  name,
+  { skipDir, timeBudgetMs = 6000, fileCap = 4000, max = 200 } = {},
+) {
+  await ensureTS();
+  if (!_TS) {
+    const e = [];
+    e.unavailable = true;
+    return e;
+  }
+  const hits = [];
+  const stack = [root];
+  const t0 = Date.now();
+  let filesParsed = 0,
+    timedOut = false,
+    capped = false;
+  const skip = skipDir || (() => false);
+  while (stack.length) {
+    if (Date.now() - t0 >= timeBudgetMs) {
+      timedOut = true;
+      break;
+    }
+    const dir = stack.pop();
+    let ents;
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!skip(e.name)) stack.push(p);
+        continue;
+      }
+      if (!tsSupports(e.name)) continue;
+      if (Date.now() - t0 >= timeBudgetMs) {
+        timedOut = true;
+        break;
+      }
+      if (filesParsed >= fileCap) {
+        capped = true;
+        break;
+      }
+      filesParsed++;
+      let refs;
+      try {
+        refs = await tsFileReferences(p, name);
+      } catch {
+        continue;
+      }
+      for (const r of refs) hits.push({ ...r, file: p.replace(/\\/g, "/") });
+      if (hits.length > max) {
+        capped = true;
+        break;
+      }
+    }
+    if (timedOut || capped) break;
+  }
+  const sliced = hits.slice(0, max);
+  if (hits.length > max) sliced.truncated = "cap";
+  else if (timedOut) sliced.truncated = "time";
+  else if (capped) sliced.truncated = "files";
+  sliced.filesParsed = filesParsed;
+  return sliced;
+}
