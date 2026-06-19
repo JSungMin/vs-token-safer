@@ -438,6 +438,26 @@ evidence-backed, and free of proprietary data (real paths/symbols/project IDs); 
 for any new code path. See [CONTRIBUTING.md](CONTRIBUTING.md). If this saved you tokens, a star helps
 others find it. ⭐
 
+## Acknowledgments
+
+vs-token-safer stands on ideas from the open-source code-intelligence community. With gratitude to:
+
+- **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** (DeusData) — the tree-sitter
+  `tags.scm` call-site approach, the multi-hop call-hierarchy (`trace_path`) shape, and content-hash-keyed
+  caching. _Our difference:_ we keep the **official language server** as the semantic source of truth and use
+  tree-sitter only as a zero-setup syntactic tier **below** it — no reimplemented type-resolution layer, no
+  persistent semantic DB; everything stays local and nothing is transmitted.
+- **Codeix** (montanetech) — the idea of a plain, git-committable JSONL symbol index. _Our difference:_ ours
+  is a cold-start accelerator that a language server automatically supersedes once it has indexed.
+- **Code Context Engine** (elara-labs) — the token-savings framing for AI code search. _Our difference:_ no
+  embeddings/vectors (so no nearest-but-wrong retrieval) — exact `file:line`, token-capped.
+- **[Serena](https://github.com/oraios/serena)** — symbol-level editing (`replace_symbol_body` /
+  `insert_symbol` / `safe_delete`), here layered on the LSP with preview-by-default.
+- The **tree-sitter** project and **tree-sitter-wasms** for the prebuilt grammars that power the syntactic tier.
+
+Each of these made vs-token-safer better. Thank you. (Reuse here always keeps our charter: official engines do
+the analysis, output is token-capped `file:line`, and nothing leaves your machine.)
+
 ## License
 
 MIT © 2026 JSungMin
