@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560" font-family="Helvetica, Arial, sans-serif">
+  <style>
+    .title { font-size:16px; fill:#0f172a; font-weight:bold; text-anchor:middle; }
+    .ltitle{ font-size:13px; fill:#0f172a; font-weight:bold; }
+    .comp  { font-size:12px; fill:#0f172a; text-anchor:middle; }
+    .sub   { font-size:10px; fill:#475569; text-anchor:middle; }
+    .side  { font-size:11px; fill:#7c2d12; text-anchor:middle; font-weight:bold; }
+    .sidet { font-size:9.5px; fill:#7c2d12; text-anchor:middle; }
+    .arrow { stroke:#334155; stroke-width:1.4; fill:none; marker-end:url(#a); }
+  </style>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#334155"/></marker>
+  </defs>
+
+  <text x="360" y="30" class="title">vs-token-safer — layered structure</text>
+
+  <!-- Layer 1: Surface -->
+  <rect x="30" y="50" width="660" height="92" rx="10" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+  <text x="44" y="70" class="ltitle">Surface (agent-facing)</text>
+  <rect x="48"  y="80" width="190" height="50" rx="7" fill="#ffffff" stroke="#1d4ed8"/>
+  <text x="143" y="100" class="comp">MCP server</text>
+  <text x="143" y="116" class="sub">13 tools + vts_admin (×9)</text>
+  <rect x="252" y="80" width="180" height="50" rx="7" fill="#ffffff" stroke="#1d4ed8"/>
+  <text x="342" y="100" class="comp">vts CLI</text>
+  <text x="342" y="116" class="sub">same ops, shell</text>
+  <rect x="446" y="80" width="226" height="50" rx="7" fill="#ffffff" stroke="#1d4ed8"/>
+  <text x="559" y="100" class="comp">Hooks (PreToolUse)</text>
+  <text x="559" y="116" class="sub">grep-block rewrite · edit-steer</text>
+
+  <!-- Layer 2: Core -->
+  <rect x="30" y="162" width="660" height="92" rx="10" fill="#e0e7ff" stroke="#4338ca" stroke-width="1.5"/>
+  <text x="44" y="182" class="ltitle">Core / dispatch</text>
+  <rect x="48"  y="192" width="150" height="50" rx="7" fill="#ffffff" stroke="#4338ca"/>
+  <text x="123" y="212" class="comp">runTool()</text>
+  <text x="123" y="228" class="sub">dispatch</text>
+  <rect x="212" y="192" width="150" height="50" rx="7" fill="#ffffff" stroke="#4338ca"/>
+  <text x="287" y="212" class="comp">token-cap</text>
+  <text x="287" y="228" class="sub">formatters</text>
+  <rect x="376" y="192" width="150" height="50" rx="7" fill="#ffffff" stroke="#4338ca"/>
+  <text x="451" y="212" class="comp">savings ledger</text>
+  <text x="451" y="228" class="sub">raw→capped delta</text>
+  <rect x="540" y="192" width="132" height="50" rx="7" fill="#ffffff" stroke="#4338ca"/>
+  <text x="606" y="212" class="comp">resolveRoot</text>
+  <text x="606" y="228" class="sub">per-call root</text>
+
+  <!-- Layer 3: Index glue -->
+  <rect x="30" y="274" width="660" height="92" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="44" y="294" class="ltitle">Index glue (ours — the one careful piece)</text>
+  <rect x="48"  y="304" width="220" height="50" rx="7" fill="#ffffff" stroke="#15803d"/>
+  <text x="158" y="324" class="comp">generic LSP client</text>
+  <text x="158" y="340" class="sub">JSON-RPC/stdio · didOpen/Change/Close</text>
+  <rect x="282" y="304" width="190" height="50" rx="7" fill="#ffffff" stroke="#15803d"/>
+  <text x="377" y="324" class="comp">warmset / prewarm</text>
+  <text x="377" y="340" class="sub">history · FNV-1a cache</text>
+  <rect x="486" y="304" width="186" height="50" rx="7" fill="#ffffff" stroke="#15803d"/>
+  <text x="579" y="324" class="comp">backend pool</text>
+  <text x="579" y="340" class="sub">LRU · pickBackend</text>
+
+  <!-- Layer 4: Engines -->
+  <rect x="30" y="386" width="660" height="92" rx="10" fill="#fef9c3" stroke="#a16207" stroke-width="1.5"/>
+  <text x="44" y="406" class="ltitle">Official engines (reused, never reimplemented)</text>
+  <rect x="48"  y="416" width="150" height="50" rx="7" fill="#ffffff" stroke="#a16207"/>
+  <text x="123" y="440" class="comp">clangd</text><text x="123" y="455" class="sub">C/C++</text>
+  <rect x="212" y="416" width="150" height="50" rx="7" fill="#ffffff" stroke="#a16207"/>
+  <text x="287" y="440" class="comp">Roslyn</text><text x="287" y="455" class="sub">C#</text>
+  <rect x="376" y="416" width="150" height="50" rx="7" fill="#ffffff" stroke="#a16207"/>
+  <text x="451" y="440" class="comp">tsserver</text><text x="451" y="455" class="sub">JS/TS</text>
+  <rect x="540" y="416" width="132" height="50" rx="7" fill="#ffffff" stroke="#a16207"/>
+  <text x="606" y="440" class="comp">pyright</text><text x="606" y="455" class="sub">Python</text>
+
+  <!-- flow arrows between layers -->
+  <path class="arrow" d="M360,142 L360,160"/>
+  <path class="arrow" d="M360,254 L360,272"/>
+  <path class="arrow" d="M360,366 L360,384"/>
+  <text x="378" y="156" class="sub" text-anchor="start">tool call</text>
+  <text x="378" y="268" class="sub" text-anchor="start">capped result ↑ / query ↓</text>
+  <text x="378" y="380" class="sub" text-anchor="start">LSP request ↓ / file:line ↑</text>
+
+  <!-- cross-cutting invariant rail -->
+  <rect x="710" y="50" width="160" height="428" rx="10" fill="#fee2e2" stroke="#b91c1c" stroke-width="1.5"/>
+  <text x="790" y="74" class="side">Invariants</text>
+  <text x="790" y="96" class="side">(every layer)</text>
+  <line x1="724" y1="110" x2="856" y2="110" stroke="#b91c1c" stroke-width="0.8"/>
+  <text x="790" y="140" class="sidet">P1 official engine,</text>
+  <text x="790" y="153" class="sidet">our glue only</text>
+  <text x="790" y="185" class="sidet">P2 token-first:</text>
+  <text x="790" y="198" class="sidet">file:line, capped,</text>
+  <text x="790" y="211" class="sidet">no bodies</text>
+  <text x="790" y="243" class="sidet">P3 local-only,</text>
+  <text x="790" y="256" class="sidet">zero-transmission</text>
+  <text x="790" y="269" class="sidet">(no network)</text>
+  <text x="790" y="301" class="sidet">P4 enforced,</text>
+  <text x="790" y="314" class="sidet">not optional</text>
+  <line x1="724" y1="340" x2="856" y2="340" stroke="#b91c1c" stroke-width="0.8"/>
+  <text x="790" y="366" class="sidet">checked by the</text>
+  <text x="790" y="379" class="sidet">74-guard eval</text>
+  <text x="790" y="392" class="sidet">harness</text>
+</svg>
