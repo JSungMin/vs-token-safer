@@ -1,6 +1,6 @@
 {
   "name": "vs-token-safer",
-  "version": "0.33.3",
+  "version": "0.33.4",
   "type": "module",
   "description": "Force code search through an official language server's index (clangd for C/C++, Roslyn for C#/.NET, tsserver for JS/TS, pyright for Python) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
   "keywords": [
