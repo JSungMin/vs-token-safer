@@ -8,3 +8,6 @@ node_modules/
 *stats.json
 eval/_t_*
 # NOTE: eval/_mock-lsp.mjs IS committed (CI eval needs it); do not add a broad eval/_*.mjs ignore.
+
+# research paper draft — kept local only, not shipped with the plugin
+paper/
