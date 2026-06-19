@@ -1560,6 +1560,75 @@ try { fs.rmSync(vizRoot, { recursive: true, force: true }); } catch { /* ignore 
 fs.writeFileSync(GDS, "{}"); // reset so it doesn't leak into any later savings assertion
 const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk;
 
+// 74) result RERANK (Semble-inspired, charter-pure): rankSymbols reorders the OFFICIAL engine's results
+// BEFORE the top-N cap, so the row the model wants survives the cap. Lexical tier (exact > prefix > word/camel
+// boundary > substring) + a callable-kind nudge + a query-history boost (the SAME warmset LFU+recency signal
+// that orders prewarm). STABLE — equal scores keep the LSP's order, so the other guards are unaffected. NO
+// embeddings / NO persistent index / NO transmission (the cbm+Semble rejects) — pure ranking over results vts
+// already holds. The history boost is bounded BELOW the tier gap, so it only breaks near-ties, never flips a
+// clearly-better lexical match.
+const { rankSymbols } = await import("../server/core.js");
+const { fromUri: fromUri74 } = await import("../server/lsp.js");
+const mkSym74 = (name, kind, uri) => ({ name, kind, location: { uri, range: { start: { line: 1, character: 0 } } } });
+const rkSyms = [
+  mkSym74("doGetThing", 12, "file:///r/z.cpp"),   // camel-boundary substring (…Get…)
+  mkSym74("widget",     13, "file:///r/w.cpp"),   // plain substring (wid-GET) + non-callable (var kind 13)
+  mkSym74("GetValue",   12, "file:///r/a.cpp"),   // prefix
+  mkSym74("Get",        12, "file:///r/b.cpp"),   // exact
+  mkSym74("GetData",    12, "file:///r/hot.cpp"), // prefix, history-boosted below
+];
+const rkPlain = rankSymbols("Get", rkSyms, null).map((s) => s.name);
+const hot74 = fromUri74("file:///r/hot.cpp").replace(/\\/g, "/").toLowerCase(); // same key rankSymbols derives
+const rkHist = rankSymbols("Get", rkSyms, new Map([[hot74, 9]])).map((s) => s.name);
+const rkStablePassthrough = rankSymbols("Get", rkSyms.slice(0, 1), null).length === 1; // <2 items → returned as-is
+const rerankOk =
+  rkPlain[0] === "Get" &&                                            // exact match wins
+  rkPlain.indexOf("GetValue") < rkPlain.indexOf("doGetThing") &&     // prefix beats camel-boundary
+  rkPlain.indexOf("doGetThing") < rkPlain.indexOf("widget") &&       // boundary (+callable) beats plain substring (non-callable)
+  rkPlain.indexOf("GetValue") < rkPlain.indexOf("GetData") &&        // equal tier (both prefix+callable) → STABLE original order
+  rkHist.indexOf("GetData") < rkHist.indexOf("GetValue") &&          // history boost flips the near-tie…
+  rkHist[0] === "Get" &&                                             // …but never outranks a clearly-better lexical match
+  rkStablePassthrough;
+
+// 75) MORE-EFFECTIVE token cuts derived from the rerank work (charter-pure: no embeddings / no index / no
+// transmission): (a) CONFIDENCE-ADAPTIVE FOCUS — an exact-name match in a big result tightens the SHOWN rows
+// to exact+few (rest stay in "… N more" + the tee), so "locate one symbol" stops paying for a 60-row tail;
+// (b) LEXICAL CONCEPT SEARCH — a multi-word search_text query is ranked by distinct-term coverage (the
+// feasible slice of the fuzzy gap; semantic-synonym needs embeddings → stays out of charter); (c) READ-
+// AVOIDANCE in the ledger — read_symbol's savings baseline is the WHOLE FILE it replaces (Semble's "combined
+// with file reading"), so the ledger credits the avoided read instead of ~0.
+const { focusCap, conceptTerms } = await import("../server/core.js");
+const mkS75 = (name) => ({ name, kind: 12, location: { uri: `file:///r/${name}.cpp`, range: { start: { line: 1, character: 0 } } } });
+const manySyms = ["GetX", "GetY", "GetZ", "GetW", "GetV", "GetU", "GetT", "Get"].map(mkS75); // 8 (> FOCUS_N 6); one exact "Get"
+const focusUnitOk =
+  focusCap("Get", manySyms, 60) === 6 &&                  // exact match in a big set → trimmed to FOCUS_N
+  focusCap("Nope", manySyms, 60) === 60 &&               // no exact → full cap (browsing keeps everything)
+  focusCap("Get", manySyms.slice(0, 3), 60) === 60 &&    // ≤ FOCUS_N → no trim
+  (() => { process.env.VTS_FOCUS = "0"; const c = focusCap("Get", manySyms, 60); delete process.env.VTS_FOCUS; return c === 60; })(); // toggle off
+const conceptUnitOk =
+  JSON.stringify(conceptTerms("login retry handler")) === JSON.stringify(["login", "retry", "handler"]) &&
+  conceptTerms("Foo") === null &&                         // single token → literal scan, not concept
+  conceptTerms("void.*Foo") === null &&                  // regex metachar → literal
+  conceptTerms("a bb cc") === null;                      // short tokens → not a concept query
+const cpDir75 = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
+fs.mkdirSync(cpDir75, { recursive: true });
+fs.writeFileSync(path.join(cpDir75, "a.cpp"), "void retry();\n");                                              // 1 term
+fs.writeFileSync(path.join(cpDir75, "b.cpp"), "void login_retry_handler() { /* login retry handler */ }\n");  // 3 terms
+const cpRes75 = await runTool("search_text", { q: "login retry handler", projectPath: cpDir75 });
+const conceptIntOk = !cpRes75.isError && /concept \(lexical/.test(cpRes75.text) &&
+  cpRes75.text.indexOf("b.cpp") < cpRes75.text.indexOf("a.cpp"); // higher term-coverage line ranks first
+try { fs.rmSync(cpDir75, { recursive: true, force: true }); } catch { /* ignore */ }
+const raDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-readavoid`);
+fs.mkdirSync(raDir, { recursive: true });
+const raFile = path.join(raDir, "Big.cpp");
+fs.writeFileSync(raFile, "L0\nL1\nL2\nL3\nshort line\n" + "padding ".repeat(2000) + "\n"); // line 4 = the symbol; rest huge
+await runTool("read_symbol", { symbol: "Foo", path: raFile, backend: "clangd" });
+const raLedger = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")); } catch { return {}; } })();
+const readAvoidOk = !!(raLedger.tools && raLedger.tools.read_symbol && raLedger.tools.read_symbol.rawTok >= 2000); // whole-file baseline, not the tiny {file,range}
+try { fs.rmSync(raDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const effectiveCutsOk = focusUnitOk && conceptUnitOk && conceptIntOk && readAvoidOk;
+await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -1635,6 +1704,8 @@ const rows = [
   ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],
   ["dashboard: 3D viz + vendored Three.js route + combined gamedev savings + 127.0.0.1", dashboardOk, "true", dashboardOk],
   ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
+  ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
+  ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
