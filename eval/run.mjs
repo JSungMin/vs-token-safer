@@ -1750,7 +1750,15 @@ const scStatsOk = scStats && scStats.total === 2 && scStats.kept === 1;
 const scNoScopeOk = scopedCdb(scDir, scDir, [], scOutBase) === scDir;          // empty scope → src unchanged
 const scNoMatchOk = scopedCdb(scDir, scDir, scopeDirs(scDir, "Nonexistent"), scOutBase) === scDir; // no match → fall back to full
 try { fs.rmSync(scDir, { recursive: true, force: true }); } catch { /* ignore */ }
-const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk && scNoScopeOk && scNoMatchOk;
+// clangd-indexer kill switch: default on; VTS_CLANGD_INDEXER=off (or config clangdIndexer:"off") disables it.
+const { indexerEnabled } = await import("../server/backends/index.js");
+const idxTogPrev = process.env.VTS_CLANGD_INDEXER;
+const idxDefaultOn = indexerEnabled() === true;
+process.env.VTS_CLANGD_INDEXER = "off";
+const idxOff = indexerEnabled() === false;
+if (idxTogPrev === undefined) delete process.env.VTS_CLANGD_INDEXER; else process.env.VTS_CLANGD_INDEXER = idxTogPrev;
+const indexerToggleOk = idxDefaultOn && idxOff;
+const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk && scNoScopeOk && scNoMatchOk && indexerToggleOk;
 
 // 80) unified tool-routing policy — vts COMPLEMENTS Claude Code's native tools. shouldSuppressSteer stays
 // silent on generated/build-output paths (CC-native is fine there); routingDigest is the single
@@ -1850,7 +1858,7 @@ const rows = [
   ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
   ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
   ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
-  ["indexing scope: scopeDirs/inScope + scopedCdb prune (in-scope TUs only) + stats + no-scope/no-match fallback", scopeOk, "true", scopeOk],
+  ["indexing scope: scopeDirs/inScope + scopedCdb prune + stats + fallbacks + clangd-indexer kill switch", scopeOk, "true", scopeOk],
   ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);

@@ -167,9 +167,18 @@ export function clangdIndexerCmd() {
   }
   return "clangd-indexer";
 }
+// Kill switch — disable the clangd-indexer static-index path entirely on a machine where it's unwanted
+// (e.g. the build is too slow, or you don't want a static --index-file). VTS_CLANGD_INDEXER=off (env) or
+// config `clangdIndexer:"off"`. Default on. When off: hasClangdIndexer() is false (preindex --static refuses)
+// AND clangd does NOT load a prebuilt vts-static.idx via --index-file (so a stale .idx is ignored too).
+export function indexerEnabled() {
+  const v = env("VTS_CLANGD_INDEXER") || (_fileCfg.clangdIndexer != null ? String(_fileCfg.clangdIndexer) : "");
+  return !/^(0|false|off|no)$/i.test(v);
+}
 // Is clangd-indexer actually runnable? (full LLVM installs have it; the VS-bundled LLVM ships only clangd.)
 let _indexerOk;
 export function hasClangdIndexer() {
+  if (!indexerEnabled()) return false; // explicit kill switch — don't even probe
   if (_indexerOk !== undefined) return _indexerOk;
   try { execFileSync(clangdIndexerCmd(), ["--help"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "ignore", "ignore"] }); _indexerOk = true; }
   catch { _indexerOk = false; }
@@ -256,7 +265,7 @@ export const BACKENDS = {
       // server. Gives an instant project-wide index instead of the lazy background crawl. Built by
       // `vts preindex`; scope-specific (next to the scoped compile DB). Background index stays on so edits
       // made after the static build are still picked up.
-      try { const idx = staticIndexPath(root); if (fs.existsSync(idx)) a.push(`--index-file=${idx}`); } catch { /* none */ }
+      try { if (indexerEnabled()) { const idx = staticIndexPath(root); if (fs.existsSync(idx)) a.push(`--index-file=${idx}`); } } catch { /* none */ }
       // Prebuilt/remote index (zero per-dev warmup): point clangd at a shared clangd-index-server.
       const remote = env("VTS_CLANGD_REMOTE");
       if (remote) a.push(`--remote-index-address=${remote}`, `--project-root=${root}`);
