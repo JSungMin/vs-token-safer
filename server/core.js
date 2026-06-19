@@ -1031,6 +1031,33 @@ function factorCommonPrefix(lines) {
   if (!prefix) return lines.join("\n");
   return `under ${prefix}/\n` + lines.map((l) => "  " + l.slice(prefix.length + 1)).join("\n");
 }
+// ── Completeness certificate — the semantic guarantee grep cannot give ──────────────────────────────────
+// Every result-bearing tool states whether the answer set is COMPLETE (the engine/scan covered everything),
+// PARTIAL (capped — more exist and the remainder is KNOWN and recoverable via the cap/tee), or INCONCLUSIVE
+// (a bounded walk hit a time/scan limit before finishing, so the remainder is UNKNOWN — a real 0 and an
+// unreached-0 are indistinguishable). The crucial, paper-load-bearing distinction is PARTIAL vs INCONCLUSIVE:
+// grep returns a flat match list with no signal about either; a semantic index can certify COMPLETE, and a
+// bounded lexical walk can at least honestly flag INCONCLUSIVE instead of presenting a possibly-truncated 0 as
+// fact. The tag is additive (the human-facing notes elsewhere stay) and machine-readable. VTS_CERT=0 hides it.
+function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
+// truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
+// 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false } = {}) {
+  if (!certOn()) return "";
+  if (truncated === "time" || truncated === "scan") {
+    const how = truncated === "time" ? "time-boxed" : "scan-limited";
+    return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete; narrow the scope or use a semantic tool (search_symbol/find_references) to certify.]`;
+  }
+  if (truncated === "index") {
+    return `\n[completeness: INCONCLUSIVE — this backend answers from open/indexed files only, so a symbol whose file isn't indexed yet can be missed; this is not an authoritative 0.]`;
+  }
+  if (truncated === "cap" || (total != null && shown < total)) {
+    const more = total != null ? `${shown} of ${total}` : `the top ${shown}`;
+    return `\n[completeness: PARTIAL — showing ${more}; the remainder is known and recoverable (raise the cap or read the tee file).]`;
+  }
+  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match (${shown}).]`;
+}
+export { completenessCert };
 function fmtLocations(locs, max, label) {
   const arr = Array.isArray(locs) ? locs : locs ? [locs] : [];
   const shown = arr.slice(0, max);
@@ -1695,10 +1722,11 @@ export async function runTool(name, a = {}) {
       const root = resolveRoot(a);
       const max = Number(a.maxResults) || MAX_RESULTS;
       const files = findFilesUnder(root, String(a.q), max);
-      if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT);
+      if (!files.length) return finishOut([], `No files matching "${a.q}" under ${root}.` + LOG_EMPTY_HINT + completenessCert({ shown: 0, total: files.truncated ? null : 0, truncated: files.truncated || null, semantic: false }));
       let ft = files.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : files.truncated === "scan" ? ` — scan limit hit (narrow projectPath; more exist)` : "";
       if (files.truncated) ft += teeNote("find_files", a.q, root, (n) => findFilesUnder(root, String(a.q), n));
-      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + factorCommonPrefix(files));
+      const filesCert = completenessCert({ shown: files.length, total: files.truncated ? null : files.length, truncated: files.truncated || null, semantic: false });
+      return finishOut(files, `${files.length} file(s) matching "${a.q}"${ft}:\n` + factorCommonPrefix(files) + filesCert);
     }
     if (name === "search_text") {
       if (!a.q) return err("search_text needs q (a string or regex to find in code).");
@@ -1741,14 +1769,16 @@ export async function runTool(name, a = {}) {
         // symbol hunt to find_references (semantic, walks no tree, complete).
         const toNote = hits.truncated === "time" ? " — but the 4s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here)" : "";
         const emptySteer = (!docs && !a.path && hits.truncated) ? textSymbolSteer(a.q, true) : "";
-        return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer);
+        const emptyTextCert = completenessCert({ shown: 0, total: hits.truncated ? null : 0, truncated: hits.truncated || null, semantic: false });
+        return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer + emptyTextCert);
       }
       let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
       if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
       // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + steer);
+      const textCert = completenessCert({ shown: hits.length, total: hits.truncated ? null : hits.length, truncated: hits.truncated || null, semantic: false });
+      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + steer + textCert);
     }
     // vts_git / vts_p4 — run the real VCS command and COMPACT its output before it reaches the model. The
     // language-server index can't help here (status/log/diff/opened aren't source symbols), but the raw dump
@@ -1840,14 +1870,17 @@ export async function runTool(name, a = {}) {
             return finishOut(hits, adv + `No indexed symbol for "${a.q}" — ${why}. Literal text matches instead (file:line of the name, not a semantic decl):\n` + hits.join("\n"));
           }
         }
-        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null));
+        const partialIdx = backendName === "typescript" || backendName === "pyright" || (backendName === "clangd" && !hasCompileDb(root));
+        const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true });
+        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert);
       }
       // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
       const focusN = focusCap(String(a.q), syms, max);
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
-      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit);
+      const symCert = completenessCert({ shown: focusN, total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
+      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert);
     }
     if (name === "find_references") {
       const c = await getClient(root, backendName);
@@ -1924,7 +1957,8 @@ export async function runTool(name, a = {}) {
       // detail=file|dir → a blast-radius summary (dependents grouped + ranked) instead of the per-line list.
       const detail = String(a.detail || "").toLowerCase();
       const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody);
+      const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true });
+      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert);
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");

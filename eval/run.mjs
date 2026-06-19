@@ -1627,6 +1627,25 @@ const raLedger = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")); 
 const readAvoidOk = !!(raLedger.tools && raLedger.tools.read_symbol && raLedger.tools.read_symbol.rawTok >= 2000); // whole-file baseline, not the tiny {file,range}
 try { fs.rmSync(raDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const effectiveCutsOk = focusUnitOk && conceptUnitOk && conceptIntOk && readAvoidOk;
+
+// 76) completeness certificate — the semantic guarantee grep can't give: every result-bearing tool labels its
+// answer COMPLETE / PARTIAL / INCONCLUSIVE. The load-bearing distinction is PARTIAL (known, recoverable
+// remainder) vs INCONCLUSIVE (a bounded walk that may have missed — a 0 is not authoritative). Pure-fn modes +
+// a live search_text integration (a small, non-truncated scan certifies COMPLETE) + the VTS_CERT=0 toggle.
+const { completenessCert } = await import("../server/core.js");
+const certComplete = completenessCert({ shown: 3, total: 3, truncated: null, semantic: true }).includes("COMPLETE");
+const certPartial = (() => { const s = completenessCert({ shown: 60, total: 200, truncated: "cap", semantic: true }); return s.includes("PARTIAL") && s.includes("60 of 200"); })();
+const certTime = completenessCert({ shown: 0, truncated: "time", semantic: false }).includes("INCONCLUSIVE");
+const certIndex = completenessCert({ truncated: "index" }).includes("INCONCLUSIVE"); // partial-index 0 (ts/py) ≠ authoritative 0
+const certOff = (() => { const prev = process.env.VTS_CERT; process.env.VTS_CERT = "0"; const s = completenessCert({ shown: 1, total: 1 }); if (prev === undefined) delete process.env.VTS_CERT; else process.env.VTS_CERT = prev; return s === ""; })();
+const certDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-cert`);
+fs.mkdirSync(certDir, { recursive: true });
+fs.writeFileSync(path.join(certDir, "c.js"), "const certToken123 = 1;\n");
+const certScan = await runTool("search_text", { q: "certToken123", projectPath: certDir }); // pure FS, no backend
+const certWired = /\[completeness: COMPLETE/.test(certScan.text || "");
+try { fs.rmSync(certDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1706,6 +1725,7 @@ const rows = [
   ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
   ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
   ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],
+  ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
