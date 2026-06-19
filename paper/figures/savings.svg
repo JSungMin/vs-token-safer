@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="320" viewBox="0 0 780 320" font-family="Helvetica, Arial, sans-serif">
+  <style>
+    .title { font-size:15px; fill:#0f172a; font-weight:bold; }
+    .lab   { font-size:13px; fill:#0f172a; text-anchor:end; }
+    .val   { font-size:12px; fill:#334155; }
+    .ax    { stroke:#94a3b8; stroke-width:1; }
+    .axlab { font-size:11px; fill:#64748b; text-anchor:middle; }
+    .bar   { fill:#2563eb; }
+    .bar2  { fill:#60a5fa; }
+  </style>
+
+  <text x="20" y="28" class="title">Per-tool token savings (local ledger, 441 searches)</text>
+
+  <!-- x grid -->
+  <g>
+    <line class="ax" x1="170" y1="60" x2="170" y2="270"/>
+    <line class="ax" x1="312" y1="60" x2="312" y2="270" stroke-dasharray="3,3"/>
+    <line class="ax" x1="454" y1="60" x2="454" y2="270" stroke-dasharray="3,3"/>
+    <line class="ax" x1="596" y1="60" x2="596" y2="270" stroke-dasharray="3,3"/>
+    <line class="ax" x1="738" y1="60" x2="738" y2="270" stroke-dasharray="3,3"/>
+    <text x="170" y="288" class="axlab">0</text>
+    <text x="312" y="288" class="axlab">20k</text>
+    <text x="454" y="288" class="axlab">40k</text>
+    <text x="596" y="288" class="axlab">60k</text>
+    <text x="738" y="288" class="axlab">80k</text>
+    <text x="454" y="306" class="axlab">tokens saved vs. forwarding the raw index response</text>
+  </g>
+
+  <!-- bars: scale 142px per 20k tokens => 0.0071 px/token -->
+  <!-- document_symbols 84,354 -->
+  <rect class="bar" x="170" y="72"  width="599" height="26"/>
+  <text x="162" y="90"  class="lab">document_symbols</text>
+  <text x="585" y="90"  class="val" fill="#ffffff" text-anchor="end">~84,354  (10 runs)</text>
+
+  <!-- search_text 30,308 -->
+  <rect class="bar" x="170" y="110" width="215" height="26"/>
+  <text x="162" y="128" class="lab">search_text</text>
+  <text x="393" y="128" class="val">~30,308  (246)</text>
+
+  <!-- search_symbol 9,122 -->
+  <rect class="bar2" x="170" y="148" width="65" height="26"/>
+  <text x="162" y="166" class="lab">search_symbol</text>
+  <text x="243" y="166" class="val">~9,122  (32)</text>
+
+  <!-- find_references 2,617 -->
+  <rect class="bar2" x="170" y="186" width="19" height="26"/>
+  <text x="162" y="204" class="lab">find_references</text>
+  <text x="197" y="204" class="val">~2,617  (29)</text>
+
+  <!-- insert_symbol 2,313 -->
+  <rect class="bar2" x="170" y="224" width="16" height="26"/>
+  <text x="162" y="242" class="lab">insert_symbol</text>
+  <text x="194" y="242" class="val">~2,313  (5)</text>
+
+  <text x="170" y="268" class="val" font-weight="bold">total ~130,251 tokens  ·  raw 263,540 → capped 133,289  (~2x)  ·  peak single query 21,056 → 1,961 (10.7x)</text>
+</svg>
