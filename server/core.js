@@ -1898,7 +1898,7 @@ export async function runTool(name, a = {}) {
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
-      const symCert = completenessCert({ shown: focusN, total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
+      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
       const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert;
       maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
       return finishOut(syms, symBody);
