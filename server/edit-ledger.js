@@ -81,15 +81,23 @@ function rate(m) { const s = (m && m.shown) || 0, c = (m && m.converted) || 0; r
 // so this is a strict superset of the old static behavior — opt-in, and safer once on.
 export function decideEscalation(o = readEditLedger(), threshold = 0) {
   if (!(threshold > 0)) return false;             // escalation is opt-in; OFF by default
-  if ((o.streak || 0) < threshold) return false;  // respect the patience floor first
   // 0.6 (not 0.5): an UNPROVEN warn reads ~0.5 under the Laplace prior, which must NOT count as "working" —
   // otherwise escalation could never start on fresh data. So a warn must demonstrably convert (rate > 0.6)
   // before it holds off the block; until then, the patience-floor behavior matches the old static threshold.
   const warnOk = parseFloat(process.env.VTS_WARN_OK || "0.6") || 0.6;
+  // The block must EARN its place by an ABSOLUTE bar, not a relative one. A relative test (blockRate <
+  // warnRate) is wrong when BOTH are failing: Laplace makes the LESS-tried modality look better, so a block
+  // fired repeatedly with zero conversions still "beat" a warn that failed more often and kept getting chosen
+  // (live-sim found: block 0/3 vs warn 0/4 → 0.2 > 0.167 → never backs off). Instead: once the block has been
+  // tried VTS_BLOCK_TRIES times and converts below VTS_BLOCK_OK, it is PROVEN not to work → back off to warn
+  // (the "agent fights the wall" failure). VTS_BLOCK_TRIES/VTS_BLOCK_OK tune the bar.
+  const blockTries = parseInt(process.env.VTS_BLOCK_TRIES || "2", 10) || 2;
+  const blockOk = parseFloat(process.env.VTS_BLOCK_OK || "0.4") || 0.4;
   const warnRate = rate(o.mod.warn), blockRate = rate(o.mod.block);
-  if (warnRate >= warnOk) return false;                                    // warns are working — don't escalate
-  if ((o.mod.block.shown || 0) > 0 && blockRate < warnRate) return false;  // block tried & not better → back off
-  return true;                                                             // warns failing, block unproven-or-better → escalate
+  if (warnRate >= warnOk) return false;                                          // warns are working — don't escalate
+  if ((o.mod.block.shown || 0) >= blockTries && blockRate < blockOk) return false; // block PROVEN not working → back off
+  if ((o.streak || 0) < threshold) return false;                                 // respect the patience floor
+  return true;                                                                   // warns failing, block not-yet-disproven → escalate
 }
 
 // One-line controller state for the SessionStart self-report — surfaces WHICH lever is moving the number.

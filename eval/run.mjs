@@ -1688,9 +1688,10 @@ const escOff = ELc.decideEscalation(mkEsc(5, [0, 0], [0, 0]), 0) === false;     
 const escFloor = ELc.decideEscalation(mkEsc(1, [10, 0], [0, 0]), 3) === false;               // below patience floor
 const escWarnsWork = ELc.decideEscalation(mkEsc(3, [10, 8], [0, 0]), 3) === false;           // warns converting → stay soft
 const escTryBlock = ELc.decideEscalation(mkEsc(3, [10, 0], [0, 0]), 3) === true;             // warns fail, block untried → escalate
-const escBackOff = ELc.decideEscalation(mkEsc(3, [6, 2], [8, 0]), 3) === false;              // block tried & not better → back off
+const escBackOff = ELc.decideEscalation(mkEsc(3, [6, 2], [8, 0]), 3) === false;              // block tried & not converting → back off
+const escBothFail = ELc.decideEscalation(mkEsc(6, [3, 0], [3, 0]), 3) === false;             // BOTH failing, block tried ≥2 → absolute back-off (live-sim regression)
 const escBlockWins = ELc.decideEscalation(mkEsc(3, [8, 0], [4, 3]), 3) === true;             // block proven better → escalate
-const escPolicyOk = escOff && escFloor && escWarnsWork && escTryBlock && escBackOff && escBlockWins;
+const escPolicyOk = escOff && escFloor && escWarnsWork && escTryBlock && escBackOff && escBothFail && escBlockWins;
 const elPrev = process.env.VTS_EDIT_LEDGER;
 const elFresh = path.join(os.tmpdir(), `vts-eval-elctrl-${process.pid}.json`);
 try { fs.rmSync(elFresh, { force: true }); } catch { /* ignore */ }
