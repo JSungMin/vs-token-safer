@@ -47,7 +47,20 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   absent → warm-pass fallback + advisory to install full LLVM. Ops `vts_scope` (show scope + TU stats +
   top-level dirs) / `vts_preindex` (build ahead: static index if indexer present, else warm pass); CLI `vts
   scope`/`vts preindex`, folded into `vts_admin`. Eval guard 79. Env: `VTS_SCOPE`, `VTS_CLANGD_INDEXER_CMD`,
-  `VTS_INDEXER_TIMEOUT_MS` (1800000).
+  `VTS_INDEXER_TIMEOUT_MS` (1800000). PREINDEX GATING: `vts preindex` DEFAULT = fast scoped background warm;
+  the clangd-indexer STATIC `--index-file` (parses every in-scope TU, tens of min on a big scope) is OPT-IN via
+  `static=true`/`--static` — never auto-run just because the indexer exists (an existing `vts-static.idx` is
+  still auto-loaded, cheap). within-scope cert: `completenessCert({scoped})` qualifies a semantic COMPLETE/0 as
+  "within the configured indexing scope" (search_symbol/find_references), and `clangdIndexAdvisory` counts
+  TUs/shards against the EFFECTIVE (scoped) CDB.
+- `server/policy.js` — UNIFIED TOOL-ROUTING POLICY (vts COMPLEMENTS Claude Code, not competes). `shouldSuppressSteer(file)`
+  stays SILENT where CC-native is clearly better — generated/build-output paths (`Intermediate|Binaries|Saved|
+  DerivedDataCache|node_modules|build|dist|out|obj|.git`, `*.generated.*`/`*.g.cs`/`*.min.js`); wired into the
+  edit-steer hook (a whole-decl edit there isn't nagged AND isn't counted against adoption). `VTS_SUPPRESS=0` off.
+  `routingDigest()` = the SINGLE SessionStart message: a when-to-use-what decision tree (semantic→vts, whole-decl→
+  symbol-edit, doc/just-edited/sub-decl→CC-native Read/Grep/Edit, big-tree→scope+preindex) + live adoption posture +
+  adaptive-controller state — replaces the adoption-only nudge in `hooks/edit-report.js` (one coherent policy, not
+  scattered nudges). Eval guard 80.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses

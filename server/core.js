@@ -772,7 +772,9 @@ function clangdShardCount(cdbDir) {
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_INDEX_ADVISORY ?? "1"))) return "";
-  let cdbDir; try { cdbDir = resolveCdbDir(root); } catch { cdbDir = null; }
+  // Use the EFFECTIVE (scoped) CDB so the TU count + shard % reflect the scope — else a scoped project still
+  // reports the full ~26k TUs and tells the user to scope when they already have.
+  let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
   if (!cdbDir) return ""; // the no-DB case is already covered by compileDbAdvisory
   const db = loadCdb(cdbDir);
   if (!db) return "";
@@ -1045,8 +1047,11 @@ function factorCommonPrefix(lines) {
 function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false } = {}) {
   if (!certOn()) return "";
+  // When an indexing scope is active, a semantic COMPLETE (or authoritative 0) is complete WITHIN THE SCOPE,
+  // not across the whole project — qualify it so the agent doesn't read it as project-wide coverage.
+  const within = scoped ? " within the configured indexing scope (not the whole project — widen or unset the scope for full coverage)" : "";
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
     return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete; narrow the scope or use a semantic tool (search_symbol/find_references) to certify.]`;
@@ -1058,7 +1063,7 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
     const more = total != null ? `${shown} of ${total}` : `the top ${shown}`;
     return `\n[completeness: PARTIAL — showing ${more}; the remainder is known and recoverable (raise the cap or read the tee file).]`;
   }
-  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match (${shown}).]`;
+  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match${within} (${shown}).]`;
 }
 export { completenessCert };
 function fmtLocations(locs, max, label) {
@@ -1710,27 +1715,34 @@ export async function runTool(name, a = {}) {
       return out(lines.join("\n"));
     }
     if (name === "vts_preindex") {
-      // Pre-build the index so the first real query is instant. clangd + clangd-indexer → an offline static
-      // index loaded via --index-file (no lazy crawl); otherwise a full warm pass that persists the background
-      // index. Honors the configured scope, so on a huge tree only the chosen subset is indexed.
+      // Pre-build the index so the first real query is instant. DEFAULT = a scoped background-index warm pass
+      // (no extra build step; works with the clangd everyone has). The clangd-indexer STATIC index is the
+      // heavy, OPT-IN path (`static=true`): it parses every in-scope TU offline and can take TENS OF MINUTES on
+      // a large scope, so it is never triggered just because the binary exists. Either way the scope is
+      // honored, and clangd auto-loads an EXISTING vts-static.idx via --index-file (cheap) regardless.
       const root = resolveRoot(a);
       const backendName = a.backend || BACKEND || pickBackend(root);
       if (!backendName) return err(`No backend to pre-index. Pass backend=clangd|roslyn|typescript|pyright or ensure ${root} has a build artifact.`);
       const dirs = scopeDirsFor(root);
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : " (whole tree — set a scope via vts setup --scope to index a subset faster)";
-      if (backendName === "clangd" && hasClangdIndexer()) {
+      const wantStatic = a.static === true || a.static === "true";
+      if (backendName === "clangd" && wantStatic) {
+        if (!hasClangdIndexer()) return err(`preindex static: clangd-indexer not found. Install the full LLVM toolchain (scoop install llvm | winget install LLVM.LLVM) or set VTS_CLANGD_INDEXER_CMD. Or omit static=true for the background-index warm pass.`);
         const r = buildStaticIndex(root);
         if (r.error) return err(`preindex: ${r.error}`);
         const t0 = Date.now();
         try { await getClient(root, backendName); } catch { /* warm best-effort */ }
-        return out(`Built static clangd index${scopeNote}: ${r.tus} TU(s) → ${r.path} in ${(r.ms / 1000).toFixed(1)}s, loaded via --index-file (no background crawl wait). Warm in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
+        return out(`Built STATIC clangd index${scopeNote}: ${r.tus} TU(s) → ${r.path} in ${(r.ms / 1000).toFixed(1)}s, loaded via --index-file (no background crawl wait). Warm in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
       }
       const t0 = Date.now();
       await getClient(root, backendName);
-      const adv = backendName === "clangd" && !hasClangdIndexer()
-        ? `\n(For INSTANT pre-indexing install the full LLVM release — it bundles clangd-indexer — then re-run vts preindex; it builds a static --index-file instead of the slower background crawl.)`
-        : "";
-      return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + adv);
+      // After a default warm pass, point at the heavier static option ONLY as a hint (with the time caveat) —
+      // never auto-run it. Install advice when clangd has no indexer at all.
+      const staticHint = backendName !== "clangd" ? ""
+        : hasClangdIndexer()
+          ? `\n(Want instant COLD starts across sessions? \`vts preindex --static\` builds a one-time monolithic --index-file via clangd-indexer — but it parses every in-scope TU and can take tens of minutes on a large scope, so run it in the background / CI. The scoped background index above is usually enough.)`
+          : `\n(Optional: install the full LLVM toolchain — it bundles clangd-indexer — then \`vts preindex --static\` builds an instant-load --index-file.\n   install:  scoop install llvm   |   winget install LLVM.LLVM   |   https://github.com/llvm/llvm-project/releases  ·  or VTS_CLANGD_INDEXER_CMD=/path/to/clangd-indexer)`;
+      return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + staticHint);
     }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
@@ -1941,7 +1953,7 @@ export async function runTool(name, a = {}) {
           }
         }
         const partialIdx = backendName === "typescript" || backendName === "pyright" || (backendName === "clangd" && !hasCompileDb(root));
-        const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true });
+        const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert);
       }
       // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
@@ -1949,7 +1961,7 @@ export async function runTool(name, a = {}) {
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
-      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
+      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
       const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert;
       maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
       return finishOut(syms, symBody);
@@ -2029,7 +2041,7 @@ export async function runTool(name, a = {}) {
       // detail=file|dir → a blast-radius summary (dependents grouped + ranked) instead of the per-line list.
       const detail = String(a.detail || "").toLowerCase();
       const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
-      const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true });
+      const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
       const refBodyFull = backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert;
       if (a.symbol) maybeCounterfactual("find_references", String(a.symbol), root, locList, refBodyFull); // by-name → a NAME to shadow-grep
       return finishOut(locs, refBodyFull);
