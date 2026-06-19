@@ -173,6 +173,3 @@ export function compactP4(sub, raw, max = 60) {
   if (!lines.length) return "(no output).";
   return lines.join("\n") + (total > lines.length ? `\n… +${total - lines.length} more unique line(s).` : "");
 }
-
-// Exposed for the eval (deterministic unit coverage of the grouping helpers).
-export const _internals = { dedupCap, topDir, compactGitStatus, compactGitLog, compactGitDiff, compactP4Opened, compactP4Changes };

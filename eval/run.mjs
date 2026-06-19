@@ -1720,6 +1720,34 @@ if (elPrev === undefined) delete process.env.VTS_EDIT_LEDGER; else process.env.V
 try { fs.rmSync(elFresh, { force: true }); } catch { /* ignore */ }
 const adaptiveCtrlOk = escPolicyOk && ctrlCreditOk && ctrlReportOk;
 
+// 79) indexing SCOPE — the cold-index accelerator: index a subtree, not the whole monorepo. scopeDirs
+// resolves the config/env scope; inScope tests membership; scopedCdb writes a filtered compile_commands.json
+// (only in-scope TUs) for clangd to index; scopeStats reports kept/total. Pure-fn + a tmp compile DB.
+const { scopeDirs, inScope, scopedCdb, scopeStats } = await import("../server/scope.js");
+const scDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-scope`);
+const scA = path.join(scDir, "GameMod"), scB = path.join(scDir, "Engine");
+fs.mkdirSync(scA, { recursive: true }); fs.mkdirSync(scB, { recursive: true });
+const scAf = path.join(scA, "a.cpp").replace(/\\/g, "/"), scBf = path.join(scB, "b.cpp").replace(/\\/g, "/");
+fs.writeFileSync(scAf, "int a;\n"); fs.writeFileSync(scBf, "int b;\n");
+fs.writeFileSync(path.join(scDir, "compile_commands.json"), JSON.stringify([
+  { directory: scDir, file: scAf, command: "clang++ a.cpp" },
+  { directory: scDir, file: scBf, command: "clang++ b.cpp" },
+]));
+const scDirs = scopeDirs(scDir, "GameMod");                          // config scope → [scDir/GameMod]
+const scResolveOk = scDirs.length === 1 && scDirs[0].replace(/\\/g, "/").toLowerCase().endsWith("gamemod");
+const scInOk = inScope(scAf, scDirs) === true && inScope(scBf, scDirs) === false; // a in scope, b out
+const scEmptyAllOk = inScope(scBf, []) === true;                     // no scope → everything in scope
+const scOutBase = path.join(scDir, "out");
+const scopedDir = scopedCdb(scDir, scDir, scDirs, scOutBase);        // write filtered DB
+let scopedEntries = []; try { scopedEntries = JSON.parse(fs.readFileSync(path.join(scopedDir, "compile_commands.json"), "utf8")); } catch { /* ignore */ }
+const scPruneOk = scopedDir !== scDir && scopedEntries.length === 1 && scopedEntries[0].file === scAf; // only the in-scope TU
+const scStats = scopeStats(scDir, scDirs);
+const scStatsOk = scStats && scStats.total === 2 && scStats.kept === 1;
+const scNoScopeOk = scopedCdb(scDir, scDir, [], scOutBase) === scDir;          // empty scope → src unchanged
+const scNoMatchOk = scopedCdb(scDir, scDir, scopeDirs(scDir, "Nonexistent"), scOutBase) === scDir; // no match → fall back to full
+try { fs.rmSync(scDir, { recursive: true, force: true }); } catch { /* ignore */ }
+const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk && scNoScopeOk && scNoMatchOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1802,6 +1830,7 @@ const rows = [
   ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
   ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
   ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
+  ["indexing scope: scopeDirs/inScope + scopedCdb prune (in-scope TUs only) + stats + no-scope/no-match fallback", scopeOk, "true", scopeOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
