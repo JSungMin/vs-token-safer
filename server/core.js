@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, staticIndexPath } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer } from "./backends/index.js";
 import { scopeStats } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
