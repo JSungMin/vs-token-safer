@@ -35,7 +35,7 @@ import { splitSegments } from "../server/shell-split.js";
 // Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
-import { recordEditEvent, resetStreak } from "../server/edit-ledger.js";
+import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -565,11 +565,17 @@ process.stdin.on("end", () => {
         // not a wall. VTS_GREP_BLOCK=0 also holds it to warn (shares the master block switch).
         const after = Number(process.env.VTS_EDIT_BLOCK_AFTER);
         const threshold = Number.isFinite(after) && after >= 0 ? after : 0; // OFF by default (block traps the model)
-        if (grepBlockOn() && threshold > 0 && led.streak >= threshold && ce.insertDecl && !ce.replaceDecl) {
+        // ADAPTIVE controller (replaces the static `streak >= threshold`): escalate to the one-shot block only
+        // when warns aren't converting AND the block is untried-or-proven-better; back off to warn if the block
+        // has been tried and isn't helping (the "agent fights the wall" failure). Block stays on the SAFE
+        // subset (a pure insert — insert_symbol can't corrupt) and the master grep-block switch.
+        if (grepBlockOn() && ce.insertDecl && !ce.replaceDecl && decideEscalation(led, threshold)) {
+          recordSteerShown("block"); // mark block as shown so its conversion (next symbol-edit?) is measured
           resetStreak(); // fire ONCE then back off — no permanent wall
-          process.stderr.write(editNudgeFor(toolName, ti) + " (one-time block: the nudge was ignored " + led.streak + "× — use insert_symbol (position=after|before) for this insert. Set VTS_EDIT_BLOCK_AFTER=0 to disable entirely.)" + setup + "\n");
+          process.stderr.write(editNudgeFor(toolName, ti) + " (one-time block: warns weren't converting (streak " + led.streak + ", adaptive) — use insert_symbol (position=after|before) for this insert. Set VTS_EDIT_BLOCK_AFTER=0 to disable entirely.)" + setup + "\n");
           process.exit(2); // block — route the safe insert to a symbol-edit
         }
+        recordSteerShown("warn"); // mark warn as shown so its conversion is measured by the controller
         emitWarn(editNudgeFor(toolName, ti) + setup);
       }
     }
