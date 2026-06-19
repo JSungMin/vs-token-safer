@@ -1646,6 +1646,37 @@ const certWired = /\[completeness: COMPLETE/.test(certScan.text || "");
 try { fs.rmSync(certDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired;
 
+// 77) counterfactual shadow measurement — the quasi-controlled answer to "did vts reach the same answer as
+// grep?". relateSets classifies vts's answer set against grep's; maybeCounterfactual (opt-in
+// VTS_COUNTERFACTUAL=1) runs a local shadow grep, compares, and records — the grep output never reaches the
+// model. We assert the set algebra + the live wiring (a semantic hit that REFINES grep → "subset") + report.
+const { relateSets, readCounterfactual, counterfactualReport, counterfactualOn } = await import("../server/counterfactual.js");
+const { maybeCounterfactual } = await import("../server/core.js");
+const relSubset = relateSets(["a:1"], ["a:1", "a:2"]) === "subset";       // vts ⊂ grep (refinement — the goal)
+const relSuperset = relateSets(["a:1", "a:2"], ["a:1"]) === "superset";   // vts ⊃ grep (found referents grep missed)
+const relEqual = relateSets(["a:1"], ["a:1"]) === "equal";
+const relEmptyGrep = relateSets(["a:1"], []) === "superset";              // grep found nothing literal; vts did
+const relDisjoint = relateSets(["a:1"], ["b:2"]) === "disjoint";
+const relSetsOk = relSubset && relSuperset && relEqual && relEmptyGrep && relDisjoint;
+const cfPrevOn = process.env.VTS_COUNTERFACTUAL, cfPrevFile = process.env.VTS_COUNTERFACTUAL_FILE;
+const cfFile = path.join(os.tmpdir(), `vts-eval-cf-${process.pid}.json`);
+process.env.VTS_COUNTERFACTUAL = "1"; process.env.VTS_COUNTERFACTUAL_FILE = cfFile;
+const cfToggleOk = counterfactualOn() === true;
+const cfDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-cf`);
+fs.mkdirSync(cfDir, { recursive: true });
+const cfSrc = path.join(cfDir, "x.js");
+fs.writeFileSync(cfSrc, "const a = 1;\nfunction MyCounterSym() {}\nconst b = 2;\n// see MyCounterSym above\n"); // decl @ line 2, comment @ line 4
+const cfUri = cfSrc.replace(/\\/g, "/");
+maybeCounterfactual("search_symbol", "MyCounterSym", cfDir, [{ uri: cfUri, range: { start: { line: 1 } } }], "fake vts body"); // vts found ONLY the decl (line 2)
+const cfL = readCounterfactual();
+const cfRecorded = cfL.runs === 1 && cfL.tools && cfL.tools.search_symbol && cfL.tools.search_symbol.rel && cfL.tools.search_symbol.rel.subset === 1; // grep also hit the comment → vts ⊂ grep
+const cfReport = counterfactualReport(cfL);
+const cfReportOk = cfReport.includes("Counterfactual") && cfReport.includes("subset");
+if (cfPrevOn === undefined) delete process.env.VTS_COUNTERFACTUAL; else process.env.VTS_COUNTERFACTUAL = cfPrevOn;
+if (cfPrevFile === undefined) delete process.env.VTS_COUNTERFACTUAL_FILE; else process.env.VTS_COUNTERFACTUAL_FILE = cfPrevFile;
+try { fs.rmSync(cfDir, { recursive: true, force: true }); fs.rmSync(cfFile, { force: true }); } catch { /* ignore */ }
+const counterfactualEvalOk = relSetsOk && cfToggleOk && cfRecorded && cfReportOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1726,6 +1757,7 @@ const rows = [
   ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
   ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],
   ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
+  ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

@@ -15,6 +15,7 @@ import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPers
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { classifyDeclEdit } from "./edit-detect.js";
+import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 
@@ -319,6 +320,7 @@ function savingsReport(a = {}) {
   if (want("history")) {
     body += `\n\nRecent runs:\n` + (s.history || []).slice().reverse().map((h) => `  ${h.t.replace("T", " ").slice(0, 19)}  ${h.raw.toLocaleString()} → ${h.out.toLocaleString()} tok`).join("\n");
   }
+  body += counterfactualReport(); // "" unless VTS_COUNTERFACTUAL=1 has recorded shadow-grep comparisons
   return body + starNudgeLine(totalSaved) + `\n\nLedger: ${SAVINGS_FILE}`;
 }
 
@@ -1466,6 +1468,23 @@ function scanTextUnder(root, q, max, accept) {
   else if (timedOut) out.truncated = "time";
   return out;
 }
+// Counterfactual shadow measurement (opt-in VTS_COUNTERFACTUAL=1): run a LOCAL literal grep for the same
+// symbol NAME, compare what grep WOULD have returned (tokens + match positions) against the vts answer, and
+// record the comparison. The grep output is DISCARDED — only the numbers reach the local ledger, never the
+// model (zero transmission, zero added model cost). Bounded by scanTextUnder's 4s time-box; any failure is
+// swallowed so a measurement never breaks a query. `locs` items each carry {uri, range}. See
+// server/counterfactual.js for the construct-validity rationale.
+export function maybeCounterfactual(tool, name, root, locs, vtsBody) {
+  if (!counterfactualOn() || !name) return;
+  try {
+    const grepHits = scanTextUnder(root, String(name), 5000);
+    const grepTok = rawTokensOf(grepHits.join("\n"));
+    const vtsTok = tok(vtsBody);
+    const vtsKeys = (locs || []).map((l) => locKey(l.uri, l.range)).filter(Boolean);
+    const grepKeys = grepHits.map(grepKey).filter(Boolean);
+    recordCounterfactual(tool, { grepTok, vtsTok, relation: relateSets(vtsKeys, grepKeys) });
+  } catch { /* best-effort — never break a query for a measurement */ }
+}
 // Filename glob (* ?) → a predicate over basenames, for a TARGETED text search (`search_text glob=*.md`).
 // Naming the glob IS the opt-in to whatever extension it covers — no separate docs flag needed.
 function globAccept(glob) {
@@ -1880,7 +1899,9 @@ export async function runTool(name, a = {}) {
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
       const symCert = completenessCert({ shown: focusN, total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true });
-      return finishOut(syms, adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert);
+      const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert;
+      maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
+      return finishOut(syms, symBody);
     }
     if (name === "find_references") {
       const c = await getClient(root, backendName);
@@ -1958,7 +1979,9 @@ export async function runTool(name, a = {}) {
       const detail = String(a.detail || "").toLowerCase();
       const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
       const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true });
-      return finishOut(locs, backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert);
+      const refBodyFull = backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert;
+      if (a.symbol) maybeCounterfactual("find_references", String(a.symbol), root, locList, refBodyFull); // by-name → a NAME to shadow-grep
+      return finishOut(locs, refBodyFull);
     }
     if (name === "goto_definition") {
       if (!a.path || a.line == null || a.character == null) return err("goto_definition needs path, line, character (0-based position).");
