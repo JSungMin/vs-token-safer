@@ -19,7 +19,7 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsAvailable } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsAvailable } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
@@ -2045,10 +2045,17 @@ export async function runTool(name, a = {}) {
         });
         const pick = ranked[0];
         if (!pick) {
-          // no indexed decl (ts/py open-files miss, clangd no-DB) → fall back to a literal usage scan so a
-          // code-modder still gets every textual hit, clearly labeled as text not semantic.
-          const hits = scanTextUnder(root, want, max);
+          // no indexed decl (ts/py open-files miss, clangd no-DB). SYNTACTIC reference fallback FIRST: a
+          // tree-sitter call-site capture (real call references, 11 langs, zero toolchain) — strictly better
+          // than the literal scan that follows (a call site, not every textual mention). Then literal scan.
           const idxAdv = clangdIndexAdvisory(backendName, root, a.path || null);
+          const tsRefs = await tsSearchReferences(root, want, { skipDir });
+          if (tsRefs && tsRefs.length) {
+            const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
+            const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
+            return finishOut(refLines, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — ${tsRefs.length} tree-sitter call reference(s) (syntactic, file:line; not semantic — a language server resolves which overload/scope):\n` + body + completenessCert({ shown: refLines.length, total: tsRefs.length, truncated: tsRefs.truncated, syntactic: true }) + idxAdv);
+          }
+          const hits = scanTextUnder(root, want, max);
           if (hits.length) return finishOut(hits, backendAdvisory(backendName, root) + `No indexed declaration for "${want}" — literal usage matches instead (file:line of the name, not semantic references):\n` + hits.join("\n") + idxAdv);
           return finishOut([], backendAdvisory(backendName, root) + `No declaration found for "${want}" (backend: ${backendName}).` + EMPTY_HINT + idxAdv);
         }
