@@ -311,7 +311,9 @@ const fb = spawnSync(
     VTS_TS_CMD: process.platform === "win32" ? `"${process.execPath}"` : process.execPath, // quote: execPath may have spaces (shell mode on win)
     VTS_TS_ARGS: process.env.VTS_CLANGD_ARGS, VTS_QUERY_HISTORY: QH, VTS_INCLUDE_GRAPH: IG } },
 );
-const fallbackOk = (fb.stdout || "").includes("Literal text matches") && /mod\.ts/.test(fb.stdout || "");
+// fallback now prefers the SYNTACTIC tier (tree-sitter declaration) over the literal scan; either is correct
+// (literal only if the tree-sitter deps are absent), and both must locate mod.ts.
+const fallbackOk = /mod\.ts/.test(fb.stdout || "") && /(declaration matches|Literal text matches)/.test(fb.stdout || "");
 try { fs.rmSync(tsTextDir, { recursive: true, force: true }); } catch { /* ignore */ }
 const jsTextOk = searchTextJsOk && fallbackOk;
 
@@ -431,7 +433,7 @@ const dbAdvisoryOk =
   /compile_commands/.test(compileDbAdvisory(noDb)) && compileDbAdvisory(withDb) === "";
 const csym = await runTool("search_symbol", { q: "MISS", backend: "clangd", projectPath: noDb }); // mock [] → text fallback
 const clangdFallbackOk =
-  !csym.isError && /Literal text matches/.test(csym.text) &&
+  !csym.isError && /(declaration matches|Literal text matches)/.test(csym.text) &&
   /clangd has no usable index/.test(csym.text) && /Thing\.cpp/.test(csym.text);
 for (const d of [noDb, withDb]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
 const clangdNoDbOk = dbAdvisoryOk && clangdFallbackOk;
@@ -1776,6 +1778,41 @@ const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, conv
 const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig); // tree + posture
 const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk;
 
+// 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
+// (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
+// literal usage grep. Skips gracefully if the optional tree-sitter deps aren't installed (CI without them).
+const { tsFileSymbols, tsSearchSymbols, tsAvailable } = await import("../server/treesitter.js");
+const { buildSymIndex, loadSymIndex, searchSymIndex, hasSymIndex } = await import("../server/symindex.js");
+let tsTierOk = true;
+if (tsAvailable()) {
+  const tsDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-tstier`);
+  fs.mkdirSync(path.join(tsDir, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(tsDir, "a.cpp"), "namespace ns { class WidgetFactory { public: void BuildWidget(int n); }; }\nint WidgetFactory::BuildWidget(int n){ return n; }\n");
+  fs.writeFileSync(path.join(tsDir, "sub", "b.ts"), "export class WidgetView {}\nexport function buildWidgetTree(){ return 1; }\n");
+  fs.writeFileSync(path.join(tsDir, "sub", "c.py"), "class WidgetModel:\n    def build_widget(self):\n        return 1\n");
+  // (a) per-file extraction returns real declarations with names + lines (not usage lines).
+  const cppSyms = await tsFileSymbols(path.join(tsDir, "a.cpp"));
+  const fileExtractOk = cppSyms.some((s) => s.name === "WidgetFactory" && s.kind === "class") && cppSyms.some((s) => /BuildWidget/.test(s.name));
+  // (b) cross-file search by name, ranked, across 3 languages.
+  const SKIP = new Set(["node_modules", ".git"]);
+  const hits = await tsSearchSymbols(tsDir, "Widget", { skipDir: (n) => SKIP.has(n) });
+  const searchOk = hits.length >= 3 && hits.some((h) => /a\.cpp$/.test(h.file)) && hits.some((h) => /b\.ts$/.test(h.file)) && hits.some((h) => /c\.py$/.test(h.file));
+  // exact-name beats substring in the ranking.
+  const exactHit = (await tsSearchSymbols(tsDir, "WidgetView", { skipDir: (n) => SKIP.has(n) }))[0];
+  const rankOk = !!exactHit && exactHit.name === "WidgetView";
+  // (c) committable index: build → JSONL on disk → load meta+entries → query by name (abs path back out).
+  await buildSymIndex(tsDir, { skipDir: (n) => SKIP.has(n), now: 1700000000000 });
+  const idxPresent = hasSymIndex(tsDir);
+  const loaded = loadSymIndex(tsDir);
+  const idxLoadOk = !!loaded && loaded.meta.v === 1 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4;
+  const idxHits = searchSymIndex(tsDir, "buildWidgetTree");
+  const idxSearchOk = !!idxHits && idxHits.fromIndex && idxHits.length === 1 && /b\.ts$/.test(idxHits[0].file) && idxHits[0].line === 2;
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk;
+  try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+} else {
+  console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
+}
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1860,6 +1897,7 @@ const rows = [
   ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
   ["indexing scope: scopeDirs/inScope + scopedCdb prune + stats + fallbacks + clangd-indexer kill switch", scopeOk, "true", scopeOk],
   ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
+  ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
