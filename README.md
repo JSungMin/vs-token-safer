@@ -223,6 +223,38 @@ The smaller the slice you can afford to warm, the bigger the win.
 </details>
 
 <details>
+<summary><b>Big trees: scope &amp; pre-index (cold-start)</b></summary>
+
+On a huge monorepo (e.g. a full Unreal Engine source tree, ~26k translation units) the cold index is the
+one real cost. Two opt-in levers cut it — both stay local, nothing is transmitted:
+
+**1. Scope — index a subtree, not the whole tree.** See what you'd scope, then set it:
+
+```bash
+vts scope --projectPath /path/to/UE        # shows current scope, kept/total TUs, and top-level dirs to pick
+vts setup --scope "TSGame,Plugins"         # persist it (or set VTS_SCOPE="TSGame,Plugins"); then reload/restart
+```
+
+clangd then indexes only the in-scope translation units (live UE5: `TSGame` → 3,377 of 26,488 TUs, **13%**),
+and every backend's warm-up is scoped with it. No scope set = whole-tree behavior, unchanged.
+
+**2. Pre-index — build the index ahead of the first query.**
+
+```bash
+vts preindex --projectPath /path/to/UE     # honors the scope above
+```
+
+With the **full LLVM release** installed (it bundles `clangd-indexer` next to `clangd`), this builds a
+monolithic static index offline and clangd loads it via `--index-file` — a local file, no server — so the
+first query is instant instead of waiting on the lazy background crawl. Without `clangd-indexer` it falls
+back to a warm pass (and tells you to install full LLVM). Override the binary with `VTS_CLANGD_INDEXER_CMD`.
+
+**Do existing users need to re-run setup?** For default (whole-tree) behavior, **no** — just update the
+plugin and `/reload-plugins`. You only run `vts setup --scope …` (once) if you want to *opt into* scoping;
+the `clangd-indexer` path needs no vts setup at all (it's auto-detected — you just need full LLVM installed).
+</details>
+
+<details>
 <summary><b>Savings &amp; discover (catch-rate)</b></summary>
 
 Each search records the tokens it saved vs forwarding the raw index response. Check it with
@@ -254,7 +286,7 @@ searches hit into the warm-up set, so each session leaves the index warmer.
 <summary><b>Language servers &amp; the compile database</b></summary>
 
 - **Node.js ≥ 18** on PATH.
-- **C/C++ → clangd ≥ 22** ([releases](https://github.com/clangd/clangd/releases)). The clangd 19.1.x bundled with Visual Studio **deadlocks** indexing real Unreal TUs in server mode; vts warns on an older one. Needs a `compile_commands.json`.
+- **C/C++ → clangd ≥ 22** ([releases](https://github.com/clangd/clangd/releases)). The clangd 19.1.x bundled with Visual Studio **deadlocks** indexing real Unreal TUs in server mode; vts warns on an older one. Needs a `compile_commands.json`. Prefer the **full LLVM release** — it bundles `clangd-indexer` alongside `clangd`, which `vts preindex` uses for an instant static index (see *Big trees: scope &amp; pre-index*).
 - **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) — vts auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its runtime from the bundle. Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`.
 - **JS/TS → typescript-language-server, Python → pyright.** Ship as plugin deps, install automatically on the first session (one-time ~50 MB; JS/TS wants Node 20+, skipped on 18).
 - **Mixed repo?** A query that targets a file uses that file's own language backend — a `.py`/`.ts` inside a C++/C# (clangd/roslyn-rooted) tree gets pyright/typescript automatically, so vts works in a UE tree with a Python tooling dir without a manual `backend=`. This even **overrides a pinned `backend` / `VTS_BACKEND`** when they conflict: one global server serves every repo you touch, so a `backend:"clangd"` set for a C++ project never sends another repo's `.js`/`.cs`/`.py` to clangd (which would answer `-32001 invalid AST`). A query with no file target (e.g. `search_symbol` by name) keeps the pinned backend.

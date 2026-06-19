@@ -220,6 +220,38 @@ clangd는 비동기로 인덱싱하므로 *첫* 검색은 일회성 워밍업을
 </details>
 
 <details>
+<summary><b>큰 트리: 스코프 &amp; 사전 인덱싱(콜드 스타트)</b></summary>
+
+거대 모노레포(예: 전체 Unreal Engine 소스 트리, 번역 단위 ~26k)에서는 콜드 인덱스가 유일한 실비용입니다.
+두 옵트인 지렛대로 줄입니다 — 둘 다 로컬, 전송 없음:
+
+**1. 스코프 — 전체가 아니라 서브트리만 인덱싱.** 무엇을 스코프할지 보고 설정:
+
+```bash
+vts scope --projectPath /path/to/UE        # 현재 스코프, 유지/전체 TU 수, 고를 수 있는 최상위 디렉터리 표시
+vts setup --scope "TSGame,Plugins"         # 영속화(또는 VTS_SCOPE="TSGame,Plugins"); 이후 reload/재시작
+```
+
+그러면 clangd가 스코프 내 번역 단위만 인덱싱하고(실측 UE5: `TSGame` → 26,488 중 3,377 TU, **13%**), 모든
+백엔드의 워밍도 함께 스코프됩니다. 스코프 미설정 = 기존 전체 트리 동작 그대로.
+
+**2. 사전 인덱싱 — 첫 질의 전에 인덱스를 빌드.**
+
+```bash
+vts preindex --projectPath /path/to/UE     # 위 스코프를 따름
+```
+
+**full LLVM 릴리스**가 설치돼 있으면(`clangd` 옆에 `clangd-indexer` 동봉) 단일 정적 인덱스를 오프라인으로
+빌드하고 clangd가 `--index-file`(원격 서버가 아닌 로컬 파일)로 로드 — 게으른 백그라운드 크롤을 기다리지 않고
+첫 질의가 즉시. `clangd-indexer`가 없으면 워밍 패스로 폴백(+ full LLVM 설치 안내). 바이너리는
+`VTS_CLANGD_INDEXER_CMD`로 지정.
+
+**기존 사용자는 setup을 다시 해야 하나요?** 기본(전체 트리) 동작은 **아니요** — 플러그인 업데이트 후
+`/reload-plugins`만 하면 됩니다. 스코핑을 *옵트인*하려는 경우에만 `vts setup --scope …`를 한 번 실행하면 되고,
+`clangd-indexer` 경로는 vts setup이 전혀 필요 없습니다(자동 감지 — full LLVM만 설치돼 있으면 됨).
+</details>
+
+<details>
 <summary><b>절감 &amp; discover (포착률)</b></summary>
 
 검색마다 원시 인덱스 응답을 그대로 보내는 것 대비 아낀 토큰을 기록합니다. `/vs-token-safer:savings`,
@@ -251,7 +283,7 @@ $ vts discover --since 1
 <summary><b>언어 서버 &amp; 컴파일 데이터베이스</b></summary>
 
 - **Node.js ≥ 18**이 PATH에.
-- **C/C++ → clangd ≥ 22** ([릴리스](https://github.com/clangd/clangd/releases)). Visual Studio에 번들된 clangd 19.1.x는 실제 Unreal TU를 서버 모드로 인덱싱할 때 **교착**합니다 — 오래된 게 감지되면 vts가 경고합니다. `compile_commands.json`이 필요합니다.
+- **C/C++ → clangd ≥ 22** ([릴리스](https://github.com/clangd/clangd/releases)). Visual Studio에 번들된 clangd 19.1.x는 실제 Unreal TU를 서버 모드로 인덱싱할 때 **교착**합니다 — 오래된 게 감지되면 vts가 경고합니다. `compile_commands.json`이 필요합니다. **full LLVM 릴리스**를 권장 — `clangd` 옆에 `clangd-indexer`가 동봉되어 `vts preindex`가 즉시 정적 인덱스를 만듭니다(*큰 트리: 스코프 &amp; 사전 인덱싱* 참고).
 - **C#/.NET → Roslyn LSP.** VS Code C# 확장(`ms-dotnettools.csharp`)을 설치하면 vts가 번들에서 `Microsoft.CodeAnalysis.LanguageServer`와 런타임을 자동 감지합니다. 대안: `dotnet tool install --global csharp-ls`. `.sln`/`.csproj`가 필요합니다.
 - **JS/TS → typescript-language-server, Python → pyright.** 플러그인 의존성으로 들어가 첫 세션에 자동 설치됩니다(최초 1회 ~50MB; JS/TS는 Node 20+를 원하고 18에서는 건너뜀).
 - **혼합 repo?** 파일을 대상으로 한 질의는 그 파일의 언어 백엔드를 씁니다 — C++/C#(clangd/roslyn 루트) 트리 안의 `.py`/`.ts`도 pyright/typescript로 자동 처리되므로, UE 트리에 Python 도구 디렉터리가 섞여 있어도 수동 `backend=` 없이 vts가 동작합니다. 이건 **고정된 `backend`/`VTS_BACKEND`보다도 우선**합니다(충돌 시): 전역 서버 하나가 건드리는 모든 repo를 처리하므로, C++ 프로젝트용으로 `backend:"clangd"`를 박아 둬도 다른 repo의 `.js`/`.cs`/`.py`를 clangd로 보내지 않습니다(보내면 clangd가 `-32001 invalid AST`로 응답). 파일 대상이 없는 질의(예: 이름으로 `search_symbol`)는 고정 백엔드를 유지합니다.
