@@ -11,7 +11,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, staticIndexPath } from "./backends/index.js";
+import { scopeStats } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
 import { classifyDeclEdit } from "./edit-detect.js";
@@ -34,7 +35,7 @@ export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd"];
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd", "scope"];
 
 // ---- per-call project root resolution ----
 // The MCP server is ONE long-lived process serving every repo a session touches, so a single configured
@@ -1687,6 +1688,49 @@ export async function runTool(name, a = {}) {
       const t0 = Date.now();
       await getClient(root, backendName); // spawn + afterInit (index-ready wait) → primes the on-disk + in-process index
       return out(backendAdvisory(backendName, root) + `Warmed ${backendName} for ${root} in ${((Date.now() - t0) / 1000).toFixed(1)}s. Queries in this process are now warm; clangd's on-disk index (.cache/clangd) also persists for faster cold starts.`);
+    }
+    if (name === "vts_scope") {
+      // Show / inspect the indexing scope: the biggest cold-index accelerator on a huge tree (index a subset,
+      // not the whole monorepo). Read-only; set it via `vts setup --scope` (persists) or the VTS_SCOPE env.
+      const root = resolveRoot(a);
+      const dirs = scopeDirsFor(root);
+      const lines = [`Scope for ${root}:`, `  current: ${dirs.length ? dirs.join(", ") : "(none — whole tree indexed)"}`];
+      const src = resolveCdbDir(root);
+      if (src && dirs.length) {
+        const st = scopeStats(src, dirs);
+        if (st) lines.push(`  clangd TUs: ${st.kept} of ${st.total} kept (${Math.round((100 * st.kept) / Math.max(st.total, 1))}%) → scoped compile DB at ${effectiveCdbDir(root)}`);
+      } else if (src) {
+        let total = 0; try { total = JSON.parse(fs.readFileSync(path.join(src, "compile_commands.json"), "utf8")).length; } catch { /* ignore */ }
+        if (total) lines.push(`  clangd TUs: ${total} (whole tree — set a scope to index a subset)`);
+      }
+      let tops = [];
+      try { tops = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules").map((e) => e.name).sort(); } catch { /* ignore */ }
+      if (tops.length) lines.push(`  top-level dirs (pick a subset): ${tops.slice(0, 40).join(", ")}`);
+      lines.push(`  set with: vts setup --scope "Sub1,Sub2"  (or VTS_SCOPE env), then run vts preindex.`);
+      return out(lines.join("\n"));
+    }
+    if (name === "vts_preindex") {
+      // Pre-build the index so the first real query is instant. clangd + clangd-indexer → an offline static
+      // index loaded via --index-file (no lazy crawl); otherwise a full warm pass that persists the background
+      // index. Honors the configured scope, so on a huge tree only the chosen subset is indexed.
+      const root = resolveRoot(a);
+      const backendName = a.backend || BACKEND || pickBackend(root);
+      if (!backendName) return err(`No backend to pre-index. Pass backend=clangd|roslyn|typescript|pyright or ensure ${root} has a build artifact.`);
+      const dirs = scopeDirsFor(root);
+      const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : " (whole tree — set a scope via vts setup --scope to index a subset faster)";
+      if (backendName === "clangd" && hasClangdIndexer()) {
+        const r = buildStaticIndex(root);
+        if (r.error) return err(`preindex: ${r.error}`);
+        const t0 = Date.now();
+        try { await getClient(root, backendName); } catch { /* warm best-effort */ }
+        return out(`Built static clangd index${scopeNote}: ${r.tus} TU(s) → ${r.path} in ${(r.ms / 1000).toFixed(1)}s, loaded via --index-file (no background crawl wait). Warm in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
+      }
+      const t0 = Date.now();
+      await getClient(root, backendName);
+      const adv = backendName === "clangd" && !hasClangdIndexer()
+        ? `\n(For INSTANT pre-indexing install the full LLVM release — it bundles clangd-indexer — then re-run vts preindex; it builds a static --index-file instead of the slower background crawl.)`
+        : "";
+      return out(backendAdvisory(backendName, root) + `Pre-warmed ${backendName} for ${root}${scopeNote} in ${((Date.now() - t0) / 1000).toFixed(1)}s (background index persisted to .cache).` + adv);
     }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
