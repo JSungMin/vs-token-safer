@@ -272,7 +272,6 @@ export class LspClient {
       context: { includeDeclaration },
     });
   }
-  definition(uriOrPath, line, character) { return this.gotoByKind("definition", uriOrPath, line, character); }
   // Definition / type-definition / implementation / declaration share one position-request shape; the kind
   // just picks the LSP method (textDocument/definition|typeDefinition|implementation|declaration). Folded so
   // goto_definition can expose all four without four separate MCP tools.
