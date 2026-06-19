@@ -36,6 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
+import { shouldSuppressSteer } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -556,6 +557,10 @@ process.stdin.on("end", () => {
     if (editWarnOn()) {
       const ce = classifyDeclEdit(toolName, ti, editMinLines());
       if (ce.file && (ce.replaceDecl || ce.insertDecl)) {
+        // CC-complement: a whole-decl edit in a GENERATED / build-output path (Intermediate, Binaries,
+        // *.generated.*, node_modules…) is fine with the native Edit — a symbol-edit there buys nothing.
+        // Stay silent AND don't count it against adoption (it isn't a case we'd steer).
+        if (shouldSuppressSteer(ce.file)) process.exit(0);
         const led = recordEditEvent("builtin-warn");
         // L2: an OPT-IN escalation. After VTS_EDIT_BLOCK_AFTER consecutive ignored nudges, BLOCK once on the
         // SAFE subset (a pure insert of a new declaration). DEFAULT OFF (0) — a persistent block TRAPPED the
