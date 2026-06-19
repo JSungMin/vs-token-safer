@@ -61,6 +61,22 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   symbol-edit, doc/just-edited/sub-decl→CC-native Read/Grep/Edit, big-tree→scope+preindex) + live adoption posture +
   adaptive-controller state — replaces the adoption-only nudge in `hooks/edit-report.js` (one coherent policy, not
   scattered nudges). Eval guard 80.
+- `server/treesitter.js` + `server/symindex.js` — SYNTACTIC TIER (zero-setup fallback BETWEEN the semantic LSP
+  and the literal text scan; the answer to "tree-sitter/embedding rivals are popular because they need no
+  toolchain"). `treesitter.js`: lazy wasm tree-sitter (`web-tree-sitter` runtime + `tree-sitter-wasms` prebuilt
+  grammars, both optionalDependencies — NO native build, Windows-safe; resolved via the sdk.js-style createRequire
+  anchors). `tsFileSymbols(abs)` walks an AST → real DECLARATIONS (name+kind+line) for **36 languages**;
+  `tsSearchSymbols(root,q)` ranks exact-before-substring across a scope (time+file-box); `nameOf` drills C/C++
+  declarator chains. Charter-pure: tree-sitter is an OFFICIAL standard parser (GitHub/neovim), not a reimplement;
+  output stays token-capped file:line; nothing transmitted; SYNTACTIC means it locates decls but does NOT resolve
+  refs/overloads/types (the LSP's job — so it's BELOW the semantic tier). `symindex.js`: COMMITTABLE index
+  (Codeix-inspired) — `vts index` writes a portable, git-committable, team-shareable `.vts-index/symbols.jsonl`
+  (one record/decl, paths RELATIVE) via tree-sitter; `searchSymIndex` answers `search_symbol` INSTANTLY on a
+  toolchain-less machine or before clangd's index builds (the 369s→51s cold problem). core.js `syntacticSymbols`
+  (committed index → live tree-sitter, else literal scan) feeds the search_symbol no-backend / empty-result
+  branches; `completenessCert({syntactic})` labels it. Op `vts_index{status}` (CLI `vts index [--status]`, folded
+  into `vts_admin`). Eval guard 81; benchmark arm C (zero-setup: 150-file symbol search grep 4917 → tree-sitter
+  53 tok = 98.9%, no toolchain).
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses

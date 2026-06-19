@@ -250,12 +250,13 @@ export const TOOLS = [
       "  • warmup {projectPath,backend} — pre-build the index so later searches are fast\n" +
       "  • preindex {projectPath,backend} — build the index ahead of time (clangd: a static --index-file via clangd-indexer if present, honoring scope)\n" +
       "  • scope {projectPath} — show the indexing scope + TU stats + top-level dirs to pick from (set via setup --scope)\n" +
+      "  • index {projectPath,status} — build the committable .vts-index/symbols.jsonl (tree-sitter; instant cold-start tier, no toolchain); status shows the current one\n" +
       "  • gen_compile_db {projectPath,apply,inTree,engineRoot,target,…} — generate the UE clangd compile DB\n" +
       "  • git {argv|args,projectPath} · p4 {argv|args,projectPath} — run a READ-ONLY VCS command, output compacted (mutating REFUSED)",
     inputSchema: {
       type: "object",
       properties: {
-        op: { type: "string", enum: ["setup", "config", "savings", "savings_reset", "discover", "warmup", "preindex", "scope", "gen_compile_db", "git", "p4"], description: "Which admin operation (see the description)." },
+        op: { type: "string", enum: ["setup", "config", "savings", "savings_reset", "discover", "warmup", "preindex", "scope", "index", "gen_compile_db", "git", "p4"], description: "Which admin operation (see the description)." },
         params: { type: "object", description: 'Arguments for the op, e.g. {"argv":["status"]} for git, {"since":30} for discover, {"projectPath":"…"} for setup.' },
       },
       required: ["op"],
@@ -264,4 +265,4 @@ export const TOOLS = [
 ];
 
 // vts_admin folds these cold ops; index.js maps vts_admin{op} -> runTool("vts_"+op).
-export const ADMIN_OPS = new Set(["setup", "config", "savings", "savings_reset", "discover", "warmup", "preindex", "scope", "gen_compile_db", "git", "p4"]);
+export const ADMIN_OPS = new Set(["setup", "config", "savings", "savings_reset", "discover", "warmup", "preindex", "scope", "index", "gen_compile_db", "git", "p4"]);

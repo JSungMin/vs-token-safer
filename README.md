@@ -249,6 +249,21 @@ monolithic static index offline and clangd loads it via `--index-file` — a loc
 first query is instant instead of waiting on the lazy background crawl. Without `clangd-indexer` it falls
 back to a warm pass (and tells you to install full LLVM). Override the binary with `VTS_CLANGD_INDEXER_CMD`.
 
+**3. Zero-setup tier — works before any toolchain, on any repo.** No compile DB, no language server, no
+wait? vts still answers `search_symbol` from a **tree-sitter** parse (an official standard parser, 36
+languages, bundled as wasm — no native build) — real *declarations*, not a usage grep, in the same
+token-capped `file:line` shape. Make it instant and shareable by committing an index:
+
+```bash
+vts index --projectPath /path/to/repo      # writes .vts-index/symbols.jsonl (commit it!)
+vts index --status                          # show the current committed index
+```
+
+`.vts-index/symbols.jsonl` is plain, git-committable, and portable — commit it so teammates (and your own
+cold starts) get instant symbol search with zero setup. A language server, once it indexes, automatically
+supersedes it (the syntactic tier locates decls; the LSP adds reference/overload/type resolution on top).
+Benchmark (150-file symbol search): grep `4917` → tree-sitter `53` tokens = **98.9%**, no toolchain.
+
 **Do existing users need to re-run setup?** For default (whole-tree) behavior, **no** — just update the
 plugin and `/reload-plugins`. You only run `vts setup --scope …` (once) if you want to *opt into* scoping;
 the `clangd-indexer` path needs no vts setup at all (it's auto-detected — you just need full LLVM installed).

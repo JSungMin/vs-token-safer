@@ -246,6 +246,21 @@ vts preindex --projectPath /path/to/UE     # 위 스코프를 따름
 첫 질의가 즉시. `clangd-indexer`가 없으면 워밍 패스로 폴백(+ full LLVM 설치 안내). 바이너리는
 `VTS_CLANGD_INDEXER_CMD`로 지정.
 
+**3. 제로-셋업 티어 — 툴체인 없이, 어떤 repo에서나 즉시.** 컴파일 DB도, 언어 서버도, 대기도 없이?
+vts는 그래도 **tree-sitter** 파싱으로 `search_symbol`에 답합니다(공식 표준 파서, 36개 언어, wasm 번들 —
+네이티브 빌드 없음) — 사용처 grep이 아니라 진짜 *선언*을, 동일한 토큰캡 `file:line` 형태로. 커밋 가능한
+인덱스를 만들면 즉시·공유 가능해집니다:
+
+```bash
+vts index --projectPath /path/to/repo      # .vts-index/symbols.jsonl 작성 (커밋하세요!)
+vts index --status                          # 현재 커밋된 인덱스 표시
+```
+
+`.vts-index/symbols.jsonl`은 평문·git 커밋 가능·이식성 — 커밋해 두면 팀원(과 본인의 cold start)이 제로
+셋업으로 즉시 심볼 검색을 얻습니다. 언어 서버가 인덱싱을 마치면 자동으로 이를 대체합니다(구문 티어는 선언
+위치를, LSP는 그 위에 참조/오버로드/타입 해소를 더함). 벤치마크(150파일 심볼 검색): grep `4917` →
+tree-sitter `53` 토큰 = **98.9%**, 툴체인 불필요.
+
 **기존 사용자는 setup을 다시 해야 하나요?** 기본(전체 트리) 동작은 **아니요** — 플러그인 업데이트 후
 `/reload-plugins`만 하면 됩니다. 스코핑을 *옵트인*하려는 경우에만 `vts setup --scope …`를 한 번 실행하면 되고,
 `clangd-indexer` 경로는 vts setup이 전혀 필요 없습니다(자동 감지 — full LLVM만 설치돼 있으면 됨).

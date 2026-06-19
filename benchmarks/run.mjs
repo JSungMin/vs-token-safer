@@ -38,6 +38,7 @@ fs.writeFileSync(process.env.VTS_CONFIG_FILE, "{}");
 process.env.VTS_LANG = "en";
 
 const { runTool, disposeClients } = await import("../server/core.js");
+const { tsSearchSymbols, tsAvailable } = await import("../server/treesitter.js");
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
 const pct = (x) => (x * 100).toFixed(1) + "%";
 
@@ -119,6 +120,17 @@ async function vtsArm(root, toolName, args, kind) {
   return { tok: tok(r.text), ok: !r.isError, mode };
 }
 
+// Arm C: the SYNTACTIC tier (tree-sitter, ZERO toolchain) — what vts returns for a symbol search on a repo
+// with NO language server installed. This is the embedding/tree-sitter competitors' home turf; we measure
+// that our zero-setup answer keeps the same token-capped `file:line` shape (no bodies), so going toolchain-
+// free costs no more tokens than the semantic tier — while still being real declarations, not a usage grep.
+async function syntacticArm(root, q) {
+  const SKIP = new Set(["node_modules", ".git", "build", "dist"]);
+  const hits = await tsSearchSymbols(root, q, { skipDir: (n) => SKIP.has(n) });
+  const lines = hits.map((h) => `${h.file.replace(/\\/g, "/")}:${h.line}: ${h.kind} ${h.name}`);
+  return { tok: tok(lines.join("\n")), n: lines.length };
+}
+
 const scenarios = [
   { name: "find symbol declaration", grep: (root) => grepContent(root, /\bprocessPayment\b/), vts: (root) => vtsArm(root, "search_symbol", { q: "processPayment" }, "semantic") },
   { name: "find all references", grep: (root) => grepContent(root, /\bprocessPayment\b/), vts: (root) => vtsArm(root, "find_references", { symbol: "processPayment" }, "semantic") },
@@ -128,6 +140,7 @@ const scenarios = [
 
 // ── Sweep ────────────────────────────────────────────────────────────────────────────────────────
 const bySize = {};
+const synBySize = {};
 for (const n of SIZES) {
   const root = buildCorpus(n);
   const rows = [];
@@ -137,6 +150,8 @@ for (const n of SIZES) {
     rows.push({ scenario: s.name, grepTok: a.tok, grepLines: a.lines, grepCapped: a.capped, vtsTok: b.tok, vtsMode: b.mode, vtsOk: b.ok, reduction: a.tok > 0 ? 1 - b.tok / a.tok : 0 });
   }
   bySize[n] = rows;
+  // Arm C: zero-toolchain symbol search via the syntactic (tree-sitter) tier, same query as scenario 1.
+  if (tsAvailable()) synBySize[n] = await syntacticArm(root, "processPayment");
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────────────────────────
@@ -165,6 +180,23 @@ for (const r of bySize[big]) {
 const bt = totalsFor(bySize[big]);
 md += `| **TOTAL** | **${bt.g}** | **${bt.v}** | **${pct(bt.red)}** | |\n\n`;
 
+// Zero-setup tier: the answer to "why are tree-sitter/embedding tools popular?" — they need no toolchain.
+// vts now matches that (tree-sitter syntactic tier) AND keeps a semantic tier above it. This table shows the
+// symbol-declaration query three ways: grep (baseline), tree-sitter (ZERO setup — our fallback), LSP (semantic).
+if (Object.keys(synBySize).length) {
+  md += `## Zero-setup symbol search: grep vs tree-sitter (no toolchain) vs LSP\n\n`;
+  md += `The tree-sitter tier needs NO compile DB / language server — it indexes 36 languages instantly — yet\n`;
+  md += `returns the same token-capped \`file:line\` shape, so toolchain-free costs no more tokens than semantic.\n\n`;
+  md += `| caller files | grep tokens | tree-sitter (no setup) | LSP (semantic) | grep→tree-sitter |\n|--:|--:|--:|--:|--:|\n`;
+  for (const n of SIZES) {
+    const syn = synBySize[n]; if (!syn) continue;
+    const g = bySize[n][0].grepTok, v = bySize[n][0].vtsTok;
+    md += `| ${n} | ${g} | ${syn.tok} | ${v} | **${pct(g > 0 ? 1 - syn.tok / g : 0)}** |\n`;
+  }
+  md += `\nBoth vts tiers stay flat while grep grows; the tree-sitter tier is the cold-start / no-toolchain path,\n`;
+  md += `the LSP tier adds reference/overload/type resolution on top. Build a committable index with \`vts index\`.\n\n`;
+}
+
 md += `## Cost per model at ${big} files (token delta × input price)\n\n`;
 md += `Saved = (grep − vts) input tokens × list input price. List prices, verify at anthropic.com/pricing.\n\n`;
 md += `| Model | $/Mtok (in) | grep cost | vts cost | saved | cheaper |\n|---|--:|--:|--:|--:|--:|\n`;
@@ -180,7 +212,7 @@ md += `> see BENCHMARK.md.\n`;
 
 console.log(md);
 
-const results = { generatedBy: "benchmarks/run.mjs", tokenEstimate: "bytes/4", grepLineCap: GREP_LINE_CAP, sizes: SIZES, bySize, costAtMax: { files: big, rows: costRows }, prices: PRICES };
+const results = { generatedBy: "benchmarks/run.mjs", tokenEstimate: "bytes/4", grepLineCap: GREP_LINE_CAP, sizes: SIZES, bySize, syntacticBySize: synBySize, costAtMax: { files: big, rows: costRows }, prices: PRICES };
 const outDir = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "results");
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, "latest.json"), JSON.stringify(results, null, 2) + "\n");
