@@ -14,40 +14,40 @@
         "grepTok": 439,
         "grepLines": 23,
         "grepCapped": false,
-        "vtsTok": 149,
+        "vtsTok": 154,
         "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.6605922551252847
+        "reduction": 0.6492027334851936
       },
       {
         "scenario": "find all references",
         "grepTok": 439,
         "grepLines": 23,
         "grepCapped": false,
-        "vtsTok": 102,
+        "vtsTok": 122,
         "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.7676537585421412
+        "reduction": 0.7220956719817768
       },
       {
         "scenario": "text search ('retry loop')",
         "grepTok": 399,
         "grepLines": 21,
         "grepCapped": false,
-        "vtsTok": 420,
+        "vtsTok": 439,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": -0.05263157894736836
+        "reduction": -0.10025062656641603
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 132,
         "grepLines": 20,
         "grepCapped": false,
-        "vtsTok": 59,
+        "vtsTok": 77,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.553030303030303
+        "reduction": 0.41666666666666663
       }
     ],
     "50": [
@@ -56,40 +56,40 @@
         "grepTok": 1999,
         "grepLines": 103,
         "grepCapped": false,
-        "vtsTok": 149,
+        "vtsTok": 154,
         "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.9254627313656828
+        "reduction": 0.9229614807403702
       },
       {
         "scenario": "find all references",
         "grepTok": 1999,
         "grepLines": 103,
         "grepCapped": false,
-        "vtsTok": 302,
+        "vtsTok": 323,
         "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.8489244622311156
+        "reduction": 0.8384192096048024
       },
       {
         "scenario": "text search ('retry loop')",
         "grepTok": 1959,
         "grepLines": 101,
         "grepCapped": false,
-        "vtsTok": 1228,
+        "vtsTok": 1261,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.3731495661051557
+        "reduction": 0.3563042368555386
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 682,
         "grepLines": 100,
         "grepCapped": false,
-        "vtsTok": 199,
+        "vtsTok": 217,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.7082111436950147
+        "reduction": 0.6818181818181819
       }
     ],
     "150": [
@@ -98,42 +98,56 @@
         "grepTok": 4917,
         "grepLines": 303,
         "grepCapped": true,
-        "vtsTok": 775,
-        "vtsMode": "text-fallback",
+        "vtsTok": 170,
+        "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.842383567215782
+        "reduction": 0.9654260728086231
       },
       {
         "scenario": "find all references",
         "grepTok": 4917,
         "grepLines": 303,
         "grepCapped": true,
-        "vtsTok": 2204,
+        "vtsTok": 435,
         "vtsMode": "semantic",
         "vtsOk": true,
-        "reduction": 0.5517592027659142
+        "reduction": 0.9115314215985357
       },
       {
         "scenario": "text search ('retry loop')",
         "grepTok": 4917,
         "grepLines": 301,
         "grepCapped": true,
-        "vtsTok": 1256,
+        "vtsTok": 1288,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.7445596908684158
+        "reduction": 0.7380516575147448
       },
       {
         "scenario": "find file by name ('caller')",
         "grepTok": 1883,
         "grepLines": 300,
         "grepCapped": true,
-        "vtsTok": 298,
+        "vtsTok": 329,
         "vtsMode": "filesystem",
         "vtsOk": true,
-        "reduction": 0.8417419012214551
+        "reduction": 0.8252788104089219
       }
     ]
+  },
+  "syntacticBySize": {
+    "10": {
+      "tok": 52,
+      "n": 2
+    },
+    "50": {
+      "tok": 52,
+      "n": 2
+    },
+    "150": {
+      "tok": 53,
+      "n": 2
+    }
   },
   "costAtMax": {
     "files": 150,
@@ -142,22 +156,22 @@
         "model": "Haiku 4.5",
         "price": 1,
         "grepCost": 0.016634,
-        "vtsCost": 0.004533,
-        "saved": 0.012101
+        "vtsCost": 0.002222,
+        "saved": 0.014412
       },
       {
         "model": "Sonnet 4.x",
         "price": 3,
         "grepCost": 0.049902,
-        "vtsCost": 0.013599,
-        "saved": 0.036303
+        "vtsCost": 0.006666,
+        "saved": 0.043236000000000004
       },
       {
         "model": "Opus 4.x",
         "price": 15,
         "grepCost": 0.24950999999999998,
-        "vtsCost": 0.067995,
-        "saved": 0.18151499999999998
+        "vtsCost": 0.03333,
+        "saved": 0.21617999999999998
       }
     ]
   },

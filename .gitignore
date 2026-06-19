@@ -11,3 +11,7 @@ eval/_t_*
 
 # research paper draft — kept local only, not shipped with the plugin
 paper/
+
+# committable symbol index — a FEATURE for users (commit it in YOUR repo to share cold-start symbols);
+# in THIS repo it's a dev/dogfood build artifact, so don't track it here.
+.vts-index/
