@@ -12,6 +12,7 @@ import path from "node:path";
 import { toUri, envInt, langIdForPath } from "../lsp.js";
 import { orderForWarm, warmCap } from "../warmset.js";
 import { resolveBinJs } from "../resolve-bin.js";
+import { scopeDirs, scopedCdb, inScope } from "../scope.js";
 
 const env = (name, def) => { const v = process.env[name]; return v && v !== "" ? v : def; };
 const splitArgs = (s) => (s ? s.split(/\s+/).filter(Boolean) : null);
@@ -45,7 +46,7 @@ export function clangdMajor(cmd) {
 export function clangdAdvisory(cmd) {
   const major = clangdMajor(cmd);
   if (major != null && major < MIN_CLANGD)
-    return `⚠ clangd ${major}.x detected — clangd ≥ ${MIN_CLANGD} is recommended for large Unreal/C++ projects. Older clangd (e.g. the 19.1.x bundled with Visual Studio) can hang indexing UE translation units. Point VTS_CLANGD_CMD at a newer clangd (https://github.com/clangd/clangd/releases).`;
+    return `⚠ clangd ${major}.x detected — clangd ≥ ${MIN_CLANGD} is recommended for large Unreal/C++ projects. Older clangd (e.g. the 19.1.x bundled with Visual Studio) can hang indexing UE translation units. Install the full LLVM release (https://github.com/llvm/llvm-project/releases — it bundles clangd-indexer too, which vts uses for instant pre-indexing) and point VTS_CLANGD_CMD at its clangd.`;
   return "";
 }
 
@@ -126,7 +127,7 @@ export function dbDirFor(root) {
 // was the bulk of the cold-start latency vs a warm IDE like Rider) — a tiny nudge-open + shard load is
 // enough. Returns true if any .idx shard is present under the root's (or the CDB dir's) clangd cache.
 export function hasPersistedIndex(root) {
-  for (const base of [root, resolveCdbDir(root)].filter(Boolean)) {
+  for (const base of [root, effectiveCdbDir(root)].filter(Boolean)) {
     const idxDir = path.join(base, ".cache", "clangd", "index");
     try { if (fs.readdirSync(idxDir).some((f) => /\.idx$/i.test(f))) return true; } catch { /* none */ }
   }
@@ -140,6 +141,64 @@ export function resolveCdbDir(root) {
   const out = dbDirFor(root);
   try { if (fs.existsSync(path.join(out, "compile_commands.json"))) return out; } catch { /* ignore */ }
   return null;
+}
+// The scope (config `scope`, env VTS_SCOPE) as absolute dirs for this root — [] = whole tree.
+export const scopeDirsFor = (root) => scopeDirs(root, _fileCfg.scope || "");
+// The compile-DB dir clangd should actually use: the SCOPED DB (filtered to the in-scope TUs, out-of-tree)
+// when a scope is set, else the full resolveCdbDir. This is where the deep clangd acceleration comes from —
+// the engine background-indexes only the scoped translation units.
+export function effectiveCdbDir(root) {
+  const src = resolveCdbDir(root);
+  const dirs = scopeDirsFor(root);
+  return dirs.length ? scopedCdb(root, src, dirs, dbDirFor(root)) : src;
+}
+// clangd-indexer — the offline batch indexer shipped in the SAME full LLVM/clang-tools-extra release as
+// clangd. It builds a monolithic static index from a compile_commands.json in one parallel pass, and clangd
+// loads it directly with `--index-file=<idx>` (a LOCAL file — no remote index server), giving an instant
+// project-wide index instead of waiting on the lazy background crawl. Resolution: VTS_CLANGD_INDEXER_CMD >
+// the binary sitting next to the resolved clangd (clangd → clangd-indexer) > a PATH `clangd-indexer`.
+export function clangdIndexerCmd() {
+  const ov = env("VTS_CLANGD_INDEXER_CMD");
+  if (ov) return ov;
+  const cd = cfgCmd("VTS_CLANGD_CMD", "clangdCmd", "clangd");
+  if (cd.includes("/") || cd.includes("\\")) {
+    const sib = cd.replace(/clangd(\.exe)?$/i, (_m, exe) => "clangd-indexer" + (exe || ""));
+    if (sib !== cd && fs.existsSync(sib)) return sib;
+  }
+  return "clangd-indexer";
+}
+// Is clangd-indexer actually runnable? (full LLVM installs have it; the VS-bundled LLVM ships only clangd.)
+let _indexerOk;
+export function hasClangdIndexer() {
+  if (_indexerOk !== undefined) return _indexerOk;
+  try { execFileSync(clangdIndexerCmd(), ["--help"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "ignore", "ignore"] }); _indexerOk = true; }
+  catch { _indexerOk = false; }
+  return _indexerOk;
+}
+// Where the prebuilt static index lives — next to the (scoped) compile DB, so it is scope-specific and stays
+// out-of-tree. clangd reads it via --index-file when present.
+export function staticIndexPath(root) {
+  const dir = effectiveCdbDir(root) || dbDirFor(root);
+  return path.join(dir, "vts-static.idx");
+}
+// Build the static index with clangd-indexer over the effective (scoped) compile DB, writing it to
+// staticIndexPath(root). Returns { ok, path, tus, ms } or { error }. Heavy (one full parse pass) but offline
+// and parallel — far faster than clangd's lazy background crawl, and it runs once.
+export function buildStaticIndex(root) {
+  if (!hasClangdIndexer()) return { error: "clangd-indexer not found — install the full LLVM release (it bundles clangd-indexer alongside clangd), or set VTS_CLANGD_INDEXER_CMD." };
+  const cdbDir = effectiveCdbDir(root);
+  const cc = cdbDir ? path.join(cdbDir, "compile_commands.json") : null;
+  if (!cc || !fs.existsSync(cc)) return { error: `no compile_commands.json for ${root} (generate it via vts_gen_compile_db).` };
+  let tus = 0; try { tus = JSON.parse(fs.readFileSync(cc, "utf8")).length; } catch { /* count best-effort */ }
+  const out = staticIndexPath(root);
+  const t0 = Date.now();
+  try {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    // clangd-indexer writes the index to stdout; capture it to the file. all-TUs = index every entry in the DB.
+    const buf = execFileSync(clangdIndexerCmd(), [`--executor=all-TUs`, cc], { maxBuffer: 1 << 30, timeout: envInt("VTS_INDEXER_TIMEOUT_MS", 1800000) });
+    fs.writeFileSync(out, buf);
+  } catch (e) { return { error: `clangd-indexer failed: ${e.message}` }; }
+  return { ok: true, path: out, tus, ms: Date.now() - t0 };
 }
 // shallow scan for a file matching a predicate (1 level) — for .sln/.csproj/compile_commands in subdirs
 function findShallow(root, re, depth = 2) {
@@ -183,7 +242,7 @@ export const BACKENDS = {
         // --compile-commands-dir only tells clangd where to FIND compile_commands.json (out-of-tree home
         // or in-tree); it does NOT relocate the index. clangd has no index-dir flag — it persists its
         // background index in `<project>/.cache/clangd` (in-tree), reused across spawns for warm speed.
-        `--compile-commands-dir=${resolveCdbDir(root) || root}`,
+        `--compile-commands-dir=${effectiveCdbDir(root) || root}`,
         "--background-index",
         // Default priority is `background` = MINIMUM, idle-CPU-only — so a fresh index crawls (a big reason
         // the first query felt far slower than a warm IDE like Rider). We want it built NOW; `normal` lets
@@ -193,6 +252,11 @@ export const BACKENDS = {
         `-j=${Math.max(2, parseInt(env("VTS_CLANGD_JOBS", String(Math.max(2, (os.cpus()?.length || 4) - 1))), 10) || 4)}`,
         "--header-insertion=never",
       ];
+      // Prebuilt STATIC index (clangd-indexer output): load it directly via --index-file — a local file, no
+      // server. Gives an instant project-wide index instead of the lazy background crawl. Built by
+      // `vts preindex`; scope-specific (next to the scoped compile DB). Background index stays on so edits
+      // made after the static build are still picked up.
+      try { const idx = staticIndexPath(root); if (fs.existsSync(idx)) a.push(`--index-file=${idx}`); } catch { /* none */ }
       // Prebuilt/remote index (zero per-dev warmup): point clangd at a shared clangd-index-server.
       const remote = env("VTS_CLANGD_REMOTE");
       if (remote) a.push(`--remote-index-address=${remote}`, `--project-root=${root}`);
@@ -204,13 +268,16 @@ export const BACKENDS = {
     // enter clangd's dynamic index, then wait until at least one file is parsed (publishDiagnostics)
     // before the first query. Long-lived MCP use also benefits: the warm-up primes the index.
     afterInit: async (client, root) => {
-      const cdbDir = resolveCdbDir(root);
+      const cdbDir = effectiveCdbDir(root);
       const cc = cdbDir ? path.join(cdbDir, "compile_commands.json") : null;
       let files = [];
       if (cc) {
         try { files = JSON.parse(fs.readFileSync(cc, "utf8")).map((e) => e.file).filter(Boolean); } catch { /* ignore */ }
       }
-      const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2);
+      // Scope the nearby-header walk too, so a scoped index doesn't get dragged back to whole-tree by the
+      // header sweep. The scoped CDB already filters `files`; this filters `extra`.
+      const dirs = scopeDirsFor(root);
+      const extra = findAllShallow(root, /\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i, 2).filter((f) => inScope(f, dirs));
       // When a persisted index already exists, clangd answers workspace/symbol from the loaded shards —
       // re-opening 100 TUs only triggers a costly re-parse (~seconds EACH on UE) for no symbol-search gain.
       // Open just a small nudge set so clangd starts loading; the full project is already in the index.
@@ -283,7 +350,8 @@ export const BACKENDS = {
   typescript: nodeLspBackend(TS_BIN, env("VTS_TS_CMD"), "typescript-language-server", "VTS_TS_ARGS", {
     detect: (root) => exists(root, "tsconfig.json", "jsconfig.json", "package.json") || !!findShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, 1),
     afterInit: async (client, root) => {
-      const files = findAllShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i, 3);
+      const dirs = scopeDirsFor(root);
+      const files = findAllShallow(root, /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i, 3).filter((f) => inScope(f, dirs));
       const open = orderForWarm(root, files, warmCap(root, "typescript", "VTS_TS_OPEN_CAP", 60));
       for (const f of open) client.didOpen(f, langIdForPath(f, "typescript"));
     },
@@ -294,7 +362,8 @@ export const BACKENDS = {
   pyright: nodeLspBackend(PY_BIN, env("VTS_PY_CMD"), "pyright-langserver", "VTS_PY_ARGS", {
     detect: (root) => exists(root, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile") || !!findShallow(root, /\.py$/, 1),
     afterInit: async (client, root) => {
-      const files = findAllShallow(root, /\.pyi?$/i, 3);
+      const dirs = scopeDirsFor(root);
+      const files = findAllShallow(root, /\.pyi?$/i, 3).filter((f) => inScope(f, dirs));
       const open = orderForWarm(root, files, warmCap(root, "pyright", "VTS_PY_OPEN_CAP", 60));
       for (const f of open) client.didOpen(f, "python");
     },
