@@ -11,7 +11,7 @@
 //      adoption posture (edit-adoption % + the adaptive controller state), so the model reads a single policy
 //      instead of N scattered reflexive nudges. This is the "integrative" half — vts and CC-native each named
 //      for what they're best at.
-import { readEditLedger, adoptionPct, controllerReport } from "./edit-ledger.js";
+import { readEditLedger, adoptionPct, adoptionPctRecent, controllerReport } from "./edit-ledger.js";
 
 // Generated code / build output / vendored deps — a semantic index adds nothing here; CC-native is fine.
 const SUPPRESS_DIR = /(^|[/\\])(Intermediate|Binaries|Saved|DerivedDataCache|node_modules|build|dist|out|obj|\.git)([/\\]|$)/i;
@@ -38,7 +38,11 @@ export function routingDigest(o = readEditLedger()) {
   ];
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
-    lines.push(`  posture: symbol-edit adoption ${pct}% (${o.symbol || 0}/${total})${hasSteer ? " · " + controllerReport(o) : ""}`);
+    // Lead with the ROLLING rate (current behavior) and keep the all-time ratio as context — the recent
+    // number is what tells the model whether the steer is converting now, the lever the loop can actually move.
+    const recent = adoptionPctRecent(o);
+    const recentStr = recent !== null && recent !== pct ? `, recent ${recent}%` : "";
+    lines.push(`  posture: symbol-edit adoption ${pct}% (${o.symbol || 0}/${total})${recentStr}${hasSteer ? " · " + controllerReport(o) : ""}`);
   }
   return lines.join("\n");
 }
