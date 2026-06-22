@@ -1857,11 +1857,19 @@ if (tsAvailable()) {
   // matches the query wins, even though the symbol names are identical (the path is a free locality signal).
   fs.writeFileSync(path.join(cdir, "billing.ts"), "export function handle(){ return 1; }\n");
   fs.writeFileSync(path.join(cdir, "unrelated.ts"), "export function handle(){ return 2; }\n");
+  // import-graph channel: two identically-named symbols with equal base score, but one lives in a file that
+  // IMPORTS the strongly-matching file — it's in the same subsystem, so it ranks above the unconnected one.
+  fs.writeFileSync(path.join(cdir, "core.ts"), "export function authenticate(){ return 1; }\n");
+  fs.writeFileSync(path.join(cdir, "near.ts"), "import { authenticate } from './core';\nexport function authHelper(){ return 2; }\n");
+  fs.writeFileSync(path.join(cdir, "far.ts"), "export function authHelper(){ return 3; }\n");
   const cr = await runTool("concept_search", { q: "session token", projectPath: cdir });
   const cp = await runTool("concept_search", { q: "billing", projectPath: cdir });
+  const ci = await runTool("concept_search", { q: "authenticate", projectPath: cdir });
   const pathLocalityOk = !cp.isError && /billing\.ts/.test(cp.text) && !/unrelated\.ts/.test(cp.text);
+  // near.ts (imports core.ts, the top hit) must outrank far.ts (same symbol, no import edge) — the boost.
+  const importBoostOk = !ci.isError && /near\.ts/.test(ci.text) && /far\.ts/.test(ci.text) && ci.text.indexOf("near.ts") < ci.text.indexOf("far.ts");
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
-    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk; // ladder navigation + path-locality scoring
+    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk; // ladder nav + path-locality + import-graph proximity
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
