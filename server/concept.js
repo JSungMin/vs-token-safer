@@ -110,6 +110,43 @@ export function tokenize(text) {
   return out;
 }
 
+// Extract the IMPORT targets of a file as lowercased basenames (no path, no extension): the last path segment
+// of each import/require/#include/from specifier. PURE (text → names). The caller matches these basenames
+// against the corpus's own files to build a within-repo import graph — two files that import each other hold
+// structurally related code even when their names share no token. Covers JS/TS, Python, and C/C++; other
+// languages simply yield no edges (the boost then does nothing — graceful).
+export function importSpecifiers(text, ext) {
+  const out = new Set();
+  const add = (s) => {
+    if (!s) return;
+    const leaf =
+      String(s)
+        .replace(/^[./\\]+/, "")
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .pop() || "";
+    if (!leaf) return;
+    // a relative file path keeps its name minus extension (scope.js -> scope); a dotted module keeps its last
+    // segment (a.b.c -> c). Offer both — only basenames that actually match a corpus file create an edge.
+    const noext = leaf.replace(/\.[^./]+$/, "");
+    const lastDot = leaf.split(".").filter(Boolean).pop();
+    for (const cand of [noext, lastDot]) if (cand && /[A-Za-z_]/.test(cand)) out.add(cand.toLowerCase());
+  };
+  const e = String(ext || "").toLowerCase();
+  if (/^[mc]?[jt]sx?$/.test(e)) {
+    for (const m of String(text).matchAll(
+      /(?:\bfrom|\brequire\s*\(|\bimport\s*\(|\bimport)\s*["'`]([^"'`]+)["'`]/g,
+    ))
+      add(m[1]);
+  } else if (e === "py" || e === "pyi") {
+    for (const m of String(text).matchAll(/^\s*(?:from\s+([.\w]+)\s+import|import\s+([.\w]+))/gm))
+      add(m[1] || m[2]);
+  } else if (/^(c|h|cc|cpp|hpp|hh|cxx|hxx|inl|ipp|tpp)$/.test(e)) {
+    for (const m of String(text).matchAll(/^\s*#\s*include\s*["<]([^">]+)[">]/gm)) add(m[1]);
+  }
+  return [...out];
+}
+
 // Match two concept tokens: exact (1.0) or a prefix relationship of length >= 4 (0.7) so auth ~ authenticate ~
 // authentication ~ authorize without a stemmer. Returns the match strength, 0 if unrelated.
 export function tokMatch(a, b) {
@@ -208,10 +245,19 @@ export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2
 // free, local evidence — weaker than a name hit, comparable to a comment hit. Each enriched query token
 // contributes its weight x best token-match x idf per channel (path/doc at a discount). idf already damps
 // ubiquitous tokens, so no length normalisation is needed.
-export function scoreSymbol(model, enriched, symTokens, docTokens = [], { docFactor = 0.5, pathTokens = [], pathFactor = 0.4 } = {}) {
+export function scoreSymbol(
+  model,
+  enriched,
+  symTokens,
+  docTokens = [],
+  { docFactor = 0.5, pathTokens = [], pathFactor = 0.4 } = {},
+) {
   const bestMatch = (qt, toks) => {
     let best = 0;
-    for (const t of toks) { const m = tokMatch(qt, t); if (m > best) best = m; }
+    for (const t of toks) {
+      const m = tokMatch(qt, t);
+      if (m > best) best = m;
+    }
     return best;
   };
   let score = 0;
@@ -219,8 +265,14 @@ export function scoreSymbol(model, enriched, symTokens, docTokens = [], { docFac
     const weight = w * idf(model, qt);
     const nameHit = bestMatch(qt, symTokens);
     if (nameHit) score += weight * nameHit;
-    if (pathFactor && pathTokens.length) { const ph = bestMatch(qt, pathTokens); if (ph) score += weight * ph * pathFactor; }
-    if (docFactor && docTokens.length) { const dh = bestMatch(qt, docTokens); if (dh) score += weight * dh * docFactor; }
+    if (pathFactor && pathTokens.length) {
+      const ph = bestMatch(qt, pathTokens);
+      if (ph) score += weight * ph * pathFactor;
+    }
+    if (docFactor && docTokens.length) {
+      const dh = bestMatch(qt, docTokens);
+      if (dh) score += weight * dh * docFactor;
+    }
   }
   return score;
 }
