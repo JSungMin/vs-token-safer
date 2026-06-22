@@ -1582,7 +1582,8 @@ const htmlSelfContainedOk =
   !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html) && // no external script / CDN
   /\/vendor\/three\.module\.min\.js/.test(html) && /import \* as THREE/.test(html) &&     // 3D: vendored Three.js, same-origin
   /fetch\("\/callgraph/.test(html) &&                                                     // call-graph mode wired
-  /precision ladder/i.test(html) && /ladderPanel/.test(html) && /surfacePanel/.test(html) && /certsPanel/.test(html); // paper-identity panels present
+  /precision ladder/i.test(html) && /ladderPanel/.test(html) && /surfacePanel/.test(html) && /certsPanel/.test(html) && // paper-identity panels present
+  /repoFilterBar/.test(html) && /filteredIncludeGraph/.test(html); // repo toggle filter (per-repo node/edge gating across color modes)
 // PRECISION-LADDER data model: 4 rungs (exact→syntactic→fuzzy→section), savings attributed without
 // double-counting (exact = the LSP tools; fuzzy = concept_search; syntactic/section show reach, 0 saved),
 // + surface coverage + the completeness-certificate legend. The fixture ledger has search_symbol (54k saved)
