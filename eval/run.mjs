@@ -2054,6 +2054,42 @@ if (tsAvailable()) {
 }
 const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && conceptToolOk;
 
+// 85) PREVIEW-ONLY DCE (dce.js): topological dead-code analysis over an INJECTED call-graph query — pure +
+// deterministic with a mock graph. DEAD cascades to a fixpoint (a callee dies only once ALL its callers are
+// removed), HELD when a live caller remains, ENTRY roots are kept, INCONCLUSIVE on unresolved / non-COMPLETE
+// cert. It never deletes — the real removal is safe_delete's reference-guarded job (guard 52), not tested here.
+const { analyzeDeadCode: dceAnalyze, formatDce: dceFmt } = await import("../server/dce.js");
+const dceG = {
+  main: { callers: [], callees: ["a", "b"] },
+  a: { callers: ["main"], callees: ["c"] },
+  b: { callers: ["main"], callees: ["c"] },
+  c: { callers: ["a", "b"], callees: [] },
+  d: { callers: [], callees: ["e"] },             // uncalled seed
+  f: { callers: [], callees: ["e"] },             // also uncalled
+  e: { callers: ["d", "f"], callees: [] },        // dead ONLY if both d and f are removed (the cascade test)
+  partialSym: { callers: [], callees: [], cert: "PARTIAL" },
+};
+const dceQuery = async (nm) => {
+  const g = dceG[nm];
+  if (!g) return { resolved: false };
+  return { resolved: true, cert: g.cert || "COMPLETE", file: nm + ".js", line: 1,
+    callers: (g.callers || []).map((n) => ({ name: n, file: n + ".js" })),
+    callees: (g.callees || []).map((n) => ({ name: n, file: n + ".js" })) };
+};
+const dceNames = (arr) => arr.map((x) => x.name);
+const dr1 = await dceAnalyze(dceQuery, ["d"], {});            // d dead; e HELD (f still calls it)
+const dr1ok = JSON.stringify(dceNames(dr1.dead)) === JSON.stringify(["d"]) && dr1.held.some((h) => h.name === "e" && h.callers.includes("f"));
+const dr2 = await dceAnalyze(dceQuery, ["d", "f"], {});       // remove both → e cascades dead, in order
+const dr2ok = dceNames(dr2.dead).join(",") === "d,f,e" && dr2.held.length === 0;
+const dr3 = await dceAnalyze(dceQuery, ["main"], { isEntry: (n) => n === "main" }); // ENTRY held, no cascade
+const dr3ok = dr3.dead.length === 0 && dr3.entry.some((e) => e.name === "main");
+const dr4 = await dceAnalyze(dceQuery, ["partialSym"], {});   // PARTIAL cert → INCONCLUSIVE, not dead
+const dr4ok = dr4.dead.length === 0 && dr4.inconclusive.some((x) => x.name === "partialSym");
+const dr5 = await dceAnalyze(dceQuery, ["ghost"], {});        // unresolved → INCONCLUSIVE
+const dr5ok = dr5.dead.length === 0 && dr5.inconclusive.some((x) => x.name === "ghost");
+const dceFmtOk = /DEAD/.test(dceFmt(dr2)) && /safe_delete symbol="e"/.test(dceFmt(dr2)) && /CAVEAT/.test(dceFmt(dr2));
+const dceOk = dr1ok && dr2ok && dr3ok && dr4ok && dr5ok && dceFmtOk;
+
 // 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
 // the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME
 // — no backend, no whole-file Read. Multi-format outline + resolve (pure) + the tool integration on disk.
@@ -2194,6 +2230,7 @@ const rows = [
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index + HTML <script>/<style> exact-range injection", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
+  ["preview-only DCE: topological dead-code candidates via call-graph cascade to a fixpoint (safe_delete backstop)", dceOk, "true", dceOk],
   ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
