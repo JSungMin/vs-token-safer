@@ -96,6 +96,14 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   attached leading comment (gap≤3, skip header blocks ≥4 lines, cap 200ch) feeds the concept units. NO embeddings,
   nothing transmitted, output token-capped file:line. Eval guard 83; **follow-up paper** `paper/fuzzy-concept-
   dictionary.tex` (companion to the Token-Safer paper, motivated by the CCE correspondence). Env: `VTS_CONCEPT_*`.
+  SCORING = 3 deterministic channels (name > **path** > comment; `scoreSymbol`) + a 2nd-pass **import-graph
+  proximity** boost (`importSpecifiers` → within-repo basename adjacency; a symbol whose file imports/imported-by
+  a strongly-matching file is lifted by `VTS_CONCEPT_IMPORT_FACTOR` 0.3 × the neighbour's score — reranks the
+  matched set, never invents a match). A **click-feedback loop was CRITIC-REJECTED** (self-confirming via
+  position bias, non-deterministic, unmeasurable, erodes inspectability); the charter-pure adaptation paths are
+  these code-mined structural signals + (future) an explicit committable synonym file. PRECISION-LADDER NAV
+  (`VTS_CONCEPT_STEER`): search_symbol(exact)+multi-word-miss → steers DOWN to concept_search; concept_search →
+  points UP to find_references/goto. See [[identity-and-roadmap]].
 - `server/textstruct.js` — STRUCTURE tier for prose/config files (the naming-umbrella extension: token-safer
   for DOCS, not just code). A text file's "symbol tree" = its SECTION hierarchy, so the EXISTING name-addressed
   tools work on it: `document_symbols` → token-capped table of contents, `read_symbol` → ONE section (not the
