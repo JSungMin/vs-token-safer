@@ -22,6 +22,7 @@ import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol } from "./concept.js";
+import { isStructFile, structOutline, resolveSection, fmtOutline } from "./textstruct.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -1643,6 +1644,63 @@ async function resolveSymbolForEdit(c, root, backendName, a) {
   return { file, ds, ambiguous: matches.length };
 }
 
+// STRUCTURE tier (textstruct.js): a prose/config file (markdown/asciidoc/rst/toml/yaml/json/txt) has a SECTION
+// tree, not a language server. Route the same NAME-addressed tools to its section spans so a section is
+// outline-able, readable, and editable BY ITS HEADING/KEY — no backend, no whole-file Read. The token-safer
+// move, extended from code to documents. Reuses the symbol-edit splice machinery via a synthesised range.
+const STRUCT_TOOLS = new Set(["document_symbols", "read_symbol", "replace_symbol_body", "insert_symbol", "safe_delete"]);
+async function structTool(name, a, root, { finishOut, err, symbolEditResult }) {
+  const file = (path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path))).replace(/\\/g, "/");
+  let text; try { text = fs.readFileSync(file, "utf8"); } catch { return err(`structure: cannot read ${a.path}.`); }
+  const max = Number(a.maxResults) || MAX_RESULTS;
+  if (name === "document_symbols") {
+    const o = structOutline(file, text);
+    if (!o.length) return finishOut([], `No sections found in ${file} (no headings/keys recognised).`);
+    try { recordQueryResults(root, [file]); } catch { /* best-effort */ }
+    return finishOut(o, `outline of ${file} — ${o.length} section(s) (structure tier, no language server):\n` + fmtOutline(o, max));
+  }
+  // the remaining tools target one named section (accept `symbol` — reuses the symbol tools — or `section`).
+  const title = a.symbol != null ? a.symbol : a.section;
+  if (title == null) return err(`${name} on a text file needs \`symbol\` (the section heading/key to target). Run document_symbols on it first to see the sections.`);
+  const sec = resolveSection(file, text, title, { line: a.line != null ? Number(a.line) + 1 : null });
+  if (!sec) return err(`No section titled "${title}" in ${file}. Run document_symbols to list the headings (match is exact-then-substring; pass line= to disambiguate repeats).`);
+  const lines = text.split(/\r?\n/);
+  // synthesise an LSP-shaped range that spans whole section lines: start of the heading line → start of the
+  // line AFTER the section's last line (so a replace/delete swaps the lines cleanly; endLine is 1-based).
+  const start = { line: sec.line - 1, character: 0 };
+  const endExcl = { line: sec.endLine, character: 0 };
+  const ds = { range: { start, end: endExcl }, selectionRange: { start, end: { line: sec.line - 1, character: lines[sec.line - 1]?.length || 0 } }, name: sec.title, kind: 0 };
+  if (name === "read_symbol") {
+    const cap = envInt("VTS_SYMBOL_MAX_LINES", 200);
+    const sigOnly = a.signatureOnly === true || a.signatureOnly === "true";
+    let end = sigOnly ? sec.line : sec.endLine;
+    if (end - sec.line + 1 > cap) end = sec.line + cap - 1;
+    const body = lines.slice(sec.line - 1, end).join("\n");
+    const omitted = sec.endLine - end;
+    const note = omitted > 0 ? `\n… ${omitted} more line(s)${sigOnly ? " (heading only — omit signatureOnly for the section)" : ` — raise VTS_SYMBOL_MAX_LINES (now ${cap})`}.` : "";
+    try { recordQueryResults(root, [file]); } catch { /* best-effort */ }
+    return finishOut(text, `section "${sec.title}" @ ${file}:${sec.line}-${sec.endLine} (structure tier):\n` + body + note);
+  }
+  const apply = a.apply === true || a.apply === "true";
+  if (name === "replace_symbol_body") {
+    if (a.body == null) return err("replace_symbol_body needs `body` (the new full text for the section, including its heading).");
+    let nt = String(a.body); if (!nt.endsWith("\n")) nt += "\n";
+    try { recordEditEvent("symbol-edit"); } catch { /* best-effort */ }
+    return symbolEditResult(file, { range: ds.range, newText: nt }, apply, `replace_symbol_body section "${sec.title}"`, ds);
+  }
+  if (name === "insert_symbol") {
+    if (a.text == null) return err("insert_symbol needs `text` (the new section to insert).");
+    const before = String(a.position || "after").toLowerCase() === "before";
+    const at = before ? start : endExcl;
+    let nt = String(a.text); if (!nt.endsWith("\n")) nt += "\n";
+    try { recordEditEvent("symbol-edit"); } catch { /* best-effort */ }
+    return symbolEditResult(file, { range: { start: at, end: at }, newText: nt }, apply, `insert_symbol ${before ? "before" : "after"} section "${sec.title}"`, ds);
+  }
+  // safe_delete a section — no reference graph for prose, so it deletes the span (preview by default).
+  try { recordEditEvent("symbol-edit"); } catch { /* best-effort */ }
+  return symbolEditResult(file, { range: ds.range, newText: "" }, apply, `safe_delete section "${sec.title}" (${sec.endLine - sec.line + 1} lines)`, ds);
+}
+
 // Run an external command (git / p4), capturing stdout even on a non-zero exit (git diff/status return
 // non-zero in some states but still print useful output). Pure best-effort: never throws — a missing
 // binary or a timeout comes back as { out:"", err, code }. The wrapper tools compact `out` before it
@@ -2035,6 +2093,10 @@ export async function runTool(name, a = {}) {
     }
 
     const root = resolveRoot(a);
+    // STRUCTURE tier: a prose/config file (markdown/asciidoc/rst/toml/yaml/json/txt) has a SECTION tree, not a
+    // language server — route the name-addressed tools to its sections BEFORE backend resolution (which would
+    // fail to find a server for a .md/.toml/…). A section is then outline-able/readable/editable by its heading.
+    if (a.path && isStructFile(a.path) && STRUCT_TOOLS.has(name)) return await structTool(name, a, root, { finishOut, err, symbolEditResult });
     // backendForPath(a.path): a `.py`/`.ts` file in a clangd/roslyn-rooted MIXED repo gets its OWN backend
     // (pyright/typescript) instead of the root's — else the query hits the wrong LSP and finds nothing. A
     // path's own backend ALSO overrides a FORCED backend (config `backend` / VTS_BACKEND) when they CONFLICT:

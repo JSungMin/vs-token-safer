@@ -96,6 +96,19 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   attached leading comment (gap≤3, skip header blocks ≥4 lines, cap 200ch) feeds the concept units. NO embeddings,
   nothing transmitted, output token-capped file:line. Eval guard 83; **follow-up paper** `paper/fuzzy-concept-
   dictionary.tex` (companion to the Token-Safer paper, motivated by the CCE correspondence). Env: `VTS_CONCEPT_*`.
+- `server/textstruct.js` — STRUCTURE tier for prose/config files (the naming-umbrella extension: token-safer
+  for DOCS, not just code). A text file's "symbol tree" = its SECTION hierarchy, so the EXISTING name-addressed
+  tools work on it: `document_symbols` → token-capped table of contents, `read_symbol` → ONE section (not the
+  whole file), `replace_symbol_body`/`insert_symbol`/`safe_delete` → edit a section BY ITS HEADING/KEY (no
+  whole-file Read + line-count). EXTENSIBLE provider registry (`PROVIDERS`: ext→parser): markdown/mdx (ATX+
+  setext, fence-aware), asciidoc, reStructuredText, toml/ini (`[section]`), yaml (indent-nested keys), json
+  (pretty-printed keys), txt (heuristic). Each provider emits `[{level,title,line}]`; shared `computeSpans` sets
+  the section span (to the next heading of level ≤ this), `resolveSection` (exact-then-substring, `line` disambig)
+  + `fmtOutline` are format-agnostic — add a format = add one parser. core.js: `STRUCT_TOOLS` + `structTool`
+  (synthesises an LSP-shaped range from a section span → reuses `symbolEditResult`/`applyEditsToText`); an
+  `isStructFile(a.path)` SHORT-CIRCUIT runs BEFORE backend resolution (a .md/.toml has no language server). NO
+  new MCP tools (the 5 existing symbol tools just work on text files — zero tool-budget cost). Zero-dep, PURE,
+  local, token-capped. Eval guard 84. `vts symbols/read-symbol/replace-symbol/insert/safe-delete --path X.md`.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses
