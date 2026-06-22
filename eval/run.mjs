@@ -44,7 +44,8 @@ const lspOk = syms.length === 2 && syms[0].name === "SpawnHandler";
 const r1 = await runTool("search_symbol", { q: "Spawn", projectPath: process.cwd(), backend: "clangd" });
 // (search_symbol now factors the common dir prefix across rows, so the path may be relative under an
 // `under <prefix>/` header — assert the symbol + its file:line without requiring a contiguous absolute path.)
-const fmtOk = !r1.isError && /class SpawnHandler {2}@ /.test(r1.text) && /Foo\.cpp:42/.test(r1.text) && !/character|range|"kind"/.test(r1.text);
+const fmtOk = !r1.isError && /class SpawnHandler {2}@ /.test(r1.text) && /Foo\.cpp:42/.test(r1.text) && !/character|range|"kind"/.test(r1.text) &&
+  /find_references symbol="Spawn"/.test(r1.text) && /USED/.test(r1.text); // #2 uses-steer on a focused result (find call sites)
 
 // 3) token cap — a 1000-symbol index response collapses to a capped file:line list.
 const big = await runTool("search_symbol", { q: "ALL", projectPath: process.cwd(), backend: "clangd", maxResults: 60 });
@@ -1943,12 +1944,21 @@ const roslynOsPathOk =
 // 83) FUZZY concept retrieval (approach B): concept.js pure functions + the concept_search tool. The local
 // concept dictionary (identifier+comment co-occurrence) answers a concept query with no embeddings. Pure-fn
 // checks always run; the tool integration self-skips if the tree-sitter deps are absent.
-const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore } = await import("../server/concept.js");
+const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore, parseSynonyms: cParseSyn } = await import("../server/concept.js");
 const splitOk = JSON.stringify(cSplit("authenticateUser")) === JSON.stringify(["authenticate", "user"]) && cMatch("auth", "authenticate") === 0.7 && cTok("How does the auth flow?").includes("auth");
 // co-occurrence: auth co-occurs with login twice (>= minCooc) → expansion surfaces it; ui never co-occurs.
 const cModel = cBuild([["auth", "login", "session"], ["auth", "login", "token"], ["render", "button", "ui"]]);
 const cEnr = cExpand(cModel, ["auth"]);
 const expandOk = cEnr.has("login") && cEnr.get("auth") === 1 && cEnr.get("login") < 1 && !cEnr.has("ui");
+// COMMITTABLE SYNONYMS (#4): parseSynonyms tokenises keys+values (CamelCase/snake split, lowercased); a
+// curated synonym is injected at 0.95 (below an exact 1.0, above a mined neighbour) and is additive — a term
+// the mined model would NOT bridge (here `payment`→`billing`, never co-occurring) now expands.
+const cSyn = cParseSyn(JSON.stringify({ payment: ["billing", "invoice"], AuthFlow: "credential" }));
+const synOk = !!cSyn && JSON.stringify(cSyn.get("payment")) === JSON.stringify(["billing", "invoice"]) &&
+  cSyn.has("auth") && cSyn.has("flow") &&                                       // multi-token key split
+  cParseSyn("not json") === null && cParseSyn("[]") === null &&                // malformed/non-object → null
+  cExpand(cModel, ["payment"], { synonyms: cSyn }).get("billing") === 0.95 &&  // synonym injected at 0.95
+  cExpand(cModel, ["payment"]).get("billing") === undefined;                   // without the file: not bridged
 const scoreOk = cScore(cModel, cEnr, ["session", "auth"], []) > cScore(cModel, cEnr, ["render", "button"], []);
 let conceptToolOk = true;
 if (tsAvailable()) {
@@ -1976,7 +1986,7 @@ if (tsAvailable()) {
     /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk; // ladder nav + path-locality + import-graph proximity
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
-const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
+const conceptOk = splitOk && expandOk && synOk && scoreOk && conceptToolOk;
 
 // 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
 // the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME
