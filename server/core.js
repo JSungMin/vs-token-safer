@@ -2039,7 +2039,10 @@ export async function runTool(name, a = {}) {
       // deterministic, no drift. Purely additive: absent/malformed → the mined model runs alone.
       let synonyms = null;
       try { synonyms = parseSynonyms(fs.readFileSync(path.join(root, ".vts-index", "concept-synonyms.json"), "utf8")); } catch { /* no committed synonyms */ }
-      const enriched = expandQuery(model, qToks, synonyms ? { synonyms } : {});
+      // VTS_CONCEPT_MAX_DF (default 0.25): suppress expansion through/into a cross-cutting-generic token (one
+      // present in > this fraction of decls) — the documented noise source on cross-cutting fuzzy queries.
+      const maxDfRatio = Number(process.env.VTS_CONCEPT_MAX_DF ?? 0.25);
+      const enriched = expandQuery(model, qToks, { ...(synonyms ? { synonyms } : {}), maxDfRatio });
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
@@ -2058,7 +2061,7 @@ export async function runTool(name, a = {}) {
           let nb = 0;
           const ns = nf && neighbors && neighbors.get(r.s.file);
           if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (fb > nb) nb = fb; }
-          return { s: r.s, sc: r.base + nb * nf };
+          return { s: r.s, sc: r.base + nb * nf, base: r.base };
         })
         .sort((a2, b2) => b2.sc - a2.sc);
       // Fuzzy results have a long low-relevance tail (a trivial local matching one weak expansion term). Cap
@@ -2068,6 +2071,11 @@ export async function runTool(name, a = {}) {
       const conceptMax = Math.min(max, envInt("VTS_CONCEPT_MAX", 15));
       const ranked = scoredAll.filter((r) => r.sc >= floor).slice(0, conceptMax);
       if (!ranked.length) return finishOut([], `No concept matches for "${a.q}" under ${root} (the repo's own naming may not bridge those words — try search_text, or a synonym).` + EMPTY_HINT + completenessCert({ shown: 0, total: 0, fuzzy: true }));
+      // Climb/flow SEED = the entry with the strongest INTRINSIC match (name/path/comment `base`), NOT the
+      // proximity-boosted total `sc`. The seed is handed to find_references/goto_definition for ground truth,
+      // so it must be the most confident exact-name candidate — an import-graph neighbour can lift a weak-base
+      // symbol to the top of the shown list, but it should never become the thing we tell the model to climb on.
+      const seed = ranked.reduce((best, r) => (r.base > best.base ? r : best), ranked[0]);
       const expTerms = [...enriched].filter(([t]) => !qToks.includes(t)).slice(0, 8).map(([t]) => t);
       const rows = ranked.map((r) => `${r.s.file}:${r.s.line}: ${r.s.kind} ${r.s.name}`);
       const expLine = expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "";
@@ -2075,13 +2083,13 @@ export async function runTool(name, a = {}) {
       let flow = "";
       if (a.flow === true || a.flow === "true") {
         try {
-          const fr = await runTool("find_references", { symbol: ranked[0].s.name, direction: a.direction || "callees", depth: Number(a.depth) || 2, projectPath: root });
-          if (fr && !fr.isError) flow = `\n\nflow of the top seed (${ranked[0].s.name}) along the call graph:\n${fr.text}`;
+          const fr = await runTool("find_references", { symbol: seed.s.name, direction: a.direction || "callees", depth: Number(a.depth) || 2, projectPath: root });
+          if (fr && !fr.isError) flow = `\n\nflow of the top seed (${seed.s.name}) along the call graph:\n${fr.text}`;
         } catch { /* flow is best-effort */ }
       }
       // Precision-ladder navigation: concept_search is the FUZZY rung (related, not exact). Once a seed looks
       // right, climb to the exact rung for ground-truth — name the hit to find_references / goto_definition.
-      const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — find_references symbol="${ranked[0].s.name}" or goto_definition for ground-truth refs/def.]` : "";
+      const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — find_references symbol="${seed.s.name}" or goto_definition for ground-truth refs/def.]` : "";
       return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + climb + flow);
     }
     if (name === "find_files") {

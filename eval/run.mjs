@@ -1806,9 +1806,22 @@ const ctrlCreditOk =
   elAfterConv.symbol === 1 && elAfterConv.mod.warn.converted === 1 && elAfterConv.pending === null &&
   elAfterMiss.mod.block.shown === 1 && elAfterMiss.mod.block.converted === 0 && elAfterMiss.builtin === 1;
 const ctrlReportOk = ELc.controllerReport(elAfterMiss).includes("warn 1/1") && ELc.controllerReport(elAfterMiss).includes("block 0/1");
+// RECENCY WINDOW (#c): the rolling adoption rate must reflect CURRENT behavior, not the all-time tail, and
+// stay bounded. So far recent = [s, b] (one switch, one miss). With the window at its floor (5) push four
+// more built-in edits: the window keeps only the last 5 (all "b") → recent 0%, while the all-time ratio is
+// 1/6 = 17%. The divergence is the whole point — a stale all-time number can't tell the model the steer
+// stopped converting now.
+const rwPrev = process.env.VTS_EDIT_RECENT_WINDOW;
+process.env.VTS_EDIT_RECENT_WINDOW = "5";
+ELc.recordEditEvent("builtin-warn"); ELc.recordEditEvent("builtin-warn"); ELc.recordEditEvent("builtin-warn"); ELc.recordEditEvent("builtin-warn");
+const elRecent = ELc.readEditLedger();
+const recencyOk = Array.isArray(elRecent.recent) && elRecent.recent.length === 5 && elRecent.recent.join("") === "bbbbb" &&
+  ELc.adoptionPctRecent(elRecent) === 0 && ELc.adoptionPct(elRecent) === 17 &&     // recent diverges from all-time
+  ELc.adoptionPctRecent({ recent: [] }) === null;                                  // empty window → null
+if (rwPrev === undefined) delete process.env.VTS_EDIT_RECENT_WINDOW; else process.env.VTS_EDIT_RECENT_WINDOW = rwPrev;
 if (elPrev === undefined) delete process.env.VTS_EDIT_LEDGER; else process.env.VTS_EDIT_LEDGER = elPrev;
 try { fs.rmSync(elFresh, { force: true }); } catch { /* ignore */ }
-const adaptiveCtrlOk = escPolicyOk && ctrlCreditOk && ctrlReportOk;
+const adaptiveCtrlOk = escPolicyOk && ctrlCreditOk && ctrlReportOk && recencyOk;
 
 // 79) indexing SCOPE — the cold-index accelerator: index a subtree, not the whole monorepo. scopeDirs
 // resolves the config/env scope; inScope tests membership; scopedCdb writes a filtered compile_commands.json
@@ -1860,7 +1873,11 @@ const supOff = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === fals
 if (supTogglePrev === undefined) delete process.env.VTS_SUPPRESS; else process.env.VTS_SUPPRESS = supTogglePrev;
 const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
 const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig); // tree + posture
-const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk;
+// the rolling recent rate is surfaced alongside the all-time ratio when it diverges (#c): here recent 4/5=80%
+// vs all-time 2/10=20% — the live signal the steer loop can actually move.
+const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
+const digRecentOk = /adoption 20% \(2\/10\), recent 80%/.test(dig2);
+const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk && digRecentOk;
 
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
@@ -1991,6 +2008,20 @@ const synOk = !!cSyn && JSON.stringify(cSyn.get("payment")) === JSON.stringify([
   cExpand(cModel, ["payment"], { synonyms: cSyn }).get("billing") === 0.95 &&  // synonym injected at 0.95
   cExpand(cModel, ["payment"]).get("billing") === undefined;                   // without the file: not bridged
 const scoreOk = cScore(cModel, cEnr, ["session", "auth"], []) > cScore(cModel, cEnr, ["render", "button"], []);
+// CROSS-CUTTING-GENERIC gate (#b): a query token present in a large fraction of decls is too generic to
+// expand THROUGH — its co-occurrence neighbours are cross-cutting noise. Build N=30 with `core` in 15 decls
+// (a "moderately common" token the PMI test alone still lets through) co-occurring with `flush` (df 4) above
+// the assoc bar. Default (maxDfRatio 0) expands `core`→`flush`; with the gate (0.25, df 15/30=0.5 > 0.25) it
+// does not. The gate only suppresses the noisy neighbour; the token itself is still weighted 1.
+const dfUnits = [];
+for (let i = 0; i < 11; i++) dfUnits.push(["core", "m" + i]);   // core alone (+ unique noise → df 1, dropped)
+for (let i = 0; i < 4; i++) dfUnits.push(["core", "flush"]);    // core+flush ×4 → assoc(core,flush)=2.0 ≥ 1.5
+for (let i = 0; i < 15; i++) dfUnits.push(["other", "t" + i]);  // pad N to 30; df(core)=15, df(flush)=4
+const dfModel = cBuild(dfUnits);
+const dfGateOff = cExpand(dfModel, ["core"]);                       // no cap → flush expanded
+const dfGateOn = cExpand(dfModel, ["core"], { maxDfRatio: 0.25 }); // core too generic → not expanded through
+const dfGateOk = dfGateOff.has("flush") && !dfGateOn.has("flush") && dfGateOn.get("core") === 1 &&
+  cExpand(dfModel, ["core"], { maxDfRatio: 0 }).has("flush"); // 0 ratio = gate off (back-compat)
 let conceptToolOk = true;
 if (tsAvailable()) {
   const cdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
@@ -2013,11 +2044,15 @@ if (tsAvailable()) {
   const pathLocalityOk = !cp.isError && /billing\.ts/.test(cp.text) && !/unrelated\.ts/.test(cp.text);
   // near.ts (imports core.ts, the top hit) must outrank far.ts (same symbol, no import edge) — the boost.
   const importBoostOk = !ci.isError && /near\.ts/.test(ci.text) && /far\.ts/.test(ci.text) && ci.text.indexOf("near.ts") < ci.text.indexOf("far.ts");
+  // CLIMB/FLOW SEED (#a): the ladder steer must climb on the strongest INTRINSIC match, not a proximity-
+  // boosted one. For "authenticate", core.ts `authenticate` is the exact-name hit (base 1.0); near.ts
+  // `authHelper` (base 0.7) is only lifted into view by the import boost, so it must NOT be the climb seed.
+  const seedOk = !ci.isError && /find_references symbol="authenticate"/.test(ci.text);
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
-    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk; // ladder nav + path-locality + import-graph proximity
+    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
-const conceptOk = splitOk && expandOk && synOk && scoreOk && conceptToolOk;
+const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && conceptToolOk;
 
 // 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
 // the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME
