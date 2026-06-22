@@ -28,8 +28,11 @@ suite claims — it claims the floor.
 
 ## What it measures
 
-A synthetic TypeScript project (built in a temp dir so the `typescript-language-server` backend resolves
-symbols/refs without clangd or a compile DB). Four everyday code-search scenarios, each run as:
+Synthetic projects in **three languages** — TypeScript, Python, and Go — built in a temp dir. TypeScript and
+Python exercise the **semantic** tier (a language server resolves symbols/refs when installed); Go has **no
+wired backend**, so it exercises the **syntactic** tree-sitter tier and a bounded literal scan. Running the
+same scenarios across all three is the controlled, multi-repo claim — a single corpus could be cherry-picked
+on the one shape vts is best at. Four everyday code-search scenarios per language, each run as:
 
 - **Arm A — grep**: what the built-in Grep/Glob tool hands the model — every matching `relpath:line:text`
   (or a path list for file-by-name), **capped at 250 lines** (Claude's Grep tool truncates ~there). This is
@@ -44,15 +47,21 @@ files) and reports the reduction climbing — the honest shape of the win.
 
 ## Representative results
 
-(From `results/latest.md`; re-run to refresh. Exact numbers depend on the bundled tsserver version.)
+(From `results/latest.md`; re-run to refresh. Exact numbers depend on which backends are installed — a
+missing language server only changes vts's *tier* label, never the token-capped shape.)
 
-| caller files | grep tokens | vts tokens | reduction |
-|--:|--:|--:|--:|
-| 10  | ~1,400  | ~1,200 | ~15% |
-| 50  | ~6,600  | ~3,700 | ~45% |
-| 150 | ~16,600 | ~6,500 | **~61%** |
+All-language total at 150 caller files (per corpus, the not-cherry-picked claim):
 
-Per-scenario at 150 files: `find references` ~55%, `find symbol` ~84%, `text search` ~54%, `find file` ~32%.
+| Language | vts tier (designed) | grep tokens | vts tokens | reduction |
+|---|---|--:|--:|--:|
+| TypeScript | semantic (LSP) | ~16,600 | ~2,200 | **~87%** |
+| Python | semantic (LSP) | ~14,900 | ~2,500 | **~83%** |
+| Go | syntactic (tree-sitter, no backend) | ~16,000 | ~1,400 | **~91%** |
+| **All languages** | — | ~47,500 | ~6,100 | **~87%** |
+
+The reduction climbs with repo size in every language (10 / 50 / 150 caller files); on a tiny corpus a
+narrow text/file search is a wash, the semantic scenarios win even there. See `results/latest.md` for the
+full per-language, per-scenario, per-size breakdown.
 
 ## Honest caveats (read these)
 

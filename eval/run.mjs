@@ -846,8 +846,8 @@ const hKoBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn F
 const hKoNudge = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }, { VTS_LANG: "ko" }).err; // identifier → blocked; KO nudge is in the block stderr
 const hEnBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "en" });
 const i18nOk =
-  hKoBlock.status === 2 && /코드 검색을 가로챘어요/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
-  /Grep 툴로 코드 검색/.test(hKoNudge) &&
+  hKoBlock.status === 2 && /코드검색 가로챔/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
+  /심볼검색 가로챔/.test(hKoNudge) && // identifier Grep → symbol-hunt block, KO
   hEnBlock.status === 2 && /caught a code search/.test(hEnBlock.err); // en explicit still English
 
 // 45) backend pool lifecycle (memory guard): the live language-server pool is BOUNDED so a session that
@@ -978,7 +978,7 @@ const hKwAlt = runHook({ tool_name: "Grep", tool_input: { pattern: "GET|POST|HEA
 const hSymOff = runHook({ tool_name: "Grep", tool_input: { pattern: "void.*FooWidget\\(", path: "src/lib" } }, { VTS_GREP_BLOCK: "0" });
 const hSymDoc = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", glob: "*.md" } });
 const enforceV2Ok =
-  hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a SYMBOL/.test(hSymHunt.err) && // structural-cue regex → block
+  hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a symbol search/.test(hSymHunt.err) && // structural-cue regex → block
   hIdentBlk.status === 2 && /find_references symbol="FooWidget"/.test(hIdentBlk.err) &&                    // bare identifier → block
   hCamelAlt.status === 2 && /search_text q="/.test(hCamelAlt.err) &&                                       // CamelCase alternation → block (v2.1)
   hFreeform.status === 0 && hKwAlt.status === 0 &&     // keyword alternations (no CamelCase) → NOT blocked (warn)
@@ -1781,7 +1781,7 @@ const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
 // literal usage grep. Skips gracefully if the optional tree-sitter deps aren't installed (CI without them).
-const { tsFileSymbols, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
+const { tsFileSymbols, tsFileReferences, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
 const { buildSymIndex, loadSymIndex, searchSymIndex, hasSymIndex } = await import("../server/symindex.js");
 let tsTierOk = true;
 if (tsAvailable()) {
@@ -1815,7 +1815,41 @@ if (tsAvailable()) {
   const tsRefs = await tsSearchReferences(tsDir, "buildWidgetTree", { skipDir: (n) => SKIP.has(n) });
   const refOk = pyRefs.some((r) => /d\.py$/.test(r.file) && r.line === 3) && !pyRefs.some((r) => /c\.py$/.test(r.file)) // the def is not a ref
     && tsRefs.some((r) => /e\.ts$/.test(r.file) && r.line === 2);
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk;
+  // (e) NO-BACKEND find_references tool path: a Go repo (vts has no wired Go backend) must NOT hard-error on
+  // getClient — it falls to the SYNTACTIC tree-sitter call-reference tier (the search_symbol no-backend parity
+  // for references). Go has no entry in pickBackend's detect order, so backendName is falsy here.
+  const goDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-gonobe`);
+  fs.mkdirSync(goDir, { recursive: true });
+  fs.writeFileSync(path.join(goDir, "go.mod"), "module nobe\n\ngo 1.21\n");
+  fs.writeFileSync(path.join(goDir, "pay.go"), "package pay\nfunc ProcessPayment(n int) bool { return n > 0 }\nfunc Run() { ok := ProcessPayment(3); _ = ok }\n");
+  const goRefs = await runTool("find_references", { symbol: "ProcessPayment", projectPath: goDir });
+  const noBackendRefOk = !goRefs.isError && /tree-sitter call reference/.test(goRefs.text) && /pay\.go:3/.test(goRefs.text) && !/pay\.go:2\b/.test(goRefs.text); // call site captured, decl line is not a ref
+  try { fs.rmSync(goDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  // (f) TAGS-QUERY tier: canonical .scm extraction (server/tags/<grammar>.scm) for a language with NO
+  // hand-tuned node config — the file-driven mechanism that extends the syntactic rung past the flagship
+  // languages (php/swift/kotlin/scala/dart/zig/bash). Proves a tags.scm yields real defs + a call ref.
+  fs.writeFileSync(path.join(tsDir, "sub", "f.php"), "<?php\nfunction greetUser($n){ return $n; }\nclass AccountWidget { function build(){} }\ngreetUser(1);\n");
+  const phpSyms = await tsFileSymbols(path.join(tsDir, "sub", "f.php"));
+  const phpRefs = await tsFileReferences(path.join(tsDir, "sub", "f.php"), "greetUser");
+  const tagsTierOk = phpSyms.some((s) => s.name === "greetUser" && s.kind === "func")
+    && phpSyms.some((s) => s.name === "AccountWidget" && s.kind === "class")
+    && phpRefs.some((r) => r.line === 4) && !phpRefs.some((r) => r.line === 2); // call site, not the decl
+  // (g) INCREMENTAL .vts-index: a rebuild with no changes REUSES every file (no re-parse); after a single
+  // file's content changes, only that file re-parses (mtime+size fast-path → fnv1a content hash). The
+  // cold→warm rebuild win — `vts index` after editing a few files re-parses only those, not the whole tree.
+  const incrDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-incr`);
+  fs.mkdirSync(incrDir, { recursive: true });
+  fs.writeFileSync(path.join(incrDir, "x.ts"), "export function alphaFn(){ return 1; }\n");
+  fs.writeFileSync(path.join(incrDir, "y.ts"), "export class BetaClass {}\n");
+  const ib1 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 1 });
+  const ib2 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 2 }); // no change → all reused
+  fs.writeFileSync(path.join(incrDir, "y.ts"), "export class BetaClass {}\nexport function gammaFn(){ return 2; }\n"); // size changes → stat differs
+  const ib3 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 3 }); // y.ts changed → 1 re-parse, x.ts reused
+  const incrHit = searchSymIndex(incrDir, "gammaFn");
+  const incrOk = ib1.reparsed === 2 && ib1.reused === 0 && ib2.reparsed === 0 && ib2.reused === 2
+    && ib3.reparsed === 1 && ib3.reused === 1 && !!(incrHit && incrHit.length);
+  try { fs.rmSync(incrDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
