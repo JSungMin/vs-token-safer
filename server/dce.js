@@ -20,6 +20,18 @@
 //     file, line                    // where `name` is declared
 //   }
 
+// WARM GATE — the safety preflight. clangd's call graph on a cold or large (e.g. Unreal) tree UNDER-REPORTS
+// callers: a caller living in a translation unit clangd has not indexed yet is simply absent, so a LIVE symbol
+// looks like it has no callers → a false DEAD. For a workflow that feeds `safe_delete`, that is the worst
+// failure mode, so unless a persisted index exists we REFUSE by default. `allowCold` lets the caller proceed
+// anyway, but then every verdict is forced to INCONCLUSIVE (never DEAD) — the structure is shown, no deletion
+// is ever implied. Non-clangd backends index on open and carry no persisted-index notion, so they are not
+// gated here (their per-symbol cert still reflects truncation). PURE — the caller supplies `persisted`.
+export function dceWarmGate(backendName, persisted, allowCold) {
+  if (backendName === "clangd" && !persisted) return { refuse: !allowCold, forceInconclusive: true };
+  return { refuse: false, forceInconclusive: false };
+}
+
 export async function analyzeDeadCode(query, seeds, opts = {}) {
   const maxNodes = Math.max(1, opts.maxNodes || 200);
   const isEntry = opts.isEntry || (() => false);
@@ -74,8 +86,10 @@ export async function analyzeDeadCode(query, seeds, opts = {}) {
 // Token-capped, sectioned preview. Never prints source bodies — names + file:line + ready safe_delete calls.
 export function formatDce(result, opts = {}) {
   const cap = opts.cap || 60;
-  const { dead, held, entry, inconclusive, truncated, seeds } = result;
-  const L = [`dead-code analysis from seed(s): ${seeds.join(", ")} — PREVIEW ONLY, nothing was deleted.`, ""];
+  const { dead, held, entry, inconclusive, truncated, seeds, coldNote } = result;
+  const L = [`dead-code analysis from seed(s): ${seeds.join(", ")} — PREVIEW ONLY, nothing was deleted.`];
+  if (coldNote) L.push(`⚠ ${coldNote}`);
+  L.push("");
 
   if (dead.length) {
     L.push(`DEAD — ${dead.length} candidate(s), in a safe deletion order (each is unreferenced once the ones above it are removed):`);

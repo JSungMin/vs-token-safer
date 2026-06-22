@@ -23,7 +23,7 @@ import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvai
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
-import { analyzeDeadCode, formatDce } from "./dce.js";
+import { analyzeDeadCode, formatDce, dceWarmGate } from "./dce.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -2107,6 +2107,15 @@ export async function runTool(name, a = {}) {
       if (!seeds.length) return err('vts_dce needs seed symbol(s): seed="Foo" or seeds="Foo,Bar" (the declaration(s) you suspect are dead).');
       const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
       if (!backendName) return err(`dead-code analysis needs a language-server backend (clangd/roslyn/typescript/pyright) for ${root}; none resolved. It walks the call graph, which the syntactic/text tiers can't provide.`);
+      // WARM GATE — the safety preflight (cheap fs check, no clangd spawn). On a cold/large clangd tree the call
+      // graph under-reports callers (callers in not-yet-indexed TUs are absent) → a LIVE symbol can look DEAD.
+      // Refuse by default rather than hand back unsafe DEAD candidates; allowCold proceeds with every verdict
+      // forced to INCONCLUSIVE. (search_symbol etc. still resolve fine cold — only the call-graph completeness
+      // that DCE's correctness hinges on is unsafe.)
+      const allowCold = a.allowCold === true || a.allowCold === "true";
+      const persisted = backendName === "clangd" ? hasPersistedIndex(root) : true;
+      const gate = dceWarmGate(backendName, persisted, allowCold);
+      if (gate.refuse) return err(`dead-code analysis needs a built clangd index for ${root}, and none is persisted yet. On a cold or large (e.g. Unreal, ~26k TUs) tree the call graph UNDER-REPORTS callers — a symbol whose callers live in not-yet-indexed translation units would look DEAD when it is actually live, which is unsafe to feed safe_delete. Indexing the WHOLE tree is heavy, so SCOPE it to the module under analysis first, then build:\n  vts setup --scope Source --projectPath "${root}"   (narrow to the game/module subtree — not the whole monorepo)\n  vts preindex --projectPath "${root}"               (build the scoped index; or keep the MCP server running so clangd stays warm)\nThen re-run. Refusing rather than returning unsafe DEAD candidates. To inspect the structure anyway (every verdict forced to INCONCLUSIVE, nothing marked DEAD), pass allowCold=true.`);
       // Entry-point roots — never dead even with zero callers (they're invoked externally). A small built-in
       // set + user-supplied `entry` patterns (comma list, matched as case-insensitive name substrings).
       const userPats = (typeof a.entry === "string" && a.entry ? a.entry.split(",") : Array.isArray(a.entry) ? a.entry : [])
@@ -2127,11 +2136,13 @@ export async function runTool(name, a = {}) {
           if (l.target === focus.id && l.source !== focus.id) { const n = byId.get(l.source); if (n && !seenC.has(n.label)) { seenC.add(n.label); callers.push({ name: n.label, file: n.file }); } }
           if (l.source === focus.id && l.target !== focus.id) { const n = byId.get(l.target); if (n && !seenE.has(n.label)) { seenE.add(n.label); callees.push({ name: n.label, file: n.file }); } }
         }
-        return { resolved: true, callers, callees, cert: cg.truncated ? "PARTIAL" : "COMPLETE", file: focus.file, line: focus.line };
+        const cert = gate.forceInconclusive ? "INCONCLUSIVE" : cg.truncated ? "PARTIAL" : "COMPLETE";
+        return { resolved: true, callers, callees, cert, file: focus.file, line: focus.line };
       };
       const envCap = envInt("VTS_DCE_MAX_NODES", 120);
       const maxNodes = Math.min(Number(a.maxNodes) || envCap, envCap);
       const result = await analyzeDeadCode(query, seeds, { maxNodes, isEntry });
+      if (gate.forceInconclusive) result.coldNote = `clangd index not warm for ${root} — running in allowCold mode: every verdict is forced to INCONCLUSIVE (nothing is marked DEAD). Build the index (vts preindex) for real DEAD/HELD verdicts.`;
       const rows = result.dead.map((dd) => `${dd.file}:${dd.line}`);
       return finishOut(rows, formatDce(result, { cap: MAX_RESULTS }));
     }
