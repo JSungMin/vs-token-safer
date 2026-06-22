@@ -21,7 +21,7 @@ import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
-import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers } from "./concept.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
 import { isStructFile, structOutline, resolveSection, fmtOutline } from "./textstruct.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
@@ -224,6 +224,7 @@ const EDIT_STEER =
   "(position=after|before) / safe_delete (preview by default, apply=true writes). It skips reading the file into " +
   "context. (VTS_EDIT_STEER=0 to hide.)";
 const editSteerOn = () => process.env.VTS_EDIT_STEER !== "0" && process.env.VTS_EDIT_STEER !== "false";
+const usesSteerOn = () => process.env.VTS_USES_STEER !== "0" && process.env.VTS_USES_STEER !== "false";
 const refNavOn = () => process.env.VTS_REF_NAV !== "0" && process.env.VTS_REF_NAV !== "false";
 // Appended to a LARGE flat find_references result: the same dependents can be read far cheaper as a per-file
 // blast-radius SUMMARY (detail=file) or navigated as the transitive caller TREE (direction=callers) — point
@@ -2015,7 +2016,12 @@ export async function runTool(name, a = {}) {
       if (!symbols.length) return finishOut([], `No indexable declarations under ${root} for concept search (no tree-sitter-supported files in scope?).` + EMPTY_HINT);
       const qToks = tokenize(String(a.q));
       if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words). Try concrete nouns: "auth session token".`);
-      const enriched = expandQuery(model, qToks);
+      // COMMITTABLE synonyms (the critic-approved adaptation): a team-curated, git-committable
+      // .vts-index/concept-synonyms.json ({ "term": ["syn", …] }) augments the mined dictionary — inspectable,
+      // deterministic, no drift. Purely additive: absent/malformed → the mined model runs alone.
+      let synonyms = null;
+      try { synonyms = parseSynonyms(fs.readFileSync(path.join(root, ".vts-index", "concept-synonyms.json"), "utf8")); } catch { /* no committed synonyms */ }
+      const enriched = expandQuery(model, qToks, synonyms ? { synonyms } : {});
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
@@ -2261,9 +2267,14 @@ export async function runTool(name, a = {}) {
       const focusN = focusCap(String(a.q), syms, max);
       const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
       const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
+      // Found the declaration(s); the other natural next step is "where is it USED?" — point at find_references
+      // by NAME (semantic call sites) so the model doesn't fall back to a grep for usages. Focused result only.
+      const symUses = usesSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10)
+        ? `\n↪ Where is "${a.q}" USED? find_references symbol="${a.q}" (all call sites, semantic) — add direction=callers for the caller tree.`
+        : "";
       const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
       const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
-      const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symCert;
+      const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symUses + symCert;
       maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
       return finishOut(syms, symBody);
     }
