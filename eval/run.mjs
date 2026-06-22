@@ -846,8 +846,8 @@ const hKoBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn F
 const hKoNudge = runHook({ tool_name: "Grep", tool_input: { pattern: "Foo", glob: "*.ts" } }, { VTS_LANG: "ko" }).err; // identifier → blocked; KO nudge is in the block stderr
 const hEnBlock = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp" } }, { VTS_REWRITE: "0", VTS_LANG: "en" });
 const i18nOk =
-  hKoBlock.status === 2 && /코드 검색을 가로챘어요/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
-  /Grep 툴로 코드 검색/.test(hKoNudge) &&
+  hKoBlock.status === 2 && /코드검색 가로챔/.test(hKoBlock.err) && /find_references symbol="Foo"/.test(hKoNudge) &&
+  /심볼검색 가로챔/.test(hKoNudge) && // identifier Grep → symbol-hunt block, KO
   hEnBlock.status === 2 && /caught a code search/.test(hEnBlock.err); // en explicit still English
 
 // 45) backend pool lifecycle (memory guard): the live language-server pool is BOUNDED so a session that
@@ -978,7 +978,7 @@ const hKwAlt = runHook({ tool_name: "Grep", tool_input: { pattern: "GET|POST|HEA
 const hSymOff = runHook({ tool_name: "Grep", tool_input: { pattern: "void.*FooWidget\\(", path: "src/lib" } }, { VTS_GREP_BLOCK: "0" });
 const hSymDoc = runHook({ tool_name: "Grep", tool_input: { pattern: "FooWidget", glob: "*.md" } });
 const enforceV2Ok =
-  hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a SYMBOL/.test(hSymHunt.err) && // structural-cue regex → block
+  hSymHunt.status === 2 && /search_text q="/.test(hSymHunt.err) && /caught a symbol search/.test(hSymHunt.err) && // structural-cue regex → block
   hIdentBlk.status === 2 && /find_references symbol="FooWidget"/.test(hIdentBlk.err) &&                    // bare identifier → block
   hCamelAlt.status === 2 && /search_text q="/.test(hCamelAlt.err) &&                                       // CamelCase alternation → block (v2.1)
   hFreeform.status === 0 && hKwAlt.status === 0 &&     // keyword alternations (no CamelCase) → NOT blocked (warn)
