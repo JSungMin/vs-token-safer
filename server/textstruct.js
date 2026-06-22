@@ -160,8 +160,90 @@ function parseText(lines) {
   return heads;
 }
 
+// HTML / HTM: a web page's structure = its headings + landmark blocks. Outline = `<h1..h6>` (level N), the
+// `<style>` and `<script>` blocks + id-bearing landmark containers (level 1), and — WITHIN `<style>`/`<script>`
+// — the top-level CSS selectors / JS declarations as level-2 sub-sections, so read_symbol/replace_symbol_body
+// can target a rule or a function BY NAME (e.g. edit one function in a self-contained dashboard.html instead of
+// reading the whole file). HONEST LIMIT: the embedded JS/CSS is scanned heuristically by brace depth (not a
+// full sub-language parse) — robust for normally-formatted top-level decls; a minified/oddly-formatted block
+// degrades to the block-level section. An id-landmark's span runs to the next landmark (a flat sibling model,
+// not the true DOM range) — faithful for top-level siblings, approximate for deep nesting.
+function htmlStripForBraces(s) {
+  return String(s)
+    .replace(/\/\/.*$/, "")                  // line comment
+    .replace(/\/\*.*?\*\//g, "")             // inline block comment
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')     // double-quoted string
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")     // single-quoted string
+    .replace(/`(?:[^`\\]|\\.)*`/g, "``");    // single-line template literal
+}
+function htmlNetBraces(s) {
+  const t = htmlStripForBraces(s);
+  let d = 0;
+  for (const c of t) { if (c === "{") d++; else if (c === "}") d--; }
+  return d;
+}
+const HTML_RESERVED = /^(?:if|for|while|switch|catch|return|function|const|let|var|class|else|do|with|try|finally|new|typeof|await|yield)$/;
+const HTML_JS_DECL = [
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/,
+  /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/,
+  /^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/,
+  /^\s*([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{\s*$/, // a top-level `name(args) {` statement/method
+];
+function htmlJsDecl(line) {
+  for (const re of HTML_JS_DECL) {
+    const m = re.exec(line);
+    if (m && m[1] && !HTML_RESERVED.test(m[1])) return m[1];
+  }
+  return null;
+}
+function parseHtml(lines) {
+  const heads = [];
+  let mode = null; // "script" | "style"
+  let depth = 0;   // brace depth within the current embedded block
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (mode) {
+      const close = mode === "script" ? /<\/script>/i : /<\/style>/i;
+      if (close.test(ln)) { mode = null; depth = 0; continue; }
+      if (depth <= 0) {
+        if (mode === "script") {
+          const nm = htmlJsDecl(ln);
+          if (nm) heads.push({ level: 2, title: nm, line: i + 1 });
+        } else {
+          const at = /^\s*(@[\w-]+[^{]*?)\s*\{/.exec(ln);            // @media / @keyframes … (single- or multi-line)
+          const sel = /^\s*([.#]?[^{}@/][^{}]*?)\s*\{/.exec(ln);    // a CSS rule opener (brace may not end the line)
+          if (at) heads.push({ level: 2, title: at[1].trim().slice(0, 60), line: i + 1 });
+          else if (sel) heads.push({ level: 2, title: sel[1].trim().slice(0, 60), line: i + 1 });
+        }
+      }
+      depth += htmlNetBraces(ln);
+      if (depth < 0) depth = 0;
+      continue;
+    }
+    const h = /<h([1-6])\b[^>]*>(.*?)<\/h\1>/i.exec(ln);
+    if (h) { heads.push({ level: Number(h[1]), title: h[2].replace(/<[^>]+>/g, "").trim().slice(0, 80) || `h${h[1]}`, line: i + 1 }); continue; }
+    const so = /<script\b([^>]*)>/i.exec(ln);
+    if (so) {
+      const idm = /\bid\s*=\s*["']([^"']+)["']/i.exec(so[1]); const tym = /\btype\s*=\s*["']([^"']+)["']/i.exec(so[1]);
+      heads.push({ level: 1, title: `<script${idm ? " #" + idm[1] : tym ? " " + tym[1] : ""}>`, line: i + 1 });
+      if (!/<\/script>/i.test(ln)) { mode = "script"; depth = htmlNetBraces(ln.replace(/^[\s\S]*?<script[^>]*>/i, "")); }
+      continue;
+    }
+    const sy = /<style\b[^>]*>/i.exec(ln);
+    if (sy) {
+      heads.push({ level: 1, title: "<style>", line: i + 1 });
+      if (!/<\/style>/i.test(ln)) { mode = "style"; depth = 0; }
+      continue;
+    }
+    const idEl = /<(section|div|main|nav|header|footer|aside|article|form|canvas|template|ul|table)\b[^>]*\bid\s*=\s*["']([^"']+)["']/i.exec(ln);
+    if (idEl) heads.push({ level: 1, title: `#${idEl[2]} <${idEl[1].toLowerCase()}>`, line: i + 1 });
+  }
+  return heads;
+}
+
 const PROVIDERS = [
   { exts: /\.(md|markdown|mdx|mkd|mdown)$/i, parse: parseMarkdown },
+  { exts: /\.(html?|xhtml|htm)$/i, parse: parseHtml },
   { exts: /\.(adoc|asciidoc|asc)$/i, parse: parseAsciiDoc },
   { exts: /\.(rst|rest)$/i, parse: parseRst },
   { exts: /\.(toml|ini|cfg|conf|properties|editorconfig|gitconfig)$/i, parse: parseIni },
