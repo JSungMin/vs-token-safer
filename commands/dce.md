@@ -42,6 +42,20 @@ Then show the output **verbatim**. It classifies every symbol reachable from the
 - **ENTRY** — a root kept on purpose (main / public API / a name you passed via `--entry`).
 - **INCONCLUSIVE** — could not be resolved, or its caller set could not be proven complete.
 
+## Two modes
+
+- **Caller-cascade** (default): start from the seeds, follow callers; a seed with no live caller is dead, and
+  removing it can cascade. Thorough by default — each DEAD candidate is reference-verified.
+- **Reachability / mark-sweep** (pass `roots`): the Go-`deadcode`/RTA model — liveness is computed FORWARD from
+  the named entry points, so a *missing caller* can't cause a false DEAD; only an incomplete root set can (the
+  reference verify catches that). Roots are generic and **framework-agnostic** — name them yourself, or commit a
+  `.vts-index/dce-roots.json` (`["main","RunTests","StartupModule", …]`) that your team curates once. vts hard-
+  codes NO framework markers (no UFUNCTION / `@Route` / `[Test]`); you declare your own entry points.
+
+```
+vts dce --seeds Foo,Bar --roots "main,RunTests,StartupModule" --projectPath <root>
+```
+
 ## Important — this NEVER deletes
 
 `dce` only proposes candidates from the **call graph**. To actually remove one, run `safe_delete`

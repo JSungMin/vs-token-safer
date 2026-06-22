@@ -2058,7 +2058,15 @@ const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && concept
 // deterministic with a mock graph. DEAD cascades to a fixpoint (a callee dies only once ALL its callers are
 // removed), HELD when a live caller remains, ENTRY roots are kept, INCONCLUSIVE on unresolved / non-COMPLETE
 // cert. It never deletes — the real removal is safe_delete's reference-guarded job (guard 52), not tested here.
-const { analyzeDeadCode: dceAnalyze, formatDce: dceFmt, dceWarmGate: dceGate } = await import("../server/dce.js");
+const { analyzeDeadCode: dceAnalyze, reachabilityDeadCode: dceReach, formatDce: dceFmt, dceWarmGate: dceGate, reconcileRefs: dceRecon, parseRootsFile: dceParseRoots } = await import("../server/dce.js");
+// THOROUGH reference reconciliation: the call graph sees CALLS; a symbol kept alive only by a NON-CALL ref
+// (function value / reflection) has more references than call sites → NOT dead. reconcileRefs gates that, and
+// analyzeDeadCode's `verify` hook applies it in the fixpoint so an unverified symbol is INCONCLUSIVE, not DEAD,
+// and never cascades false DEAD downstream.
+const dceReconOk =
+  dceRecon(2, 2).confirmed === true && dceRecon(0, 0).confirmed === true &&          // refs == call sites → dead
+  dceRecon(2, 3).confirmed === false && dceRecon(0, 1).confirmed === false &&        // refs > call sites → non-call use, not dead
+  dceRecon(2, null).confirmed === false;                                             // uncountable → cannot confirm (safe)
 // WARM GATE: clangd on a cold/large tree under-reports callers → a live symbol can look DEAD. So a cold clangd
 // (no persisted index) REFUSES by default; allowCold proceeds but forces every verdict to INCONCLUSIVE. Other
 // backends index on open → not gated. (The false-DEAD-on-cold-UE hardening; safe_delete is still the backstop.)
@@ -2096,7 +2104,30 @@ const dr4ok = dr4.dead.length === 0 && dr4.inconclusive.some((x) => x.name === "
 const dr5 = await dceAnalyze(dceQuery, ["ghost"], {});        // unresolved → INCONCLUSIVE
 const dr5ok = dr5.dead.length === 0 && dr5.inconclusive.some((x) => x.name === "ghost");
 const dceFmtOk = /DEAD/.test(dceFmt(dr2)) && /safe_delete symbol="e"/.test(dceFmt(dr2)) && /CAVEAT/.test(dceFmt(dr2));
-const dceOk = dr1ok && dr2ok && dr3ok && dr4ok && dr5ok && dceFmtOk && dceGateOk;
+// verify hook: a thorough verify that REJECTS `e` (a non-call ref) must keep d,f DEAD but move e to
+// INCONCLUSIVE (not DEAD), proving the gate blocks a false cascade. An all-confirm verify == no verify.
+const dceVerifyReject = async (nm) => (nm === "e" ? { confirmed: false, reason: "non-call reference" } : { confirmed: true });
+const dr6 = await dceAnalyze(dceQuery, ["d", "f"], { verify: dceVerifyReject });
+const dr6ok = dceNames(dr6.dead).join(",") === "d,f" && dr6.inconclusive.some((x) => x.name === "e");
+const dr7 = await dceAnalyze(dceQuery, ["d", "f"], { verify: async () => ({ confirmed: true }) });
+const dr7ok = dceNames(dr7.dead).join(",") === "d,f,e";
+// REACHABILITY (mark-sweep): liveness is computed FORWARD from roots. With root=main, {main,a,b,c} are reachable;
+// d/e/f are not. So a seed d is DEAD (and its callee e cascades dead); a seed a is HELD (reachable from main); a
+// verify that rejects e moves it to INCONCLUSIVE. A missing CALLER can't cause a false DEAD here (computed from
+// roots) — only incomplete roots can, which the verify catches.
+const reach1 = await dceReach(dceQuery, ["main"], ["d"], {});
+const reach1ok = dceNames(reach1.dead).includes("d") && dceNames(reach1.dead).includes("e") && reach1.roots.join() === "main";
+const reach2 = await dceReach(dceQuery, ["main"], ["a"], {});
+const reach2ok = reach2.dead.length === 0 && reach2.held.some((h) => h.name === "a" && /reachable/.test(h.note || ""));
+const reach3 = await dceReach(dceQuery, ["main"], ["d"], { verify: async (nm) => ({ confirmed: nm !== "e" }) });
+const reach3ok = dceNames(reach3.dead).includes("d") && !dceNames(reach3.dead).includes("e") && reach3.inconclusive.some((x) => x.name === "e");
+const reachOk = reach1ok && reach2ok && reach3ok;
+// committable, framework-agnostic roots file (mirrors concept-synonyms): array or {roots:[...]}, [] on malformed.
+const rootsFileOk =
+  JSON.stringify(dceParseRoots('["main","Foo"]')) === JSON.stringify(["main", "Foo"]) &&
+  JSON.stringify(dceParseRoots('{"roots":["a","b"]}')) === JSON.stringify(["a", "b"]) &&
+  dceParseRoots("not json").length === 0 && dceParseRoots("{}").length === 0;
+const dceOk = dr1ok && dr2ok && dr3ok && dr4ok && dr5ok && dceFmtOk && dceGateOk && dceReconOk && dr6ok && dr7ok && reachOk && rootsFileOk;
 
 // 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
 // the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME
@@ -2238,7 +2269,7 @@ const rows = [
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index + HTML <script>/<style> exact-range injection", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
-  ["preview-only DCE: topological dead-code candidates via call-graph cascade to a fixpoint (safe_delete backstop)", dceOk, "true", dceOk],
+  ["preview-only DCE: caller-cascade + reachability(mark-sweep from roots) + reference-verify + warm gate (safe_delete backstop)", dceOk, "true", dceOk],
   ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
