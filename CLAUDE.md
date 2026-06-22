@@ -309,7 +309,13 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   FIND-DIR FIX (v2.2): a Bash `find <dir> -name X` rewrite now HONORS `<dir>` as the find_files root
   (`extractFindDir`) — it was dropped, so `find /abs/UE/path -name X` searched the configured vts repo and falsely
   reported "No files" (a live correctness bug on a UE worktree). `vts discover` also counts the Glob tool as a
-  find_files bypass. `VTS_REWRITE=0` → block
+  find_files bypass. FILE-OPS FIND FP FIX (v0.33.14): a `find` doing FILE-OPS — its own `-exec`/`-delete`/
+  `-type d` (`isFindFileOps`), or alongside a file-op exec in the same command (`hasFileOpsContext`:
+  cp/mv/tar/rsync/xargs/zip/du/… — a backup/copy `du …; find … -name "*.cpp"`) — is NOT a code search →
+  never blocked AND never rerouted to a (token-CAPPED) find_files, which would silently drop files from a
+  copy/delete. A genuine code-file `find -name "*.cpp"` with no file-op still rewrites to find_files. Live-found:
+  a UE-depot backup find got blocked + the capped reroute would corrupt the backup. grep stays strict (a literal
+  grep in a pipeline is usually content filtering). Eval guard 17b. `VTS_REWRITE=0` → block
   instead of rewrite; `excludeCommands` (config) / `VTS_EXCLUDE_COMMANDS` (csv) opt a command out; escape hatch
   `VTS_ENFORCE=0`. Messages i18n'd (`uiLang()`: Korean when `VTS_LANG`/config `lang`=`ko` OR OS locale `ko-*`,
   else English; `VTS_LANG=en|ko` forces). Copy is AGENT-DIRECTED — the actionable part instructs the assistant
