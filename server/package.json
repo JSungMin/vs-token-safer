@@ -50,6 +50,7 @@
     "warmset.js",
     "treesitter.js",
     "symindex.js",
+    "concept.js",
     "ensure-deps.mjs",
     "backends/"
   ],

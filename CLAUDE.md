@@ -77,6 +77,25 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   branches; `completenessCert({syntactic})` labels it. Op `vts_index{status}` (CLI `vts index [--status]`, folded
   into `vts_admin`). Eval guard 81; benchmark arm C (zero-setup: 150-file symbol search grep 4917 → tree-sitter
   53 tok = 98.9%, no toolchain).
+- `server/concept.js` — FUZZY retrieval WITHOUT embeddings (approach "B"; the charter-pure answer to Code
+  Context Engine's exact-vs-fuzzy critique — "how does the auth flow work" when you can't name the symbol).
+  THE REPO IS ITS OWN THESAURUS: identifiers + the comments beside them are a distributional signal already in
+  the source — tokens that NAME THE SAME THING co-occur. PURE/zero-dep module: `splitIdent`/`tokenize`
+  (CamelCase/snake/digit split, drop digit+stop+len1), `tokMatch` (exact 1.0 / prefix≥4 0.7 — no stemmer),
+  `buildConceptModel(units,{maxUnitTokens:14})` (df + co-occurrence over per-decl token bags = name subtokens +
+  leading-docstring subtokens; the UNIT must be TIGHT — a long header comment attached to the first decl makes a
+  giant unit where everything co-occurs → junk, so cap it), `assoc` (PMI-lite c·N/(df·df)), `idf`,
+  `expandQuery({k,minAssoc:1.5,minCooc:2})` (gate single-shot noise: cooc≥2 AND df≥2), `scoreSymbol`
+  (enriched·idf·bestMatch + comment channel ×0.5). HOT MCP tool **`concept_search`** (core.js: tokenize q →
+  `conceptIndexFor(root)` [cached tree-sitter `tsFileDeclDocs` walk, scope-filtered, bounded] → expand → score
+  [kind weight demotes const/var locals] → top-N with a relative floor `VTS_CONCEPT_FLOOR` 0.2 + `VTS_CONCEPT_MAX`
+  15; `flow=true` expands the top seed along the call graph via find_references direction). CLI `vts concept
+  --q "auth login flow" [--flow]`. HONEST: A(subtoken)+D(comment) reliable, B(co-occurrence) recovers domain
+  synonyms when vocab clusters (compile database→clang/ubt/generate) but noisy on cross-cutting generics; pure-
+  synonym-no-lexical-bridge residual genuinely needs embeddings (stated). `treesitter.js tsFileDeclDocs` = decl +
+  attached leading comment (gap≤3, skip header blocks ≥4 lines, cap 200ch) feeds the concept units. NO embeddings,
+  nothing transmitted, output token-capped file:line. Eval guard 83; **follow-up paper** `paper/fuzzy-concept-
+  dictionary.tex` (companion to the Token-Safer paper, motivated by the CCE correspondence). Env: `VTS_CONCEPT_*`.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses

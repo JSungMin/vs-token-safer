@@ -655,3 +655,77 @@ export async function tsSearchReferences(
   sliced.filesParsed = filesParsed;
   return sliced;
 }
+
+// ── CONCEPT UNITS (approach B's input): a declaration plus the comment/docstring attached to it. The concept
+// dictionary (concept.js) is mined from these — tokens that name the same thing co-occur within one unit. We
+// collect decls AND comment nodes in one AST walk, then attach each contiguous comment block sitting in the
+// `gap` lines directly above a decl to that decl (the standard leading-comment convention). Returns
+// [{ name, kind, line, doc }] where doc is the joined leading-comment text (empty string if none).
+export async function tsFileDeclDocs(absPath, { maxBytes = 2_000_000, gap = 3 } = {}) {
+  const entry = EXT_MAP[extOf(absPath)];
+  if (!entry) return [];
+  const [wasmBase, cfgIn] = entry;
+  const cfg = cfgIn || GENERIC;
+  let src;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.size > maxBytes) return [];
+    src = fs.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  const lang = await loadLanguage(wasmBase);
+  if (!lang) return [];
+  let parser, tree;
+  try {
+    parser = new _TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return [];
+  }
+  const decls = [];
+  const comments = []; // { startRow, endRow, text }
+  const decl = cfg.decl;
+  const stack = [tree.rootNode];
+  let guard = 0;
+  while (stack.length && guard++ < 200000) {
+    const node = stack.pop();
+    if (node.type === "comment") {
+      comments.push({ startRow: node.startPosition.row, endRow: node.endPosition.row, text: node.text });
+    } else if (decl.has(node.type)) {
+      const nm = nameOf(node);
+      if (nm && /[A-Za-z_]/.test(nm)) {
+        decls.push({
+          name: nm.slice(0, 80),
+          kind: cfg.kind[node.type] || node.type,
+          row: node.startPosition.row,
+        });
+      }
+    }
+    for (let i = node.namedChildCount - 1; i >= 0; i--) stack.push(node.namedChild(i));
+  }
+  try {
+    tree.delete && tree.delete();
+    parser.delete && parser.delete();
+  } catch {
+    /* ignore */
+  }
+  // Attach: a comment whose LAST line is within `gap` lines above a decl's first line belongs to it — BUT a
+  // long block is a file/section header, not this decl's docstring, so skip blocks spanning >= maxDocLines and
+  // cap the joined doc to maxDocChars. Keeps the unit a tight name+docstring scope (the concept signal) rather
+  // than letting a header pollute the first decl below it.
+  comments.sort((a, b) => a.startRow - b.startRow);
+  const out = [];
+  const maxDocLines = 4,
+    maxDocChars = 200;
+  for (const d of decls) {
+    const docs = [];
+    for (const c of comments) {
+      if (c.endRow < d.row && d.row - c.endRow <= gap && c.endRow - c.startRow < maxDocLines)
+        docs.push(c.text);
+    }
+    out.push({ name: d.name, kind: d.kind, line: d.row + 1, doc: docs.join(" ").slice(0, maxDocChars) });
+  }
+  return out;
+}
