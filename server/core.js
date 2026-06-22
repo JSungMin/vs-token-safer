@@ -174,12 +174,36 @@ export function symbolHuntInText(q) {
   if (!cand.length) return null;
   return cand.sort((a, b) => b.length - a.length)[0];
 }
+// An ALTERNATION of symbols (`A|B|C`, any N) — the model reaches for search_text because find_references
+// takes ONE name, not a regex. Pull every identifier branch so the steer can point at find_references PER
+// symbol (the general `|` case, not just two). Returns the deduped identifier list, or null when it isn't a
+// symbol alternation: every `|`-separated branch must be a bare identifier AND at least one must carry a
+// CamelCase/snake cue (so a keyword/content alternation — `TODO|FIXME`, `GET|POST|HEAD` — is NOT steered;
+// those are real text filters, not symbols, exactly as the grep-block hook classifies them).
+export function altSymbols(q) {
+  const s = String(q || "");
+  if (!s.includes("|") || s.length > 200) return null;
+  const branches = s.split("|").map((b) => b.trim()).filter(Boolean);
+  if (branches.length < 2) return null;
+  if (!branches.every((b) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(b))) return null; // any non-identifier branch → a regex, not a symbol list
+  if (!branches.some((b) => /[a-z][A-Z]|[a-z0-9]_[a-z]/.test(b))) return null;  // no CamelCase/snake cue → keyword alternation, leave it
+  return [...new Set(branches)];
+}
 const textSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_TEXT_STEER ?? "1"));
 // Build the one-line steer, or "" — fires only on a clear symbol hunt that would actually benefit: the
 // scan was TRUNCATED (completeness now matters) OR the query carries a `<>`/`::` code cue. A bare CamelCase
 // text search that completed fine isn't nagged.
 function textSymbolSteer(q, truncated) {
   if (!textSteerOn()) return "";
+  // Alternation of symbols (A|B|C, any N) → steer to find_references on EACH (find_references can't take a
+  // regex; search_text matched the whole alternation as full line text). Fires regardless of truncation —
+  // an alternation of symbols always has a strictly better per-symbol semantic path.
+  const alts = altSymbols(q);
+  if (alts && alts.length >= 2) {
+    const list = alts.slice(0, 6).map((a) => `find_references symbol="${a}"`).join(" · ");
+    const more = alts.length > 6 ? ` (+${alts.length - 6} more)` : "";
+    return `\n↪ "${q}" is an ALTERNATION of ${alts.length} symbols — search_text matched it as one regex (full line text). find_references can't take A|B in one call; for semantic, COMPLETE results run ONE call per symbol: ${list}${more}.`;
+  }
   const sym = symbolHuntInText(q);
   if (!sym) return "";
   // "strong" cue = a code expression (`::`/`<>`) OR a BARE identifier (the whole query is one symbol name,

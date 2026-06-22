@@ -1182,23 +1182,34 @@ const setupClangdOk =
 // 58) search_text → symbol steer — a TEXT query that is really a symbol/class usage hunt (a `Foo<Bar>`
 // template arg, `::` scope, or CamelCase/snake identifier) gets a one-line nudge toward find_references /
 // search_symbol (semantic, complete, no time-box) appended to the result; freeform/keyword text does NOT.
-const { symbolHuntInText } = await import("../server/core.js");
+const { symbolHuntInText, altSymbols } = await import("../server/core.js");
 const huntUnitOk =
   symbolHuntInText("FindComponentByClass<UMyComp>") === "UMyComp" &&   // template arg is the hunted type
   symbolHuntInText("MaxWalkSpeed") === "MaxWalkSpeed" &&               // dominant CamelCase identifier
   !!symbolHuntInText("get_value|set_value") &&                        // snake_case alternation → truthy
   symbolHuntInText("TODO|FIXME") === null &&                          // ALL-CAPS keyword → no symbol shape
   symbolHuntInText("just some plain words") === null;                 // prose → null
+// altSymbols: a symbol ALTERNATION (any N) → the full identifier list, for a per-symbol find_references
+// steer; a keyword/content alternation → null (not symbols). General over `|`, not just two branches.
+const altUnitOk =
+  JSON.stringify(altSymbols("getFoo|setBar|resetBaz")) === JSON.stringify(["getFoo", "setBar", "resetBaz"]) && // N=3, general
+  JSON.stringify(altSymbols("get_value|set_value")) === JSON.stringify(["get_value", "set_value"]) &&           // snake, deduped
+  altSymbols("TODO|FIXME") === null && altSymbols("GET|POST|HEAD") === null &&                                  // keyword/ALL-CAPS → not symbols
+  altSymbols("FooBar") === null && altSymbols("a|b") === null;                                                  // no `|` / no CamelCase cue → null
 // integration: a code scan whose q is a `<Type>` hunt steers; a plain-word q does not.
 const stDir = path.join(os.tmpdir(), `vts-eval-textsteer-${process.pid}`);
 fs.mkdirSync(stDir, { recursive: true });
 fs.writeFileSync(path.join(stDir, "use.cpp"), "auto* w = Owner->Helper<UMyWidget>();\nint plainword = 1;\n");
+fs.writeFileSync(path.join(stDir, "two.cpp"), "auto a = MakeWidgetAlpha();\nauto b = MakeWidgetBeta();\n");
 const stHunt = await runTool("search_text", { q: "Helper<UMyWidget>", projectPath: stDir });
 const stPlain = await runTool("search_text", { q: "plainword", projectPath: stDir });
+const stAlt = await runTool("search_text", { q: "MakeWidgetAlpha|MakeWidgetBeta", projectPath: stDir }); // 2-symbol alternation
 const textSteerOk =
-  huntUnitOk &&
+  huntUnitOk && altUnitOk &&
   /find_references symbol="UMyWidget"/.test(stHunt.text) &&   // symbol hunt → steer with the right name
-  !/find_references/.test(stPlain.text);                       // plain word → no steer
+  !/find_references/.test(stPlain.text) &&                     // plain word → no steer
+  /ALTERNATION of 2 symbols/.test(stAlt.text) &&               // alternation → per-symbol steer
+  /find_references symbol="MakeWidgetAlpha"/.test(stAlt.text) && /find_references symbol="MakeWidgetBeta"/.test(stAlt.text); // BOTH listed
 try { fs.rmSync(stDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 // 59) edit-warn control-flow exclusion — a multi-line `if (…) {` / `for (…) {` block edited INSIDE a
