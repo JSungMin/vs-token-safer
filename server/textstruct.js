@@ -212,12 +212,12 @@ function parseHtml(lines) {
       if (depth <= 0 && openDecl == null) {
         if (mode === "script") {
           const nm = htmlJsDecl(ln);
-          if (nm) { heads.push({ level: 2, title: nm, line: i + 1 }); openDecl = heads.length - 1; }
+          if (nm) { heads.push({ level: 2, title: nm, line: i + 1, embedded: "script" }); openDecl = heads.length - 1; }
         } else {
           const at = /^\s*(@[\w-]+[^{]*?)\s*\{/.exec(ln);            // @media / @keyframes … (single- or multi-line)
           const sel = /^\s*([.#]?[^{}@/][^{}]*?)\s*\{/.exec(ln);    // a CSS rule opener (brace may not end the line)
-          if (at) { heads.push({ level: 2, title: at[1].trim().slice(0, 60), line: i + 1 }); openDecl = heads.length - 1; }
-          else if (sel) { heads.push({ level: 2, title: sel[1].trim().slice(0, 60), line: i + 1 }); openDecl = heads.length - 1; }
+          if (at) { heads.push({ level: 2, title: at[1].trim().slice(0, 60), line: i + 1, embedded: "style" }); openDecl = heads.length - 1; }
+          else if (sel) { heads.push({ level: 2, title: sel[1].trim().slice(0, 60), line: i + 1, embedded: "style" }); openDecl = heads.length - 1; }
         }
       }
       depth += htmlNetBraces(ln);
@@ -249,9 +249,44 @@ function parseHtml(lines) {
   return heads;
 }
 
+// CSS / SCSS / LESS: a stylesheet's "symbol tree" is its RULE hierarchy. Each top-level selector or at-rule
+// (`@media`, `@keyframes`, …) is a section; SCSS/LESS nesting falls out of brace depth (a rule inside a rule is
+// one level deeper). Same brace-depth scan + exact-endLine brace-match as the HTML `<style>` branch, reused
+// here for standalone stylesheets — so read_symbol returns ONE rule and replace_symbol_body splices exactly its
+// span (no whole-file Read + line-count). HONEST LIMIT (shared with HTML): heuristic brace depth, not a CSS
+// parse — a multi-line selector list (`.a,\n.b {`) is keyed by its first line, a minified file degrades to
+// fewer/coarser rules, and a `{`/`}` inside an unterminated string/comment the stripper misses can skew a span.
+function parseCss(lines) {
+  const heads = [];
+  let depth = 0;
+  const stack = []; // { idx, baseDepth } — a multi-line rule closes (exact endLine) when depth returns to base
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    const net = htmlNetBraces(ln);
+    // A line that OPENS a rule at the current nesting level: an at-rule (`@media … {`) or a selector (`.x {`,
+    // `#id {`, `&:hover {`, `div > p {`). The `{` may close on the same line (a complete one-line rule) or open
+    // a multi-line body. A bare declaration (`color: red;`) has no `{` so it never matches.
+    const at = /^\s*(@[\w-]+[^{]*?)\s*\{/.exec(ln);
+    const sel = /^\s*([.#&]?[^{}@/][^{}]*?)\s*\{/.exec(ln);
+    const title = at ? at[1].trim() : sel ? sel[1].trim() : null;
+    if (title) {
+      heads.push({ level: depth + 1, title: title.replace(/\s+/g, " ").slice(0, 60), line: i + 1 });
+      if (net > 0) stack.push({ idx: heads.length - 1, baseDepth: depth });
+      else heads[heads.length - 1].endLine = i + 1; // single-line complete rule
+    }
+    depth += net;
+    if (depth < 0) depth = 0;
+    while (stack.length && depth <= stack[stack.length - 1].baseDepth) {
+      heads[stack.pop().idx].endLine = i + 1; // body closed → exact span
+    }
+  }
+  return heads;
+}
+
 const PROVIDERS = [
   { exts: /\.(md|markdown|mdx|mkd|mdown)$/i, parse: parseMarkdown },
   { exts: /\.(html?|xhtml|htm)$/i, parse: parseHtml },
+  { exts: /\.(css|scss|less)$/i, parse: parseCss },
   { exts: /\.(adoc|asciidoc|asc)$/i, parse: parseAsciiDoc },
   { exts: /\.(rst|rest)$/i, parse: parseRst },
   { exts: /\.(toml|ini|cfg|conf|properties|editorconfig|gitconfig)$/i, parse: parseIni },
@@ -312,6 +347,28 @@ export function structOutline(file, text) {
   return computeSpans(p.parse(lines), lines.length);
 }
 
+// Async outline that lets a caller REFINE the HTML embedded-code sections (the `<script>`/`<style>` JS/CSS
+// decls) via an injected parser, while keeping this module pure — the parser (tree-sitter) is owned by core.js
+// and supplied as `embeddedDeclParser(text) → [{ level, title, line, endLine, embedded }] | null`. When it
+// returns decls, the heuristic embedded heads (tagged `embedded`) are dropped and replaced by the exact ones;
+// null / empty / throw → the heuristic outline stands. For any non-HTML file this is exactly structOutline.
+export async function structOutlineInjected(file, text, embeddedDeclParser) {
+  const p = providerFor(file);
+  if (!p) return [];
+  const lines = String(text).split(/\r?\n/);
+  let heads = p.parse(lines);
+  if (embeddedDeclParser && /\.(html?|xhtml)$/i.test(String(file))) {
+    try {
+      const injected = await embeddedDeclParser(text);
+      if (injected && injected.length)
+        heads = heads.filter((h) => !h.embedded).concat(injected).sort((a, b) => a.line - b.line);
+    } catch {
+      /* keep the heuristic heads */
+    }
+  }
+  return computeSpans(heads, lines.length);
+}
+
 // Back-compat alias (markdown was the first provider).
 export function mdOutline(text) {
   return computeSpans(parseMarkdown(String(text).split(/\r?\n/)), String(text).split(/\r?\n/).length);
@@ -320,8 +377,12 @@ export function mdOutline(text) {
 // Resolve ONE section by title for read/edit. Exact title (case-insensitive) beats a substring; a `line`
 // (1-based, inside the section) disambiguates repeats; a `level` filters by depth. → { level, title, line,
 // endLine } or null.
-export function resolveSection(file, text, title, { line = null, level = null } = {}) {
-  const outline = structOutline(file, text);
+export function resolveSection(file, text, title, opts = {}) {
+  return resolveInOutline(structOutline(file, text), title, opts);
+}
+// Resolve ONE section against an ALREADY-COMPUTED outline (so the injected/refined HTML outline is resolved
+// against, not recomputed). Same matching rules as resolveSection.
+export function resolveInOutline(outline, title, { line = null, level = null } = {}) {
   if (!outline.length || !title) return null;
   const want = String(title).trim().toLowerCase();
   const cands = outline.filter((s) => level == null || s.level === level);
