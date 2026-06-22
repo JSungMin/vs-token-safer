@@ -2,7 +2,7 @@
   "name": "vs-token-safer",
   "version": "0.33.8",
   "type": "module",
-  "description": "Force code search through an official language server's index (clangd for C/C++, Roslyn for C#/.NET, tsserver for JS/TS, pyright for Python) instead of grep, token-capped to a compact file:line list. Local-only. CLI + MCP. No IDE required.",
+  "description": "Sits between an LLM coding agent and your repository and answers where/what/how questions with a short file:line list instead of raw source. It uses a real language server when it can (clangd / Roslyn / tsserver / pyright), tree-sitter when there's no toolchain, and a no-embeddings fuzzy search built from the repo's own naming when you don't know the exact name. It section-edits Markdown and config files the same way. Local-only, nothing transmitted. CLI + MCP. No IDE required.",
   "keywords": [
     "clangd",
     "roslyn",
