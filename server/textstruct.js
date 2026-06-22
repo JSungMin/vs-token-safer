@@ -198,26 +198,34 @@ function htmlJsDecl(line) {
 }
 function parseHtml(lines) {
   const heads = [];
-  let mode = null; // "script" | "style"
-  let depth = 0;   // brace depth within the current embedded block
+  let mode = null;     // "script" | "style"
+  let depth = 0;       // brace depth within the current embedded block
+  let openDecl = null; // index in `heads` of the L2 decl currently being brace-matched (for an EXACT endLine)
   for (let i = 0; i < lines.length; i++) {
     const ln = lines[i];
     if (mode) {
       const close = mode === "script" ? /<\/script>/i : /<\/style>/i;
-      if (close.test(ln)) { mode = null; depth = 0; continue; }
-      if (depth <= 0) {
+      // Block ended with a decl still "open" = the braces never balanced (a miscount from a brace inside a
+      // regex / multi-line string the stripper missed, or genuinely malformed code). DON'T trust a wrong
+      // exact end — drop it so computeSpans falls back to the safe to-next-decl heuristic for that decl.
+      if (close.test(ln)) { openDecl = null; mode = null; depth = 0; continue; }
+      if (depth <= 0 && openDecl == null) {
         if (mode === "script") {
           const nm = htmlJsDecl(ln);
-          if (nm) heads.push({ level: 2, title: nm, line: i + 1 });
+          if (nm) { heads.push({ level: 2, title: nm, line: i + 1 }); openDecl = heads.length - 1; }
         } else {
           const at = /^\s*(@[\w-]+[^{]*?)\s*\{/.exec(ln);            // @media / @keyframes … (single- or multi-line)
           const sel = /^\s*([.#]?[^{}@/][^{}]*?)\s*\{/.exec(ln);    // a CSS rule opener (brace may not end the line)
-          if (at) heads.push({ level: 2, title: at[1].trim().slice(0, 60), line: i + 1 });
-          else if (sel) heads.push({ level: 2, title: sel[1].trim().slice(0, 60), line: i + 1 });
+          if (at) { heads.push({ level: 2, title: at[1].trim().slice(0, 60), line: i + 1 }); openDecl = heads.length - 1; }
+          else if (sel) { heads.push({ level: 2, title: sel[1].trim().slice(0, 60), line: i + 1 }); openDecl = heads.length - 1; }
         }
       }
       depth += htmlNetBraces(ln);
       if (depth < 0) depth = 0;
+      // Brace-match the open decl's EXACT end: when depth returns to 0 the declaration's body has closed, so
+      // its span is line..i (this is the automatic version of the manual brace-matching the model would do —
+      // gives replace_symbol_body an exact function/rule range, not a to-next-decl over-capture).
+      if (openDecl != null && depth <= 0) { heads[openDecl].endLine = i + 1; openDecl = null; }
       continue;
     }
     const h = /<h([1-6])\b[^>]*>(.*?)<\/h\1>/i.exec(ln);
@@ -271,11 +279,18 @@ export function extName(file) {
 function computeSpans(heads, totalLines) {
   const out = [];
   for (let i = 0; i < heads.length; i++) {
-    let end = totalLines;
-    for (let j = i + 1; j < heads.length; j++) {
-      if (heads[j].level <= heads[i].level) {
-        end = heads[j].line - 1;
-        break;
+    let end;
+    if (heads[i].endLine != null) {
+      // a provider gave an EXACT end (e.g. the HTML provider brace-matches a JS function / CSS rule) — honor
+      // it instead of the to-next-heading heuristic, so replace_symbol_body splices precisely that span.
+      end = heads[i].endLine;
+    } else {
+      end = totalLines;
+      for (let j = i + 1; j < heads.length; j++) {
+        if (heads[j].level <= heads[i].level) {
+          end = heads[j].line - 1;
+          break;
+        }
       }
     }
     out.push({
