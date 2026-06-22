@@ -44,8 +44,13 @@ Commands:
                  list DEAD / HELD / ENTRY / INCONCLUSIVE candidates + a safe deletion order. NEVER deletes —
                  each DEAD candidate still goes through safe-delete's own reference guard. clangd needs a WARM
                  (persisted) index — a cold/large tree under-reports callers, so it refuses unless warm; run
-                 'vts preindex' first (or --allowCold to inspect with every verdict forced to INCONCLUSIVE).
-                 [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --maxNodes N --allowCold]]
+                 'vts preindex' first, or --build to build-and-wait now (slow). Thorough by default: each DEAD
+                 candidate is reference-verified (full uses vs call sites) to catch non-call refs;
+                 --thorough=false for the fast call-graph-only mode. --allowCold inspects cold (all INCONCLUSIVE).
+                 --roots A,B (or a committable .vts-index/dce-roots.json) switches to REACHABILITY mode: liveness
+                 is computed forward from those entry points (Go-deadcode/RTA style), so a missing caller can't
+                 cause a false DEAD — only incomplete roots can (the reference verify catches that).
+                 [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --roots main,RunTests --maxNodes N --build --allowCold]]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
@@ -91,8 +96,8 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
   pyright     — Python (pyproject/setup.py/requirements or *.py; bundled pyright-langserver)
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
-const LIST_FLAGS = new Set(["seeds", "entry"]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold"]);
+const LIST_FLAGS = new Set(["seeds", "entry", "roots"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability"]);
 
 function parseArgs(argv) {
   const a = {};
