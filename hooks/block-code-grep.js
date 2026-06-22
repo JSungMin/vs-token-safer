@@ -145,6 +145,29 @@ function hasFileOpsContext(segments) {
   return segments.some((s) => FILE_OPS_EXECS.has(execOf(s)));
 }
 
+// A Bash command that EDITS a code file in place — `sed -i`, an `awk` inplace/redirect, or a python/perl
+// heredoc (or -c) that opens a code file for write. The edit-steer hook only matches the Edit/MultiEdit
+// TOOLS, so a model doing file surgery via Bash/python BYPASSED it entirely (live: an agent brace-matched +
+// spliced a large irregular-indent function in python — exactly what replace_symbol_body does natively). A
+// warn-only nudge toward the symbol-edit tools (edit by NAME via the parser range — no brace-matching, no
+// exact-match hazard, no whole-file read). FP-careful: a code-file path AND an explicit write/in-place
+// signal must BOTH be present, so a read-only `sed`/`awk` in a pipeline or a `python build.py` isn't nagged.
+const CODE_FILE_TOKEN = /[\w./\\-]+\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/i;
+function isBashCodeEdit(cmd) {
+  const s = String(cmd);
+  if (!CODE_FILE_TOKEN.test(s)) return false;                       // no code-file path → not a code edit
+  if (/\bsed\b[^|]*\s-i\b/.test(s)) return true;                    // sed -i (in-place)
+  if (/\bawk\b/.test(s) && (/-i\s+inplace/.test(s) || /\bawk\b[^|]*>/.test(s))) return true; // awk inplace / redirect to a file
+  if (/\b(?:python3?|perl)\b/.test(s) && /(<<|-c\b)/.test(s) &&     // python/perl heredoc or -c that WRITES
+      (/open\s*\([^)]*["'][aw]b?["']/.test(s) || /\.write(?:_text|_bytes)?\s*\(/.test(s) || /Path\s*\([^)]*\)\s*\.write/.test(s))) return true;
+  return false;
+}
+function bashEditNudge() {
+  return KO
+    ? "[vs-token-safer] Bash로 코드 파일을 수정 중이에요. 선언을 통째로 교체/추가하는 거면 이름으로 편집하세요 — replace_symbol_body symbol=<이름> / insert_symbol symbol=<앵커> (파서 range로 span 잡아 splice — brace-matching·exact-match·파일 통째 Read 불필요; preview 기본, apply=true 기록). 부분 in-place 수정이면 그대로 OK. 끄기: VTS_EDIT_WARN=0."
+    : "[vs-token-safer] Editing a code file via Bash. If you're replacing/adding a WHOLE declaration, edit by NAME — replace_symbol_body symbol=<name> / insert_symbol symbol=<anchor> (resolves the span via the parser range and splices — no brace-matching, no exact-match hazard, no whole-file read; preview by default, apply=true writes). A partial in-place tweak? Carry on. Disable: VTS_EDIT_WARN=0.";
+}
+
 // The executable key used for excludeCommands matching (git grep → "git").
 const excludeKeyOf = (segment) => execOf(segment);
 
@@ -706,6 +729,13 @@ process.stdin.on("end", () => {
   if (segments.some(isLogSearchSegment)) {
     emitWarn(LOG_NUDGE + setup);
     process.exit(0); // logs were never blocked — just point at the right tool
+  }
+  // Bash-based code-file EDIT (sed -i / awk inplace / python-write heredoc) — the model doing file surgery
+  // that bypasses the Edit-tool steer. Warn-only (never block — blocking mid-refactor would strand it),
+  // gated by the same VTS_EDIT_WARN switch as the Edit-tool steer.
+  if (editWarnOn() && isBashCodeEdit(cmd)) {
+    emitWarn(bashEditNudge() + setup);
+    process.exit(0);
   }
   process.exit(0);
 });

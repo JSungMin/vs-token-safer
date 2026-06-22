@@ -159,7 +159,9 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   file:line tree]; codebase-memory-mcp `trace_path` parity but on the OFFICIAL LSP [zero-transmission, real
   semantic edges] and folded INTO find_references — NOT a new tool [no fixed-surface cost, reuses the symbol→pos
   resolution]. `vts trace-calls` CLI = `references --direction callers`. Eval guard 70; live-verified on the vts
-  repo itself), `goto_definition` (a `kind` param folds in
+  repo itself. NAV STEER (`refNavSteer`): a LARGE flat ref result (> cap or ≥`VTS_REF_NAV_MIN` 25) with no
+  `detail=` appends a one-line nudge to the CHEAPER views of the same set — `detail=file`/`dir` (per-file
+  blast-radius summary) or `direction=callers` (transitive caller tree); `VTS_REF_NAV=0` hides), `goto_definition` (a `kind` param folds in
   `type_definition`/`implementation`/`declaration` via `lsp.js gotoByKind` → 3 more LSP nav requests, NO new
   MCP tools), `hover`, `document_symbols`, `diagnostics` (compiler/linter errors+warnings for a file as a
   token-capped `file:line:col severity [code]: msg` list, sorted error→hint + count summary — the compact
@@ -218,7 +220,13 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   `search_symbol` (≤`VTS_EDIT_STEER_MAX` 10) / `goto_definition` result (`VTS_EDIT_STEER=0` hides); (L1) the
   grep-block hook now also matches `Edit|MultiEdit` — a whole-decl replace/insert gets a MODEL-VISIBLE
   `emitWarn` with a READY symbol-edit call (`replace_symbol_body`/`insert_symbol`, `declSymbolName`
-  best-effort names it), `VTS_EDIT_WARN=0` off; (L2) OPT-IN escalation, `VTS_EDIT_BLOCK_AFTER` DEFAULT 0=OFF — set ≥1 and once the
+  best-effort names it), `VTS_EDIT_WARN=0` off; (L1-Bash) the hook ALSO catches a code-file edit done via
+  BASH — `sed -i`, an `awk` inplace/redirect, or a `python`/`perl` heredoc that opens a code file for write
+  (`isBashCodeEdit`: a code-ext path AND an explicit write/in-place signal must BOTH be present, so a
+  read-only `sed` pipe or a `python build.py` isn't nagged) — warn-only toward replace_symbol_body/
+  insert_symbol; the Edit-tool steer alone MISSED this (a python brace-match splice bypasses it — live-found
+  on a large irregular-indent function), and Bash file-surgery is a big slice of the low symbol-edit adoption;
+  (L2) OPT-IN escalation, `VTS_EDIT_BLOCK_AFTER` DEFAULT 0=OFF — set ≥1 and once the
   adoption ledger's ignore-`streak` hits it, a SAFE insert (`insertDecl && !replaceDecl` — `insert_symbol`
   can't corrupt) is BLOCKED ONCE (exit 2) then `resetStreak()` (fire-once, NOT a wall — a permanent block
   TRAPPED the agent: it fought the wall with Edit retries / code contortions instead of switching, and each
