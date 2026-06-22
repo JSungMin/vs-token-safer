@@ -65,9 +65,17 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   and the literal text scan; the answer to "tree-sitter/embedding rivals are popular because they need no
   toolchain"). `treesitter.js`: lazy wasm tree-sitter (`web-tree-sitter` runtime + `tree-sitter-wasms` prebuilt
   grammars, both optionalDependencies — NO native build, Windows-safe; resolved via the sdk.js-style createRequire
-  anchors). `tsFileSymbols(abs)` walks an AST → real DECLARATIONS (name+kind+line) for **36 languages**;
-  `tsSearchSymbols(root,q)` ranks exact-before-substring across a scope (time+file-box); `nameOf` drills C/C++
-  declarator chains. Charter-pure: tree-sitter is an OFFICIAL standard parser (GitHub/neovim), not a reimplement;
+  anchors). `tsFileSymbols(abs)` walks an AST → real DECLARATIONS (name+kind+line). 36 grammars ship; decl
+  extraction is configured for **~17 languages** — 10 via a hand-tuned node-type walk (C/C++/C#/JS/TS/Py/Go/
+  Java/Rust/Ruby; `nameOf` drills C/C++ declarator chains) + 7 via canonical **`server/tags/<grammar>.scm`**
+  TAGS QUERIES (php/swift/kotlin/scala/dart/zig/bash) — a grammar with neither degrades to a GENERIC walk, never
+  dark. The tags tier is the EXTENSION POINT: a `TAGS` sentinel config in `EXT_MAP` + a `.scm` with canonical
+  `@definition.<kind>`/`@name`/`@reference.*` captures = a new language with NO JS (`defTagsQueryFor`/
+  `extractTagDefs`/`extractTagRefs`, validated against the bundled grammar; query-construct failure → graceful
+  fallback). References too: TAGS langs read `@reference.*` from the same .scm, others use inline `REF_QUERIES`.
+  `tsSearchSymbols(root,q)` ranks exact-before-substring across a scope (time+file-box).
+  Charter-pure: tree-sitter is an OFFICIAL standard parser (GitHub/neovim), not a reimplement (the tags-query
+  DSL is its own official interface, glue = ours);
   output stays token-capped file:line; nothing transmitted; SYNTACTIC means it locates decls but does NOT resolve
   refs/overloads/types (the LSP's job — so it's BELOW the semantic tier). `symindex.js`: COMMITTABLE index
   (Codeix-inspired) — `vts index` writes a portable, git-committable, team-shareable `.vts-index/symbols.jsonl`

@@ -1781,7 +1781,7 @@ const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
 // literal usage grep. Skips gracefully if the optional tree-sitter deps aren't installed (CI without them).
-const { tsFileSymbols, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
+const { tsFileSymbols, tsFileReferences, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
 const { buildSymIndex, loadSymIndex, searchSymIndex, hasSymIndex } = await import("../server/symindex.js");
 let tsTierOk = true;
 if (tsAvailable()) {
@@ -1825,7 +1825,16 @@ if (tsAvailable()) {
   const goRefs = await runTool("find_references", { symbol: "ProcessPayment", projectPath: goDir });
   const noBackendRefOk = !goRefs.isError && /tree-sitter call reference/.test(goRefs.text) && /pay\.go:3/.test(goRefs.text) && !/pay\.go:2\b/.test(goRefs.text); // call site captured, decl line is not a ref
   try { fs.rmSync(goDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk;
+  // (f) TAGS-QUERY tier: canonical .scm extraction (server/tags/<grammar>.scm) for a language with NO
+  // hand-tuned node config — the file-driven mechanism that extends the syntactic rung past the flagship
+  // languages (php/swift/kotlin/scala/dart/zig/bash). Proves a tags.scm yields real defs + a call ref.
+  fs.writeFileSync(path.join(tsDir, "sub", "f.php"), "<?php\nfunction greetUser($n){ return $n; }\nclass AccountWidget { function build(){} }\ngreetUser(1);\n");
+  const phpSyms = await tsFileSymbols(path.join(tsDir, "sub", "f.php"));
+  const phpRefs = await tsFileReferences(path.join(tsDir, "sub", "f.php"), "greetUser");
+  const tagsTierOk = phpSyms.some((s) => s.name === "greetUser" && s.kind === "func")
+    && phpSyms.some((s) => s.name === "AccountWidget" && s.kind === "class")
+    && phpRefs.some((r) => r.line === 4) && !phpRefs.some((r) => r.line === 2); // call site, not the decl
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
