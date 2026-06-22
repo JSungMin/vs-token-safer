@@ -23,6 +23,7 @@ import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvai
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
+import { analyzeDeadCode, formatDce } from "./dce.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -2091,6 +2092,48 @@ export async function runTool(name, a = {}) {
       // right, climb to the exact rung for ground-truth — name the hit to find_references / goto_definition.
       const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — find_references symbol="${seed.s.name}" or goto_definition for ground-truth refs/def.]` : "";
       return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + climb + flow);
+    }
+    if (name === "vts_dce") {
+      // TOPOLOGICAL dead-code ANALYSIS (preview-only) — see dce.js. Seed symbol(s) → walk the call graph to a
+      // fixpoint → DEAD / HELD / ENTRY / INCONCLUSIVE candidates + a safe deletion order. It NEVER deletes;
+      // the real removal goes through safe_delete (whose find_references guard is the independent backstop, so
+      // a false DEAD here cannot delete live code). DCE proposes (call graph), safe_delete disposes (refs guard).
+      const root = resolveRoot(a);
+      let seeds = [];
+      if (Array.isArray(a.seeds)) seeds = a.seeds.slice();
+      else if (typeof a.seeds === "string" && a.seeds) seeds = a.seeds.split(",");
+      if (a.seed) seeds.push(String(a.seed));
+      seeds = [...new Set(seeds.map((s) => String(s).trim()).filter(Boolean))];
+      if (!seeds.length) return err('vts_dce needs seed symbol(s): seed="Foo" or seeds="Foo,Bar" (the declaration(s) you suspect are dead).');
+      const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
+      if (!backendName) return err(`dead-code analysis needs a language-server backend (clangd/roslyn/typescript/pyright) for ${root}; none resolved. It walks the call graph, which the syntactic/text tiers can't provide.`);
+      // Entry-point roots — never dead even with zero callers (they're invoked externally). A small built-in
+      // set + user-supplied `entry` patterns (comma list, matched as case-insensitive name substrings).
+      const userPats = (typeof a.entry === "string" && a.entry ? a.entry.split(",") : Array.isArray(a.entry) ? a.entry : [])
+        .map((s) => String(s).trim().toLowerCase()).filter(Boolean);
+      const DEFAULT_ENTRY = /^(main|winmain|_?start|run)$/i;
+      const isEntry = (nm) => DEFAULT_ENTRY.test(nm) || userPats.some((p) => nm.toLowerCase().includes(p));
+      // query(name): one call-hierarchy probe (both directions, 1 hop) → caller + callee NAMES with files.
+      const query = async (nm) => {
+        let cg;
+        try { cg = await buildCallGraph({ symbol: nm, direction: "both", depth: 1, projectPath: root, backend: backendName }); }
+        catch { return { resolved: false }; }
+        if (!cg || cg.error) return { resolved: false };
+        const focus = cg.nodes.find((n) => n.focus) || cg.nodes[0];
+        if (!focus) return { resolved: false };
+        const byId = new Map(cg.nodes.map((n) => [n.id, n]));
+        const callers = [], callees = [], seenC = new Set(), seenE = new Set();
+        for (const l of cg.links || []) {
+          if (l.target === focus.id && l.source !== focus.id) { const n = byId.get(l.source); if (n && !seenC.has(n.label)) { seenC.add(n.label); callers.push({ name: n.label, file: n.file }); } }
+          if (l.source === focus.id && l.target !== focus.id) { const n = byId.get(l.target); if (n && !seenE.has(n.label)) { seenE.add(n.label); callees.push({ name: n.label, file: n.file }); } }
+        }
+        return { resolved: true, callers, callees, cert: cg.truncated ? "PARTIAL" : "COMPLETE", file: focus.file, line: focus.line };
+      };
+      const envCap = envInt("VTS_DCE_MAX_NODES", 120);
+      const maxNodes = Math.min(Number(a.maxNodes) || envCap, envCap);
+      const result = await analyzeDeadCode(query, seeds, { maxNodes, isEntry });
+      const rows = result.dead.map((dd) => `${dd.file}:${dd.line}`);
+      return finishOut(rows, formatDce(result, { cap: MAX_RESULTS }));
     }
     if (name === "find_files") {
       if (!a.q) return err("find_files needs q (a filename substring or glob like *Manager.cpp).");
