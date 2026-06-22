@@ -23,7 +23,7 @@ import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvai
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
-import { analyzeDeadCode, formatDce, dceWarmGate } from "./dce.js";
+import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -2105,6 +2105,17 @@ export async function runTool(name, a = {}) {
       if (a.seed) seeds.push(String(a.seed));
       seeds = [...new Set(seeds.map((s) => String(s).trim()).filter(Boolean))];
       if (!seeds.length) return err('vts_dce needs seed symbol(s): seed="Foo" or seeds="Foo,Bar" (the declaration(s) you suspect are dead).');
+      // Reachability (mark-sweep) roots: explicit `roots` ∪ the committable .vts-index/dce-roots.json (team-
+      // curated, framework-agnostic — vts hard-codes NO framework markers). Reachability mode activates when
+      // any root is supplied or reachability=true is set; it computes liveness FORWARD from these entry points.
+      let rootsArg = [];
+      if (Array.isArray(a.roots)) rootsArg = a.roots.slice();
+      else if (typeof a.roots === "string" && a.roots) rootsArg = a.roots.split(",");
+      let fileRoots = [];
+      try { fileRoots = parseRootsFile(fs.readFileSync(path.join(root, ".vts-index", "dce-roots.json"), "utf8")); } catch { /* no committed roots */ }
+      const dceRoots = [...new Set([...rootsArg, ...fileRoots].map((s) => String(s).trim()).filter(Boolean))];
+      const reachabilityMode = a.reachability === true || a.reachability === "true" || dceRoots.length > 0;
+      if (reachabilityMode && !dceRoots.length) return err('reachability mode needs roots: roots="main,StartupModule,RunTests" (the entry points liveness is computed from), or a committable .vts-index/dce-roots.json. Without roots, omit reachability to use the default caller-cascade mode.');
       const backendName = preferBackend(a.backend, backendForPath(a.path), BACKEND) || pickBackend(root);
       if (!backendName) return err(`dead-code analysis needs a language-server backend (clangd/roslyn/typescript/pyright) for ${root}; none resolved. It walks the call graph, which the syntactic/text tiers can't provide.`);
       // WARM GATE — the safety preflight (cheap fs check, no clangd spawn). On a cold/large clangd tree the call
@@ -2113,9 +2124,17 @@ export async function runTool(name, a = {}) {
       // forced to INCONCLUSIVE. (search_symbol etc. still resolve fine cold — only the call-graph completeness
       // that DCE's correctness hinges on is unsafe.)
       const allowCold = a.allowCold === true || a.allowCold === "true";
-      const persisted = backendName === "clangd" ? hasPersistedIndex(root) : true;
+      const build = a.build === true || a.build === "true";
+      const thorough = !(a.thorough === false || a.thorough === "false"); // default ON — the slow, complete mode
+      let persisted = backendName === "clangd" ? hasPersistedIndex(root) : true;
+      // build=true: don't refuse a cold clangd tree — kick off the (slow) full index build and WAIT, then
+      // proceed with a COMPLETE call graph. getClient's afterInit blocks on the cold build, so once it returns
+      // the whole index is ready. If the build can't complete, we stay cold and fall through to the gate.
+      if (backendName === "clangd" && !persisted && build) {
+        try { const cb = await getClient(root, backendName); persisted = hasPersistedIndex(root) || cb.indexLoaded === true; } catch { /* build failed → stays cold */ }
+      }
       const gate = dceWarmGate(backendName, persisted, allowCold);
-      if (gate.refuse) return err(`dead-code analysis needs a built clangd index for ${root}, and none is persisted yet. On a cold or large (e.g. Unreal, ~26k TUs) tree the call graph UNDER-REPORTS callers — a symbol whose callers live in not-yet-indexed translation units would look DEAD when it is actually live, which is unsafe to feed safe_delete. Indexing the WHOLE tree is heavy, so SCOPE it to the module under analysis first, then build:\n  vts setup --scope Source --projectPath "${root}"   (narrow to the game/module subtree — not the whole monorepo)\n  vts preindex --projectPath "${root}"               (build the scoped index; or keep the MCP server running so clangd stays warm)\nThen re-run. Refusing rather than returning unsafe DEAD candidates. To inspect the structure anyway (every verdict forced to INCONCLUSIVE, nothing marked DEAD), pass allowCold=true.`);
+      if (gate.refuse) return err(`dead-code analysis needs a built clangd index for ${root}, and none is persisted yet. On a cold or large (e.g. Unreal, ~26k TUs) tree the call graph UNDER-REPORTS callers — a symbol whose callers live in not-yet-indexed translation units would look DEAD when it is actually live, which is unsafe to feed safe_delete. Indexing the WHOLE tree is heavy, so SCOPE it to the module under analysis first, then build:\n  vts setup --scope Source --projectPath "${root}"   (narrow to the game/module subtree — not the whole monorepo)\n  vts preindex --projectPath "${root}"               (build the scoped index; or keep the MCP server running so clangd stays warm)\nOr re-run with build=true to build-and-wait now (slow — minutes on a big tree). Refusing rather than returning unsafe DEAD candidates; allowCold=true inspects the structure with every verdict forced to INCONCLUSIVE.`);
       // Entry-point roots — never dead even with zero callers (they're invoked externally). A small built-in
       // set + user-supplied `entry` patterns (comma list, matched as case-insensitive name substrings).
       const userPats = (typeof a.entry === "string" && a.entry ? a.entry.split(",") : Array.isArray(a.entry) ? a.entry : [])
@@ -2132,17 +2151,53 @@ export async function runTool(name, a = {}) {
         if (!focus) return { resolved: false };
         const byId = new Map(cg.nodes.map((n) => [n.id, n]));
         const callers = [], callees = [], seenC = new Set(), seenE = new Set();
+        let callSites = 0;
         for (const l of cg.links || []) {
-          if (l.target === focus.id && l.source !== focus.id) { const n = byId.get(l.source); if (n && !seenC.has(n.label)) { seenC.add(n.label); callers.push({ name: n.label, file: n.file }); } }
+          if (l.target === focus.id && l.source !== focus.id) {
+            callSites += Math.max(1, Number(l.count) || 1); // sum of call-site ranges feeding this symbol — the thorough verify reconciles this against the full reference count
+            const n = byId.get(l.source); if (n && !seenC.has(n.label)) { seenC.add(n.label); callers.push({ name: n.label, file: n.file }); }
+          }
           if (l.source === focus.id && l.target !== focus.id) { const n = byId.get(l.target); if (n && !seenE.has(n.label)) { seenE.add(n.label); callees.push({ name: n.label, file: n.file }); } }
         }
         const cert = gate.forceInconclusive ? "INCONCLUSIVE" : cg.truncated ? "PARTIAL" : "COMPLETE";
-        return { resolved: true, callers, callees, cert, file: focus.file, line: focus.line };
+        return { resolved: true, callers, callees, callSites, cert, file: focus.file, line: focus.line };
       };
-      const envCap = envInt("VTS_DCE_MAX_NODES", 120);
-      const maxNodes = Math.min(Number(a.maxNodes) || envCap, envCap);
-      const result = await analyzeDeadCode(query, seeds, { maxNodes, isEntry });
-      if (gate.forceInconclusive) result.coldNote = `clangd index not warm for ${root} — running in allowCold mode: every verdict is forced to INCONCLUSIVE (nothing is marked DEAD). Build the index (vts preindex) for real DEAD/HELD verdicts.`;
+      // THOROUGH verify (default on, slow): count the FULL semantic reference set (textDocument/references —
+      // every use, not just calls) and reconcile against the call-site count. A symbol kept alive ONLY by a
+      // non-call reference (function value/callback, reflection, dynamic dispatch) has more references than call
+      // sites → it is NOT marked DEAD. This closes the call graph's blind spot in preview, without mutating.
+      // Skipped in allowCold (all INCONCLUSIVE already) and when thorough=false (fast call-graph-only mode).
+      const dceClient = (thorough && !gate.forceInconclusive) ? await getClient(root, backendName) : null;
+      const refCountFor = async (nm) => {
+        if (!dceClient) return null;
+        try {
+          const persistedNow = backendName === "clangd" && hasPersistedIndex(root);
+          const syms = await symbolReady(dceClient, nm, persistedNow, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
+          const pick = (syms || []).slice().sort((x, y) => (x.name === nm ? 0 : 1) - (y.name === nm ? 0 : 1))[0];
+          if (!pick) return null;
+          const p = fromUri(pick.location.uri), line = pick.location.range.start.line;
+          const ch = anchorOnName(p, line, nm, pick.location.range.start.character);
+          dceClient.didOpen(p, langIdForPath(p, backendName));
+          const locs = (await dceClient.references(p, line, ch, false)) || [];
+          return locs.length;
+        } catch { return null; }
+      };
+      const verify = dceClient ? (async (nm, r) => reconcileRefs(r.callSites || 0, await refCountFor(nm))) : null;
+      const envCap = envInt("VTS_DCE_MAX_NODES", reachabilityMode ? 2000 : 120);
+      const maxNodes = Math.min(Number(a.maxNodes) || envCap, reachabilityMode ? envInt("VTS_DCE_MAX_NODES", 2000) : envCap);
+      let result;
+      if (reachabilityMode) {
+        // MARK-SWEEP (Go-deadcode/RTA model): liveness is computed FORWARD from the named ENTRY POINTS, so a
+        // missing *caller* edge can't make a live symbol look dead — only an incomplete ROOT set can, and the
+        // reference verify catches that. Roots come from the `roots` arg ∪ the committable .vts-index/dce-roots
+        // .json (team-curated, framework-agnostic — vts hard-codes NO framework markers).
+        result = await reachabilityDeadCode(query, dceRoots, seeds, { maxNodes, isEntry, verify });
+        result.mode = `reachability (mark-sweep from ${dceRoots.length} root${dceRoots.length === 1 ? "" : "s"}${verify ? ", reference-verified" : ""})`;
+      } else {
+        result = await analyzeDeadCode(query, seeds, { maxNodes, isEntry, verify });
+        result.mode = gate.forceInconclusive ? "allowCold" : verify ? "thorough (reference-verified)" : "fast (call-graph only)";
+      }
+      if (gate.forceInconclusive) result.coldNote = `clangd index not warm for ${root} — running in allowCold mode: every verdict is forced to INCONCLUSIVE (nothing is marked DEAD). Build the index (build=true, or vts preindex) for real DEAD/HELD verdicts.`;
       const rows = result.dead.map((dd) => `${dd.file}:${dd.line}`);
       return finishOut(rows, formatDce(result, { cap: MAX_RESULTS }));
     }
