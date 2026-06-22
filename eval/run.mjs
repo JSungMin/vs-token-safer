@@ -2058,7 +2058,15 @@ const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && concept
 // deterministic with a mock graph. DEAD cascades to a fixpoint (a callee dies only once ALL its callers are
 // removed), HELD when a live caller remains, ENTRY roots are kept, INCONCLUSIVE on unresolved / non-COMPLETE
 // cert. It never deletes — the real removal is safe_delete's reference-guarded job (guard 52), not tested here.
-const { analyzeDeadCode: dceAnalyze, formatDce: dceFmt } = await import("../server/dce.js");
+const { analyzeDeadCode: dceAnalyze, formatDce: dceFmt, dceWarmGate: dceGate } = await import("../server/dce.js");
+// WARM GATE: clangd on a cold/large tree under-reports callers → a live symbol can look DEAD. So a cold clangd
+// (no persisted index) REFUSES by default; allowCold proceeds but forces every verdict to INCONCLUSIVE. Other
+// backends index on open → not gated. (The false-DEAD-on-cold-UE hardening; safe_delete is still the backstop.)
+const dceGateOk =
+  JSON.stringify(dceGate("clangd", false, false)) === JSON.stringify({ refuse: true, forceInconclusive: true }) &&   // cold clangd → refuse
+  JSON.stringify(dceGate("clangd", false, true)) === JSON.stringify({ refuse: false, forceInconclusive: true }) &&   // allowCold → proceed, all INCONCLUSIVE
+  JSON.stringify(dceGate("clangd", true, false)) === JSON.stringify({ refuse: false, forceInconclusive: false }) &&  // warm clangd → normal
+  JSON.stringify(dceGate("typescript", false, false)) === JSON.stringify({ refuse: false, forceInconclusive: false }); // non-clangd → not gated
 const dceG = {
   main: { callers: [], callees: ["a", "b"] },
   a: { callers: ["main"], callees: ["c"] },
@@ -2088,7 +2096,7 @@ const dr4ok = dr4.dead.length === 0 && dr4.inconclusive.some((x) => x.name === "
 const dr5 = await dceAnalyze(dceQuery, ["ghost"], {});        // unresolved → INCONCLUSIVE
 const dr5ok = dr5.dead.length === 0 && dr5.inconclusive.some((x) => x.name === "ghost");
 const dceFmtOk = /DEAD/.test(dceFmt(dr2)) && /safe_delete symbol="e"/.test(dceFmt(dr2)) && /CAVEAT/.test(dceFmt(dr2));
-const dceOk = dr1ok && dr2ok && dr3ok && dr4ok && dr5ok && dceFmtOk;
+const dceOk = dr1ok && dr2ok && dr3ok && dr4ok && dr5ok && dceFmtOk && dceGateOk;
 
 // 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
 // the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME

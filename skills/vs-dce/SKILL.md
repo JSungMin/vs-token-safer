@@ -10,13 +10,20 @@ symbol. The output is token-capped (names + `file:line`, no source bodies). Noth
 
 ## How to run
 
-Prefer the `vts_admin` MCP tool (server `vs-search`); fall back to the `vts` CLI:
+Prefer the `vts_admin` MCP tool (it runs in the warm server process; `vts` is often not on PATH in Bash). Fall
+back to the bundled CLI via node:
 
 ```
 vts_admin { "op": "dce", "params": { "seed": "Foo", "projectPath": "<root>" } }
 # several seeds:  "params": { "seeds": "Foo,Bar", "projectPath": "<root>", "entry": "main,registerPlugin" }
-# CLI:            vts dce --seed Foo --projectPath <root>
+# CLI fallback:   node "$CLAUDE_PLUGIN_ROOT/server/cli.js" dce --seed Foo --projectPath <root>
 ```
+
+**Warm-index requirement (C++/clangd).** The call graph must be warm. A cold or large clangd tree (e.g. an
+Unreal monorepo, ~26k TUs) under-reports callers, so a live symbol could look DEAD — `dce` therefore REFUSES on
+a cold clangd index. Scope + build first: `vts setup --scope Source` then `vts preindex` (or keep the MCP server
+warm), then re-run. `allowCold=true` inspects a cold index with every verdict forced to INCONCLUSIVE (never
+DEAD). TypeScript/Python/C# index on open and are not gated.
 
 Show the result verbatim. Buckets: **DEAD** (no live caller, in safe deletion order) · **HELD** (still called) ·
 **ENTRY** (kept root: main / public API / a name passed via `entry`) · **INCONCLUSIVE** (unresolved or the
