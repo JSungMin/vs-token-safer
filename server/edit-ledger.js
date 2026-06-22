@@ -11,6 +11,11 @@ import path from "node:path";
 
 const LEDGER = () => process.env.VTS_EDIT_LEDGER || path.join(os.homedir(), ".vs-token-safer", "edit-adoption.json");
 const freshMod = () => ({ warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } });
+// The recency window for the rolling adoption rate. The all-time ratio is dragged down forever by the long
+// historical tail of built-in edits, so it can never show whether the steer is working NOW — exactly the
+// signal the SessionStart re-inject loop needs. A bounded ring of the last N whole-decl edits ("s" = a vts
+// symbol-edit, "b" = a built-in edit we warned on) gives a metric that actually tracks current behavior.
+const RECENT_WINDOW = () => Math.max(5, parseInt(process.env.VTS_EDIT_RECENT_WINDOW || "50", 10) || 50);
 
 export function readEditLedger() {
   try {
@@ -19,8 +24,9 @@ export function readEditLedger() {
     o.mod.warn = o.mod.warn || { shown: 0, converted: 0 };
     o.mod.block = o.mod.block || { shown: 0, converted: 0 };
     if (!("pending" in o)) o.pending = null;
+    if (!Array.isArray(o.recent)) o.recent = [];
     return o;
-  } catch { return { builtin: 0, symbol: 0, streak: 0, mod: freshMod(), pending: null }; }
+  } catch { return { builtin: 0, symbol: 0, streak: 0, mod: freshMod(), pending: null, recent: [] }; }
 }
 function write(o) {
   try { const p = LEDGER(); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(o)); } catch { /* best-effort */ }
@@ -41,6 +47,11 @@ export function recordEditEvent(kind) {
     // A whole-decl edit went to the built-in tool: the previously-shown modality (still pending) did NOT
     // convert. Leave it shown-not-converted; recordSteerShown sets the next pending modality.
   }
+  // Append to the rolling recency window (kept bounded) so the live adoption rate tracks current behavior.
+  if (!Array.isArray(o.recent)) o.recent = [];
+  o.recent.push(kind === "symbol-edit" ? "s" : "b");
+  const w = RECENT_WINDOW();
+  if (o.recent.length > w) o.recent = o.recent.slice(-w);
   write(o);
   return o;
 }
@@ -56,6 +67,16 @@ export function recordSteerShown(modality) {
 export function adoptionPct(o = readEditLedger()) {
   const total = (o.builtin || 0) + (o.symbol || 0);
   return total ? Math.round((100 * (o.symbol || 0)) / total) : null;
+}
+// Rolling adoption % over the recency window — the live signal that tracks CURRENT behavior (the all-time
+// ratio is permanently dragged down by the historical tail and can't show whether the steer is converting
+// now). null when the window is empty. This is the safe lever the steer loop actually has: measure→re-inject
+// a metric that can move, rather than force adoption (a hard block traps the agent — documented).
+export function adoptionPctRecent(o = readEditLedger()) {
+  const r = Array.isArray(o.recent) ? o.recent : [];
+  if (!r.length) return null;
+  const s = r.filter((x) => x === "s").length;
+  return Math.round((100 * s) / r.length);
 }
 // Clear the ignore-streak without touching the counts — used after an L2 block FIRES so it backs off
 // (fire-once, not a persistent wall: a permanent block trapped the agent, which fought it with Edit retries

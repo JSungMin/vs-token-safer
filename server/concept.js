@@ -219,7 +219,17 @@ export function idf(model, t) {
 // inspectable expansion with NO drift (vs a self-learning click loop). A curated synonym is injected JUST
 // BELOW an exact match (0.95) and above any mined co-occurrence neighbour, so a hand-declared bridge
 // (auth → login/session) reliably beats the noisy mined ones without ever outranking a literal hit.
-export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2, neighborMax = 0.85, synonyms = null } = {}) {
+// `maxDfRatio` (0 = off) is the CROSS-CUTTING-GENERIC gate. A token present in a large fraction of all
+// declarations (a "manager", "data", "handle" that names nothing in particular) carries no discriminative
+// concept signal, yet it can still clear the PMI bar against a moderately-common neighbour — and its
+// expansion is exactly the documented noise on cross-cutting queries. So when the corpus is large enough to
+// make a frequency estimate meaningful (N >= 20), we refuse to expand THROUGH such a token and refuse to
+// expand INTO one. It is still scored directly (its idf is already low, so it barely moves the rank); we
+// only suppress the noisy second-order neighbours it would otherwise pull in. Deterministic and inspectable
+// — a frequency threshold mined from the repo itself, not a learned cutoff. (A maximally ubiquitous token,
+// df == N, can never reach assoc >= minAssoc anyway; this gate catches the MODERATELY common middle band the
+// PMI test alone lets through.)
+export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2, neighborMax = 0.85, synonyms = null, maxDfRatio = 0 } = {}) {
   const weights = new Map();
   for (const t of qTokens) weights.set(t, 1);
   if (synonyms) {
@@ -228,15 +238,20 @@ export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2
       if (ex) for (const s of ex) { const st = String(s).toLowerCase(); if ((weights.get(st) || 0) < 0.95) weights.set(st, 0.95); }
     }
   }
+  const dfCap = maxDfRatio > 0 && model.N >= 20 ? maxDfRatio * model.N : Infinity;
   for (const t of qTokens) {
+    // a ubiquitous query token's co-occurrence neighbours are cross-cutting noise — don't expand THROUGH it
+    // (it's still scored directly, damped by its own low idf).
+    if ((model.df.get(t) || 0) > dfCap) continue;
     const m = model.cooc.get(t);
     if (!m) continue;
     const scored = [];
     for (const [n, c] of m) {
       if (weights.has(n)) continue;
       // a real synonym RECURS — gate on raw co-occurrence count (kills single-shot noise from a shared comment)
-      // AND on a neighbour seen in at least two declarations, before the association (PMI) threshold.
-      if (c < minCooc || (model.df.get(n) || 0) < 2) continue;
+      // AND on a neighbour seen in at least two declarations, before the association (PMI) threshold; and never
+      // expand INTO a cross-cutting-generic neighbour (df above the ratio cap).
+      if (c < minCooc || (model.df.get(n) || 0) < 2 || (model.df.get(n) || 0) > dfCap) continue;
       const a = assoc(model, t, n);
       if (a >= minAssoc) scored.push([n, a]);
     }
