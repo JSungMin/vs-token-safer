@@ -1987,7 +1987,10 @@ export async function runTool(name, a = {}) {
           if (fr && !fr.isError) flow = `\n\nflow of the top seed (${ranked[0].s.name}) along the call graph:\n${fr.text}`;
         } catch { /* flow is best-effort */ }
       }
-      return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + flow);
+      // Precision-ladder navigation: concept_search is the FUZZY rung (related, not exact). Once a seed looks
+      // right, climb to the exact rung for ground-truth — name the hit to find_references / goto_definition.
+      const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — find_references symbol="${ranked[0].s.name}" or goto_definition for ground-truth refs/def.]` : "";
+      return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + climb + flow);
     }
     if (name === "find_files") {
       if (!a.q) return err("find_files needs q (a filename substring or glob like *Manager.cpp).");
@@ -2155,7 +2158,13 @@ export async function runTool(name, a = {}) {
         }
         const partialIdx = backendName === "typescript" || backendName === "pyright" || (backendName === "clangd" && !hasCompileDb(root));
         const emptyCert = completenessCert({ shown: 0, total: 0, truncated: partialIdx ? "index" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
-        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert);
+        // Precision-ladder navigation: search_symbol is the EXACT rung (it wants a name). A multi-word query
+        // that found no exact symbol reads like an INTENT, not a name — descend one rung to the fuzzy tier
+        // instead of leaving the agent at a dead end. VTS_CONCEPT_STEER=0 silences it.
+        const intentSteer = process.env.VTS_CONCEPT_STEER !== "0" && /\S\s+\S/.test(String(a.q).trim())
+          ? `\n[ladder: that reads like an INTENT, not a symbol name. Descend to the fuzzy rung — concept_search q="${a.q}" (repo-mined concept dictionary, no embeddings, still file:line).]`
+          : "";
+        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert + intentSteer);
       }
       // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
       const focusN = focusCap(String(a.q), syms, max);
