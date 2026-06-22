@@ -80,7 +80,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   refs/overloads/types (the LSP's job — so it's BELOW the semantic tier). `symindex.js`: COMMITTABLE index
   (Codeix-inspired) — `vts index` writes a portable, git-committable, team-shareable `.vts-index/symbols.jsonl`
   (one record/decl, paths RELATIVE) via tree-sitter; `searchSymIndex` answers `search_symbol` INSTANTLY on a
-  toolchain-less machine or before clangd's index builds (the 369s→51s cold problem). core.js `syntacticSymbols`
+  toolchain-less machine or before clangd's index builds (the 369s→51s cold problem). INCREMENTAL rebuild: the
+  header carries a per-file manifest `h:{rel:{mt,sz,h}}` (mtime+size fast-path → `warmset.fnv1a` content hash);
+  a rebuild REUSES unchanged files verbatim (no read, no re-parse — parsing is the cost), reads+hashes only
+  stat-changed files, re-parses only on a real content change, drops deleted files. So `vts index` after
+  editing a few files re-parses only those (returns `reused`/`reparsed`; shown in the op output). core.js `syntacticSymbols`
   (committed index → live tree-sitter, else literal scan) feeds the search_symbol no-backend / empty-result
   branches; `completenessCert({syntactic})` labels it. Op `vts_index{status}` (CLI `vts index [--status]`, folded
   into `vts_admin`). Eval guard 81; benchmark arm C (zero-setup: 150-file symbol search grep 4917 → tree-sitter

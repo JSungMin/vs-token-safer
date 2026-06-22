@@ -1834,7 +1834,22 @@ if (tsAvailable()) {
   const tagsTierOk = phpSyms.some((s) => s.name === "greetUser" && s.kind === "func")
     && phpSyms.some((s) => s.name === "AccountWidget" && s.kind === "class")
     && phpRefs.some((r) => r.line === 4) && !phpRefs.some((r) => r.line === 2); // call site, not the decl
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk;
+  // (g) INCREMENTAL .vts-index: a rebuild with no changes REUSES every file (no re-parse); after a single
+  // file's content changes, only that file re-parses (mtime+size fast-path → fnv1a content hash). The
+  // cold→warm rebuild win — `vts index` after editing a few files re-parses only those, not the whole tree.
+  const incrDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-incr`);
+  fs.mkdirSync(incrDir, { recursive: true });
+  fs.writeFileSync(path.join(incrDir, "x.ts"), "export function alphaFn(){ return 1; }\n");
+  fs.writeFileSync(path.join(incrDir, "y.ts"), "export class BetaClass {}\n");
+  const ib1 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 1 });
+  const ib2 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 2 }); // no change → all reused
+  fs.writeFileSync(path.join(incrDir, "y.ts"), "export class BetaClass {}\nexport function gammaFn(){ return 2; }\n"); // size changes → stat differs
+  const ib3 = await buildSymIndex(incrDir, { skipDir: (n) => SKIP.has(n), now: 3 }); // y.ts changed → 1 re-parse, x.ts reused
+  const incrHit = searchSymIndex(incrDir, "gammaFn");
+  const incrOk = ib1.reparsed === 2 && ib1.reused === 0 && ib2.reparsed === 0 && ib2.reused === 2
+    && ib3.reparsed === 1 && ib3.reused === 1 && !!(incrHit && incrHit.length);
+  try { fs.rmSync(incrDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");

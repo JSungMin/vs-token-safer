@@ -1905,7 +1905,9 @@ export async function runTool(name, a = {}) {
       const t0 = Date.now();
       const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now() });
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
-      return out(`Built committable symbol index${scopeNote}: ${r.symbols} symbol(s) over ${r.files} file(s) → ${r.path} in ${((Date.now() - t0) / 1000).toFixed(1)}s.${r.partial ? " (PARTIAL — time-boxed; raise VTS via a narrower scope or rerun.)" : ""}\n  Commit .vts-index/ to share it / speed teammates' cold starts. It answers search_symbol instantly until a language server indexes (which then supersedes it).`);
+      // Incremental note: how many files were reused (no re-parse) vs re-parsed this run — the cold→warm win.
+      const incrNote = r.reparsed != null && (r.reused || r.reparsed) ? ` [incremental: re-parsed ${r.reparsed}, reused ${r.reused} unchanged]` : "";
+      return out(`Built committable symbol index${scopeNote}: ${r.symbols} symbol(s) over ${r.files} file(s) → ${r.path} in ${((Date.now() - t0) / 1000).toFixed(1)}s${incrNote}.${r.partial ? " (PARTIAL — time-boxed; raise VTS via a narrower scope or rerun.)" : ""}\n  Commit .vts-index/ to share it / speed teammates' cold starts. It answers search_symbol instantly until a language server indexes (which then supersedes it).`);
     }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
