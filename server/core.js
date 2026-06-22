@@ -21,7 +21,7 @@ import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
-import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol } from "./concept.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers } from "./concept.js";
 import { isStructFile, structOutline, resolveSection, fmtOutline } from "./textstruct.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
@@ -1518,6 +1518,7 @@ async function conceptIndexFor(root) {
     const within = dirs.length ? (p) => inScope(p, dirs) : () => true;
     const stack = [root]; const t0 = Date.now(); let files = 0;
     const budget = envInt("VTS_CONCEPT_BUILD_MS", 15000), fileCap = envInt("VTS_CONCEPT_FILE_CAP", 6000);
+    const fileSpecs = new Map(), byBase = new Map(); // for the within-repo import graph
     while (stack.length) {
       if (Date.now() - t0 >= budget || files >= fileCap) break;
       const dir = stack.pop();
@@ -1529,17 +1530,28 @@ async function conceptIndexFor(root) {
         if (files >= fileCap) break;
         files++;
         let decls; try { decls = await tsFileDeclDocs(p); } catch { continue; }
+        const fp = p.replace(/\\/g, "/");
         // path tokens (the dir + filename, ext stripped) — a free locality signal shared by every decl in
         // the file: a symbol under auth/session.ts scores for "auth session" even if its name doesn't say so.
         const pt = tokenize(path.relative(root, p).replace(/\.[^./]+$/, ""));
+        // import-graph inputs: this file's basename + the basenames it imports (resolved against the corpus).
+        const base = e.name.replace(/\.[^.]+$/, "").toLowerCase();
+        if (!byBase.has(base)) byBase.set(base, []);
+        byBase.get(base).push(fp);
+        try { fileSpecs.set(fp, importSpecifiers(fs.readFileSync(p, "utf8"), e.name.split(".").pop())); } catch { /* ignore */ }
         for (const d of decls) {
           const nt = splitIdent(d.name), dt = tokenize(d.doc);
           units.push([...nt, ...dt]);
-          symbols.push({ name: d.name, kind: d.kind, file: p.replace(/\\/g, "/"), line: d.line, nt, dt, pt });
+          symbols.push({ name: d.name, kind: d.kind, file: fp, line: d.line, nt, dt, pt });
         }
       }
     }
-    return { model: buildConceptModel(units), symbols, files };
+    // Within-repo import graph: link a file to every corpus file whose basename it imports (both directions).
+    // A symbol in a file ADJACENT to a strongly-matching file is structurally related even with no shared token.
+    const neighbors = new Map();
+    const link = (a, b) => { if (a === b) return; if (!neighbors.has(a)) neighbors.set(a, new Set()); neighbors.get(a).add(b); };
+    for (const [f, specs] of fileSpecs) for (const s of specs) for (const g of byBase.get(s) || []) { link(f, g); link(g, f); }
+    return { model: buildConceptModel(units), symbols, files, neighbors };
   })();
   _conceptCache.set(root, build);
   const res = await build;
@@ -1960,7 +1972,7 @@ export async function runTool(name, a = {}) {
       const root = resolveRoot(a);
       if (!tsAvailable()) return err("concept_search needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms); they install with the plugin. Until then use search_text (multi-word, ranked by term coverage).");
       const max = Number(a.maxResults) || MAX_RESULTS;
-      const { model, symbols } = await conceptIndexFor(root);
+      const { model, symbols, neighbors } = await conceptIndexFor(root);
       if (!symbols.length) return finishOut([], `No indexable declarations under ${root} for concept search (no tree-sitter-supported files in scope?).` + EMPTY_HINT);
       const qToks = tokenize(String(a.q));
       if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words). Try concrete nouns: "auth session token".`);
@@ -1968,9 +1980,23 @@ export async function runTool(name, a = {}) {
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
-      const scoredAll = symbols
-        .map((s) => ({ s, sc: scoreSymbol(model, enriched, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
-        .filter((r) => r.sc > 0)
+      // Pass 1: base score (name + path + comment channels). Pass 2: import-graph proximity — a symbol whose
+      // FILE imports (or is imported by) a strongly-matching file is in the same subsystem, so lift it by a
+      // fraction of that neighbour file's best score. A deterministic structural signal from the code itself
+      // (NOT click-learning); it reranks the matched set, never invents a match. VTS_CONCEPT_IMPORT_FACTOR=0 off.
+      const based = symbols
+        .map((s) => ({ s, base: scoreSymbol(model, enriched, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
+        .filter((r) => r.base > 0);
+      const fileBase = new Map();
+      for (const r of based) if ((fileBase.get(r.s.file) || 0) < r.base) fileBase.set(r.s.file, r.base);
+      const nf = Number(process.env.VTS_CONCEPT_IMPORT_FACTOR ?? 0.3);
+      const scoredAll = based
+        .map((r) => {
+          let nb = 0;
+          const ns = nf && neighbors && neighbors.get(r.s.file);
+          if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (fb > nb) nb = fb; }
+          return { s: r.s, sc: r.base + nb * nf };
+        })
         .sort((a2, b2) => b2.sc - a2.sc);
       // Fuzzy results have a long low-relevance tail (a trivial local matching one weak expansion term). Cap
       // tighter than an exact search and drop anything below a fraction of the top score — fuzzy wants the
