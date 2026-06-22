@@ -107,8 +107,20 @@ function isSearchSegment(segment) {
   return SEARCH_EXECS.has(exec) || (exec === "find" && /\s-i?name(\s|$)/.test(segment.toLowerCase())) || isGitGrepSegment(segment);
 }
 
+// A `find` doing FILE-OPS (not a search-to-read): an action flag (-exec/-delete/-print0/…) or `-type d`
+// means it's enumerating files to act on (backup, copy, cleanup), NOT hunting code for the model to read.
+// find_files (token-capped) is the WRONG substitute there — a capped list would silently drop files from a
+// copy/delete. So such a find is never treated as a code search (live-found: a UE-depot backup `find -name
+// "*.cpp"` alongside cp/du got blocked, and rerouting it to a capped find_files would corrupt the backup).
+const FIND_ACTION_RE = /\s-(exec|execdir|delete|ok|okdir|print0|fprint0?|fls|fprintf)\b/;
+const FIND_TYPE_DIR_RE = /\s-type\s+d\b/;
+function isFindFileOps(segment) {
+  return execOf(segment) === "find" && (FIND_ACTION_RE.test(segment) || FIND_TYPE_DIR_RE.test(segment));
+}
+
 function isCodeSearchSegment(segment) {
   if (!isSearchSegment(segment)) return false;
+  if (isFindFileOps(segment)) return false; // a file-ops find is not a code search
   const s = segment.toLowerCase();
   const textTarget =
     TEXT_TARGET_RE.test(s) ||
@@ -118,6 +130,19 @@ function isCodeSearchSegment(segment) {
   const codeExt = CODE_EXT_RE.test(s);
   const codeDir = CODE_DIR_RE.test(s);
   return (codeExt || codeDir) && !textTarget;
+}
+
+// File-operation executables — when ANY segment of a command is one of these, a `find` segment in the same
+// command is PLUMBING for that op (the file list feeds cp/tar/xargs/…), not an interactive code search. So
+// such a find is excluded from the block even without its own -exec (`find … -name '*.cpp' | xargs cp`,
+// `du …; find … -name '*.uproject'` during a backup). grep segments are NOT relaxed (a literal grep inside a
+// pipeline is usually content filtering, and the user can still VTS_ENFORCE=0 a non-search session).
+const FILE_OPS_EXECS = new Set([
+  "cp", "mv", "rm", "tar", "rsync", "xargs", "zip", "unzip", "7z", "cpio", "install",
+  "ln", "du", "df", "chmod", "chown", "mkdir", "touch", "dd", "scp", "robocopy", "pax",
+]);
+function hasFileOpsContext(segments) {
+  return segments.some((s) => FILE_OPS_EXECS.has(execOf(s)));
 }
 
 // The executable key used for excludeCommands matching (git grep → "git").
@@ -628,7 +653,12 @@ process.stdin.on("end", () => {
 
   // #5 honor excludeCommands — drop excluded execs from enforcement.
   const excluded = excludedCommands();
-  const codeSegs = segments.filter((s) => isCodeSearchSegment(s) && !excluded.has(excludeKeyOf(s)));
+  // A `find` in a command that also runs a file-op (cp/tar/xargs/du/…) is plumbing for that op, not a code
+  // search — exclude it so a backup/copy script isn't blocked (and isn't rerouted to a capped find_files).
+  const fileOps = hasFileOpsContext(segments);
+  const codeSegs = segments.filter(
+    (s) => isCodeSearchSegment(s) && !excluded.has(excludeKeyOf(s)) && !(fileOps && execOf(s) === "find"),
+  );
 
   if (codeSegs.length) {
     // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build

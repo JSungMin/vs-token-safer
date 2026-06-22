@@ -283,6 +283,19 @@ const hAnchor = parseRw(runHook({ tool_name: "Bash", tool_input: { command: 'gre
 const hComplex = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn 'a b' src/Thing.cpp" } }); // space → unsafe → block
 const hPipe = runHook({ tool_name: "Bash", tool_input: { command: "grep -rn Foo src/Thing.cpp | head" } }); // pipeline → block
 const hExcluded = runHook({ tool_name: "Bash", tool_input: { command: "rg Foo src/Thing.cpp" } }, { VTS_EXCLUDE_COMMANDS: "rg" });
+// FILE-OPS find FP fix: a `find` doing file-ops (its own -exec/-type d, or alongside cp/du/tar/xargs in the
+// command) is NOT a code search → never blocked AND never rerouted to a (capped) find_files; a capped list
+// would silently drop files from a backup/copy. A genuine code-file find with no file-op still rewrites
+// (hFind above). Live-found: a UE-depot backup `find … -name "*.cpp"` next to du/cp got blocked.
+const hFindExec = runHook({ tool_name: "Bash", tool_input: { command: 'find src -name "*.cpp" -exec cp {} /bak/ \\;' } });
+const hFindDuMulti = runHook({ tool_name: "Bash", tool_input: { command: 'du -sh Plugins/SmoothSync 2>/dev/null; find Plugins/SmoothSync -name "*.cpp"' } });
+const hFindXargs = runHook({ tool_name: "Bash", tool_input: { command: 'find src -name "*.h" | xargs -I{} cp {} /bak' } });
+const hFindTypeD = runHook({ tool_name: "Bash", tool_input: { command: "find src/engine -type d" } });
+const findFileOpsOk =
+  hFindExec.status === 0 && !parseRw(hFindExec).updatedInput &&
+  hFindDuMulti.status === 0 && !parseRw(hFindDuMulti).updatedInput &&
+  hFindXargs.status === 0 && !parseRw(hFindXargs).updatedInput &&
+  hFindTypeD.status === 0 && !parseRw(hFindTypeD).updatedInput;
 const rewriteOk =
   /cli\.js" files --q "\*\.cpp"/.test(hFind.updatedInput?.command || "") &&
   /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep.updatedInput?.command || "") &&  // git grep identifier → symbol
@@ -291,7 +304,8 @@ const rewriteOk =
   /cli\.js" text --q "\^#include"/.test(hAnchor.updatedInput?.command || "") &&      // quoted anchor → text (regex)
   hComplex.status === 2 && /caught a code search/.test(hComplex.err) &&
   hPipe.status === 2 &&
-  hExcluded.status === 0 && !/caught a code search/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput); // excluded → untouched
+  hExcluded.status === 0 && !/caught a code search/.test(hExcluded.err) && !(parseRw(hExcluded).updatedInput) && // excluded → untouched
+  findFileOpsOk;
 
 // 18) search_text covers JS/TS/Py (scanTextUnder ext set, not just C/C++/C#), and search_symbol on a
 // typescript/pyright backend falls back to a literal text search when the index returns nothing (a
