@@ -1858,6 +1858,34 @@ if (tsAvailable()) {
 }
 const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
 
+// 84) STRUCTURE tier (textstruct.js): prose/config files (markdown/toml/yaml/rst/…) get a SECTION tree, and
+// the existing symbol tools (document_symbols / read_symbol / replace_symbol_body / …) edit a section BY NAME
+// — no backend, no whole-file Read. Multi-format outline + resolve (pure) + the tool integration on disk.
+const { structOutline: sOutline, resolveSection: sResolve, isStructFile: sIs } = await import("../server/textstruct.js");
+const mdTxt = "# Top\nintro\n\n## Alpha\na body line\n\n## Beta\nb body line\n";
+const mdO = sOutline("x.md", mdTxt);
+const tomlO = sOutline("c.toml", "[srv]\nport=1\n[cli]\nname=2\n");
+const outlineOk = mdO.length === 3 && mdO[1].title === "Alpha" && mdO[1].line === 4 && mdO[1].endLine === 6 &&
+  tomlO.length === 2 && tomlO[1].title === "cli" && sIs("x.md") && sIs("c.toml") && sIs("a.yaml") && !sIs("x.cpp");
+const sBeta = sResolve("x.md", mdTxt, "Beta");
+const resolveOk = !!sBeta && sBeta.line === 7 && sBeta.endLine >= 8;
+let structToolOk;
+{
+  const sdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-struct`);
+  fs.mkdirSync(sdir, { recursive: true });
+  const mdf = path.join(sdir, "doc.md");
+  fs.writeFileSync(mdf, mdTxt);
+  const sds = await runTool("document_symbols", { path: mdf, projectPath: sdir });
+  const srd = await runTool("read_symbol", { symbol: "Alpha", path: mdf, projectPath: sdir });
+  const srep = await runTool("replace_symbol_body", { symbol: "Beta", path: mdf, body: "## Beta\nNEW BODY", apply: true, projectPath: sdir });
+  const after = fs.readFileSync(mdf, "utf8");
+  structToolOk = !sds.isError && /Alpha/.test(sds.text) && /no language server/.test(sds.text) &&
+    !srd.isError && /a body line/.test(srd.text) && !/b body line/.test(srd.text) && // read returns ONLY the section
+    !srep.isError && /NEW BODY/.test(after) && after.includes("## Alpha") && !after.includes("b body line"); // edit swapped just Beta
+  try { fs.rmSync(sdir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+const structOk = outlineOk && resolveOk && structToolOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1945,6 +1973,7 @@ const rows = [
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
+  ["structure tier: section outline/read/edit for md/toml/yaml/… via the symbol tools (no backend, by heading)", structOk, "true", structOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
