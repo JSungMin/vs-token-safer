@@ -2025,7 +2025,8 @@ const htmlStructOk = sIs("page.html") &&
   htmlO.some((s) => s.title === ".box" && s.level === 2) &&      // CSS selector inside <style>
   htmlO.some((s) => s.title === "doThing" && s.level === 2) &&   // JS function inside <script>
   htmlO.some((s) => s.title === "helper" && s.level === 2) &&    // arrow-const inside <script>
-  !!htmlFn && htmlFn.line === 7;                                 // resolve a function by name → its span
+  !!htmlFn && htmlFn.line === 7 && htmlFn.endLine === 7 &&        // resolve a function → its EXACT brace-matched span (no over-capture)
+  htmlO.find((s) => s.title === "doThing").endLine === 7;        // single-line fn closes on its own line
 const structOk = outlineOk && resolveOk && structToolOk && htmlStructOk;
 
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
