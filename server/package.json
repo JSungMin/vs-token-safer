@@ -51,6 +51,7 @@
     "treesitter.js",
     "symindex.js",
     "concept.js",
+    "textstruct.js",
     "ensure-deps.mjs",
     "backends/"
   ],
