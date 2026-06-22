@@ -15,3 +15,8 @@ paper/
 # committable symbol index — a FEATURE for users (commit it in YOUR repo to share cold-start symbols);
 # in THIS repo it's a dev/dogfood build artifact, so don't track it here.
 .vts-index/
+
+# promo / marketing assets (LinkedIn cards, generated images) — kept local, never shipped or tracked.
+# Drop any future promo material under promo/ and it stays out of git.
+promo/
+linkedin-card.*
