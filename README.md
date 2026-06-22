@@ -10,10 +10,14 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/JSungMin/vs-token-safer/pulls)
 [![Stars](https://img.shields.io/github/stars/JSungMin/vs-token-safer?style=social)](https://github.com/JSungMin/vs-token-safer/stargazers)
 
-> **Search and edit a large Unreal C++ / Visual Studio / .NET codebase through an official language
-> server's index (clangd / Roslyn / tsserver / pyright) instead of `grep` — token-capped to `file:line`,
-> never source bodies.** Plus a sibling plugin that reads tens-of-MB editor logs without dumping them into
-> the conversation. Both cost ~99% fewer tokens than the naive approach. **Local-only. No IDE required.**
+> Your coding agent has a small context window and your repo is large. **vs-token-safer sits in between.**
+> Ask where something is, what calls it, or even "how does the auth flow work" when you don't know the name,
+> and it hands back a short `file:line` list instead of dumping source into the chat. It's exact when it can
+> be — a real language server (clangd / Roslyn / tsserver / pyright) — still useful when it can't (tree-sitter
+> with no setup, or a fuzzy search built from your repo's own naming, no embeddings), and it works the same way
+> on your Markdown and config: read or edit a section by its heading without opening the whole file. A sibling
+> plugin reads tens-of-MB editor logs without pasting them into the conversation. **Everything stays on your
+> machine.**
 
 <p align="center">
   <img src="docs/vts-demo.gif" alt="vs-token-safer demo — grep dumps source into context; the language-server index returns a token-capped file:line list" width="760">

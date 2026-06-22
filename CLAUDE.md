@@ -444,6 +444,29 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   Born from a live case: the model used `search_text "FindComponentByClass<UMyComp>"` → 8-of-49 time-boxed slice;
   `find_references` returned all 49 at 19×. Eval guard 58 (`symbolHuntInText` unit + integration).
 
+## Identity (what we are) — and the roadmap rule it implies
+vs-token-safer is not "a code search tool." It is the layer an agent talks to instead of reading the
+repository. You ask where something is, what calls it, or — when you don't know the name — what the auth flow
+is, and it hands back the smallest faithful answer (a capped `file:line` list, no bodies) instead of letting
+raw source flood the context window. It answers at the highest precision it can reach and tells you which rung
+it's on:
+- **exact** when the name is known and a toolchain is present → the language server (semantic, ground truth);
+- **syntactic** when there's no toolchain → tree-sitter (zero setup, 36 langs);
+- **fuzzy** when only the intent is known → a concept dictionary mined from the repo's own naming (no embeddings);
+- **section-level** when it's a doc/config, not code → Markdown/TOML/YAML/… addressed by heading.
+
+Three things make it ours, and none of them is a backend: (1) it covers the WHOLE repo an agent sees — code,
+the "I don't know the name" case, and documents; (2) every answer is capped to `file:line`, labeled with its
+precision (the completeness certificate), and the swap to it is ENFORCED, not merely offered; (3) it's all
+local — official engines, no embeddings, nothing transmitted. The name fits: "token-safer" is a safety device
+for the context budget, which is why it survives growing past C++/C# into fuzzy and docs (the naming umbrella).
+
+**Roadmap rule.** A feature earns its place one of two ways: it adds a rung to the precision ladder (a new way
+to answer when the agent knows more, or less, about what it's after), or it covers more of the repo (a new file
+type, a new kind of question). It must never break the three things that make the tool worth trusting — the
+answer stays capped, it stays honest about precision, and nothing leaves the machine. Judge every proposal by
+"which rung / which surface, and does it keep the discipline" before anything else.
+
 ## Next (see wiki "Status and TODO")
 P1 DONE: core rename, `index.js`/`sdk.js`/`ensure-deps.mjs`, grep-block `hooks/`, `skills/`+`commands/`,
 `.claude-plugin/*`+`.mcp.json`, README EN/KO + PRIVACY/SECURITY/CONTRIBUTING/CoC/BENCHMARK, `.github` CI,

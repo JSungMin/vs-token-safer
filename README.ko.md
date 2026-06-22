@@ -10,10 +10,13 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/JSungMin/vs-token-safer/pulls)
 [![Stars](https://img.shields.io/github/stars/JSungMin/vs-token-safer?style=social)](https://github.com/JSungMin/vs-token-safer/stargazers)
 
-> **거대한 Unreal C++ / Visual Studio / .NET 코드베이스를 `grep` 대신 공식 언어 서버 인덱스
-> (clangd / Roslyn / tsserver / pyright)로 검색하고 편집합니다.** 결과는 소스 본문 없이 `file:line`으로만,
-> 토큰 상한이 걸린 채 돌아옵니다. 여기에 수십 MB짜리 에디터 로그를 대화에 쏟아붓지 않고 읽어 주는 형제
-> 플러그인이 따라옵니다. 둘 다 단순 방식보다 토큰을 약 99% 덜 씁니다. **로컬 전용, IDE 불필요.**
+> 코딩 에이전트의 컨텍스트 창은 작고 저장소는 큽니다. **vs-token-safer는 그 사이에 앉습니다.**
+> 무엇이 어디 있는지, 무엇이 그걸 호출하는지, 이름을 모를 땐 "auth 흐름이 어떻게 되나"까지 물어보면,
+> 소스를 채팅에 쏟아붓는 대신 짧은 `file:line` 목록을 돌려줍니다. 될 땐 정확하게 — 진짜 언어 서버
+> (clangd / Roslyn / tsserver / pyright)로 — 안 될 땐 그래도 쓸모 있게(설치 없는 tree-sitter, 또는 저장소
+> 자체의 작명으로 만든 fuzzy 검색, 임베딩 없음). Markdown·설정 파일도 같은 방식으로, 헤딩 이름만으로
+> 섹션을 읽거나 고칩니다. 수십 MB 에디터 로그를 대화에 붙여넣지 않고 읽어 주는 형제 플러그인도 함께 옵니다.
+> **모든 것은 당신 기기 안에 머뭅니다.**
 
 <p align="center">
   <img src="docs/vts-demo.gif" alt="vs-token-safer 데모 — grep은 소스를 컨텍스트에 쏟아붓지만, 언어 서버 인덱스는 토큰 상한이 걸린 file:line만 돌려줍니다" width="760">
