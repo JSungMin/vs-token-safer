@@ -463,12 +463,17 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   TEXT query that is really a symbol/class usage hunt — a `Foo<Bar>` template arg (the `<Type>` wins), a `::`
   scope, or the longest CamelCase/snake identifier; null for `TODO|FIXME`/prose. `textSymbolSteer(q,truncated)`
   appends a one-line nudge to `find_references symbol="X"` / `search_symbol q="X"` (semantic, COMPLETE, no 4s
-  time-box, ~10–20× smaller) — fires only on a CODE scan (`!docs && !path`) when the result was TRUNCATED or the
-  query carries a `<>`/`::` cue (low-noise: a bare-CamelCase text search that completed isn't nagged). The
-  EMPTY-but-timed-out branch also steers AND flags that a `0` from a truncated walk is NOT conclusive (a real 0
-  and an unreached-in-time 0 are indistinguishable — `find_references` resolves which). `VTS_TEXT_STEER=0` off.
-  Born from a live case: the model used `search_text "FindComponentByClass<UMyComp>"` → 8-of-49 time-boxed slice;
-  `find_references` returned all 49 at 19×. Eval guard 58 (`symbolHuntInText` unit + integration).
+  time-box, ~10–20× smaller). The steer now LEADS the output (top, not trailing under 60 matches — the model
+  acts on the first lines it reads) and fires on a TRUNCATED scan, a `<>`/`::` cue, OR a BARE identifier (the
+  whole query is one symbol — the case the model keeps reaching for instead of the semantic tool). ALTERNATION
+  (`altSymbols(q)`, GENERAL over `|`, any N): `A|B|C` of CamelCase/snake identifiers → steers to `find_references`
+  PER symbol (find_references can't take a regex; search_text matched the whole alternation as full line text) —
+  lists each (cap 6 shown + "+N more"); a keyword/ALL-CAPS alternation (`TODO|FIXME`, `GET|POST`) is NOT a symbol
+  list → spared. The EMPTY-but-timed-out branch also steers AND flags that a `0` from a truncated walk is NOT
+  conclusive. `VTS_TEXT_STEER=0` off. Born live: `search_text "FindComponentByClass<UMyComp>"` → 8-of-49 slice,
+  `find_references` all 49 at 19×; and a UE `search_text "GetSyncModeComponent|GetSmoothSyncComponent"` that a
+  single search_symbol can't answer (regex) → per-symbol find_references. Eval guard 58 (`symbolHuntInText` +
+  `altSymbols` unit + integration).
 
 ## Identity (what we are) — and the roadmap rule it implies
 vs-token-safer is not "a code search tool." It is the layer an agent talks to instead of reading the
