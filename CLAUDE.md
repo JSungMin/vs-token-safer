@@ -126,17 +126,30 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   whole file), `replace_symbol_body`/`insert_symbol`/`safe_delete` → edit a section BY ITS HEADING/KEY (no
   whole-file Read + line-count). EXTENSIBLE provider registry (`PROVIDERS`: ext→parser): markdown/mdx (ATX+
   setext, fence-aware), asciidoc, reStructuredText, toml/ini (`[section]`), yaml (indent-nested keys), json
-  (pretty-printed keys), txt (heuristic), **html/htm/xhtml** (`parseHtml`: `<h1-6>` + `<style>`/`<script>` blocks +
-  id-landmarks at L1, and WITHIN style/script the top-level CSS selectors / JS FUNCTIONS at L2 via a brace-depth
-  scan `htmlNetBraces`/`htmlJsDecl` — so read/replace_symbol target a rule or function BY NAME; dogfooded on
-  dashboard.html, a function read at ~124×. Heuristic not a sub-language parse [degrades to block on minified];
-  tree-sitter INJECTION for exact JS/CSS ranges is the deferred robustness upgrade). Each provider emits `[{level,title,line}]`; shared `computeSpans` sets
-  the section span (to the next heading of level ≤ this), `resolveSection` (exact-then-substring, `line` disambig)
-  + `fmtOutline` are format-agnostic — add a format = add one parser. core.js: `STRUCT_TOOLS` + `structTool`
-  (synthesises an LSP-shaped range from a section span → reuses `symbolEditResult`/`applyEditsToText`); an
-  `isStructFile(a.path)` SHORT-CIRCUIT runs BEFORE backend resolution (a .md/.toml has no language server). NO
-  new MCP tools (the 5 existing symbol tools just work on text files — zero tool-budget cost). Zero-dep, PURE,
-  local, token-capped. Eval guard 84. `vts symbols/read-symbol/replace-symbol/insert/safe-delete --path X.md`.
+  (pretty-printed keys), txt (heuristic), **css/scss/less** (`parseCss`: top-level selectors / at-rules
+  (`@media`/`@keyframes`) at L1, SCSS-nested rules deeper, each with an EXACT brace-matched span via the shared
+  `htmlNetBraces` scan — a stylesheet's "symbol tree" is its RULE hierarchy, so read/replace_symbol target ONE
+  rule), **html/htm/xhtml** (`parseHtml`: `<h1-6>` + `<style>`/`<script>` blocks + id-landmarks at L1, and WITHIN
+  style/script the top-level CSS selectors / JS FUNCTIONS at L2 via a brace-depth scan `htmlNetBraces`/
+  `htmlJsDecl` — so read/replace_symbol target a rule or function BY NAME; dogfooded on dashboard.html, a
+  function read at ~153×). The heuristic embedded JS/CSS decls are tagged `embedded` so they can be REPLACED by
+  exact tree-sitter ranges: **tree-sitter INJECTION is DONE** (was the deferred robustness upgrade) — `treesitter.js
+  htmlEmbeddedDecls(text)` re-parses each `<script>`/`<style>` with the real javascript/css grammar for EXACT
+  decl ranges, recovering decls the heuristic misses (a MINIFIED one-line script, two CSS rules on one line, and
+  — crucially — a function inside a top-level **IIFE** `(function(){…})()`, the dashboard.html pattern: the
+  heuristic's depth-0 brace scan misses it, the injection's `maxBlockDepth≤1` walk recovers it). textstruct stays
+  PURE (no fs/async/tree-sitter) — `structOutlineInjected(file,text,injector)` takes the parser from core.js
+  (which owns tree-sitter) and falls back to the heuristic when it returns null (deps absent); `resolveInOutline`
+  resolves against the already-computed (refined) outline. Each provider emits `[{level,title,line[,endLine]}]`;
+  shared `computeSpans` sets the section span (a provider `endLine` — brace-matched — wins over the to-next-heading
+  heuristic), `resolveSection`/`resolveInOutline` (exact-then-substring, `line` disambig) + `fmtOutline` are
+  format-agnostic — add a format = add one parser. core.js: `STRUCT_TOOLS` + `structTool` (synthesises an
+  LSP-shaped range from a section span → reuses `symbolEditResult`/`applyEditsToText`; computes the injected
+  outline ONCE, then resolves against it); an `isStructFile(a.path)` SHORT-CIRCUIT runs BEFORE backend resolution
+  (a .md/.toml/.css has no language server); document_symbols + read_symbol carry a `completenessCert({section})`
+  (the SECTION rung). NO new MCP tools (the 5 existing symbol tools just work on text files — zero tool-budget
+  cost). Zero-dep core, PURE, local, token-capped. Eval guards 84 (CSS provider) + 81 (HTML injection, under the
+  tree-sitter block). `vts symbols/read-symbol/replace-symbol/insert/safe-delete --path X.{md,css,html}`.
 - `server/backends/index.js` — clangd/roslyn/typescript/pyright spawn configs + `pickBackend(root)`
   (detect order: compile_commands→clangd > .sln/.csproj→roslyn > tsconfig/package.json→typescript >
   pyproject/*.py→pyright; strongest build-artifact first). MIXED-REPO FIX: a query that TARGETS a file uses
@@ -500,7 +513,15 @@ it's on:
 - **exact** when the name is known and a toolchain is present → the language server (semantic, ground truth);
 - **syntactic** when there's no toolchain → tree-sitter (zero setup, 36 langs);
 - **fuzzy** when only the intent is known → a concept dictionary mined from the repo's own naming (no embeddings);
-- **section-level** when it's a doc/config, not code → Markdown/TOML/YAML/… addressed by heading.
+- **section-level** when it's a doc/config, not code → Markdown/TOML/YAML/CSS/HTML/… addressed by heading/selector.
+
+UNIFIED PRECISION LABEL: every answer carries ONE `completenessCert(...)` line that names the RUNG it came from —
+`EXACT rung` (semantic), `SYNTACTIC rung`, `FUZZY rung`, `SECTION rung` — plus the coverage state a capped/
+timed-out answer of any rung falls through to (`PARTIAL` / `INCONCLUSIVE`). So the model always sees exactly which
+rung answered, never a fuzzy result mislabeled syntactic. The `INCONCLUSIVE` advisory is ACTIONABLE — it names the
+auto-scope commands (`vts setup --scope <module>`, then `vts preindex`) because a bounded walk on a big tree is
+exactly the case a scoped index fixes. `core.js completenessCert({semantic|syntactic|fuzzy|section|scoped})`; the
+viz tiers/certs legend mirrors the 4 rungs + 2 coverage states (`server/viz.js`). `VTS_CERT=0` hides it. Eval guard 76.
 
 Three things make it ours, and none of them is a backend: (1) it covers the WHOLE repo an agent sees — code,
 the "I don't know the name" case, and documents; (2) every answer is capped to `file:line`, labeled with its
