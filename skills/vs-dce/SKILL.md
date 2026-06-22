@@ -29,6 +29,13 @@ Show the result verbatim. Buckets: **DEAD** (no live caller, in safe deletion or
 **ENTRY** (kept root: main / public API / a name passed via `entry`) · **INCONCLUSIVE** (unresolved or the
 caller set couldn't be proven complete).
 
+**Two modes.** Default = caller-cascade (start from seeds, follow callers). Pass `roots` to switch to
+**reachability / mark-sweep** (the Go-`deadcode`/RTA model): liveness is computed FORWARD from the named entry
+points, so a *missing caller* can't cause a false DEAD — only an incomplete root set can (the reference verify
+catches it). Roots are **framework-agnostic** — name them (`roots="main,RunTests"`) or commit a team-curated
+`.vts-index/dce-roots.json`. vts hard-codes NO framework markers (no UFUNCTION / `@Route` / `[Test]`); you
+declare your own entry points, the same charter-pure mechanism as the committable concept-synonyms file.
+
 ## The safety model — it NEVER deletes
 
 `dce` only PROPOSES candidates from the call graph. The actual removal goes through `safe_delete`
