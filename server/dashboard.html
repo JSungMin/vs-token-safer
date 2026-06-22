@@ -139,6 +139,57 @@ h1{font-size:18px;font-weight:600;font-family:var(--sans);letter-spacing:-.01em}
 .repo-legend-row{display:flex;align-items:center;gap:5px;justify-content:flex-end}
 .repo-legend-swatch{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 
+/* ── Repo filter bar — always-visible toggle strip above canvas ── */
+.repo-filter-bar{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  padding:5px 8px;
+  background:rgba(10,10,10,0.72);
+  border:1px solid var(--border);
+  border-radius:6px;
+  margin-bottom:6px;
+  min-height:28px;
+}
+.repo-filter-bar.hidden{display:none}
+.repo-filter-label{
+  font-family:var(--mono);font-size:10px;color:var(--faint);
+  white-space:nowrap;flex-shrink:0;margin-right:2px;
+}
+.repo-filter-checks{
+  display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex:1;min-width:0;
+}
+.repo-filter-item{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 7px 2px 5px;
+  border:1px solid var(--border);
+  border-radius:3px;
+  cursor:pointer;
+  font-family:var(--mono);font-size:10px;color:var(--dim);
+  background:transparent;
+  transition:background .1s,border-color .1s,color .1s,opacity .1s;
+  user-select:none;
+  white-space:nowrap;
+}
+.repo-filter-item:hover{background:var(--inner);color:var(--ink)}
+.repo-filter-item.checked{border-color:transparent;color:var(--ink);background:rgba(255,255,255,0.06);}
+.repo-filter-item.unchecked{opacity:0.42;border-style:dashed;}
+.repo-filter-dot{
+  width:6px;height:6px;border-radius:50%;flex-shrink:0;
+}
+.repo-filter-count{
+  font-size:9px;color:var(--faint);margin-left:1px;
+}
+.repo-filter-actions{
+  display:flex;gap:3px;flex-shrink:0;margin-left:2px;
+}
+.repo-filter-act{
+  font-family:var(--mono);font-size:9px;
+  background:transparent;border:1px solid var(--border);
+  border-radius:3px;color:var(--faint);
+  padding:1px 6px;cursor:pointer;line-height:1.5;
+  transition:background .1s,color .1s;white-space:nowrap;
+}
+.repo-filter-act:hover{background:var(--inner);color:var(--ink)}
+
 /* Drill-down breadcrumb */
 .graph-drill{position:absolute;top:8px;left:10px;font-family:var(--mono);font-size:10px;color:var(--faint);pointer-events:none;z-index:10;line-height:1.6;text-shadow:0 1px 3px #000}
 .graph-drill-back{pointer-events:auto;cursor:pointer;color:var(--accent-light);text-decoration:none;background:none;border:none;font-family:inherit;font-size:inherit;padding:0}
@@ -467,6 +518,16 @@ body.graph-focused .graph-kb-hint{display:block}
 
         <!-- Focus / expand toggle -->
         <button class="graph-focus-btn" id="graphFocusBtn" aria-label="Expand graph to full screen" title="Expand graph (Esc to close)">⛶</button>
+      </div>
+
+      <!-- Repo filter bar (always visible; populated by JS once /data loads) -->
+      <div class="repo-filter-bar hidden" id="repoFilterBar" role="group" aria-label="Repository filter">
+        <span class="repo-filter-label">repos</span>
+        <div class="repo-filter-checks" id="repoFilterChecks"></div>
+        <div class="repo-filter-actions">
+          <button class="repo-filter-act" id="repoFilterAll" title="Show all repos">All</button>
+          <button class="repo-filter-act" id="repoFilterNone" title="Hide all repos">None</button>
+        </div>
       </div>
 
       <!-- Graph viewport -->
@@ -2336,6 +2397,129 @@ document.addEventListener("keydown",e=>{
   }
 });
 
+/* ── Repo filter ──────────────────────────────────────────────────────── */
+// Full graph data preserved; filter derives visibleNodes/visibleEdges views.
+// Pipeline: filter by checkedRepos → loadGraph(filteredGraph) → color mode applied
+// inside loadGraph over the filtered set → group/heat/metrics all reflect filter.
+
+const repoFilterBarEl   = document.getElementById("repoFilterBar");
+const repoFilterChecksEl= document.getElementById("repoFilterChecks");
+const repoFilterAllBtn  = document.getElementById("repoFilterAll");
+const repoFilterNoneBtn = document.getElementById("repoFilterNone");
+
+// State: full raw include graph + checked repo set
+let _rawIncludeGraph = null;  // {nodes,links} from /data — never mutated
+let checkedRepos     = new Set(); // repos currently ON
+
+// Stable per-repo hue assignment (mirrors buildRepoColors logic: golden angle)
+// Returns a CSS hex string for the repo label (using avg weight=0 → lightness 0.44).
+function repoHue(repoIdx){
+  const GOLDEN=137.508;
+  const hue=(repoIdx*GOLDEN)%360;
+  const c=new THREE.Color();
+  c.setHSL(hue/360,0.70,0.44);
+  return "#"+c.getHexString();
+}
+
+// Build sorted list of distinct repos from nodes + their counts and stable colors.
+function collectRepos(nodes){
+  const map=new Map(); // repo → {count, idx}
+  nodes.forEach(n=>{
+    const r=n.repo||"external";
+    if(!map.has(r)) map.set(r,{count:0,idx:map.size});
+    map.get(r).count++;
+  });
+  // Sort by count desc, keep stable color index so hues don't jump on re-render
+  return [...map.entries()]
+    .sort((a,b)=>b[1].count-a[1].count)
+    .map(([repo,{count,idx}])=>({repo,count,idx,color:repoHue(idx)}));
+}
+
+// Derive a filtered graph view from _rawIncludeGraph + checkedRepos.
+// Nodes in unchecked repos are removed; edges with either endpoint removed are removed.
+function filteredIncludeGraph(){
+  if(!_rawIncludeGraph) return {nodes:[],links:[]};
+  const nodes=_rawIncludeGraph.nodes.filter(n=>checkedRepos.has(n.repo||"external"));
+  const keepIds=new Set(nodes.map(n=>n.id));
+  const links=(_rawIncludeGraph.links||[]).filter(l=>keepIds.has(l.source)&&keepIds.has(l.target));
+  return{nodes,links};
+}
+
+// Render the filter pill strip. Called once after /data loads and again if
+// the include graph changes (e.g. mode switch back to include).
+function renderRepoFilter(nodes){
+  if(!nodes||!nodes.length){repoFilterBarEl.classList.add("hidden");return;}
+  const repos=collectRepos(nodes);
+  if(repos.length<=1){
+    // Single repo — filter is meaningless; hide the bar
+    repoFilterBarEl.classList.add("hidden");
+    return;
+  }
+  repoFilterBarEl.classList.remove("hidden");
+
+  // Initialize checkedRepos on first render (all on); preserve existing state on re-render.
+  if(checkedRepos.size===0){
+    repos.forEach(({repo})=>checkedRepos.add(repo));
+  }
+
+  repoFilterChecksEl.innerHTML="";
+  repos.forEach(({repo,count,color})=>{
+    const isChecked=checkedRepos.has(repo);
+    const item=document.createElement("button");
+    item.className="repo-filter-item "+(isChecked?"checked":"unchecked");
+    item.dataset.repo=repo;
+    item.setAttribute("aria-pressed",String(isChecked));
+    item.setAttribute("title",`${repo} · ${count} node${count!==1?"s":""} · click to toggle`);
+    item.innerHTML=
+      `<span class="repo-filter-dot" style="background:${color}"></span>`+
+      `<span>${repo}</span>`+
+      `<span class="repo-filter-count">${count}</span>`;
+    item.addEventListener("click",()=>toggleRepo(repo));
+    repoFilterChecksEl.appendChild(item);
+  });
+}
+
+function toggleRepo(repo){
+  if(checkedRepos.has(repo)) checkedRepos.delete(repo);
+  else checkedRepos.add(repo);
+  applyRepoFilter();
+}
+
+function setAllRepos(on){
+  if(!_rawIncludeGraph) return;
+  const repos=collectRepos(_rawIncludeGraph.nodes);
+  repos.forEach(({repo})=>{ if(on) checkedRepos.add(repo); else checkedRepos.delete(repo); });
+  applyRepoFilter();
+}
+
+// Re-render filter pill states (checked/unchecked CSS) without rebuilding the DOM.
+function refreshFilterPills(){
+  if(!_rawIncludeGraph) return;
+  repoFilterChecksEl.querySelectorAll(".repo-filter-item").forEach(item=>{
+    const repo=item.dataset.repo;
+    const on=checkedRepos.has(repo);
+    item.className="repo-filter-item "+(on?"checked":"unchecked");
+    item.setAttribute("aria-pressed",String(on));
+  });
+}
+
+// Core: apply current checkedRepos to the include graph and re-load the scene.
+// This re-runs loadGraph on the filtered subgraph so group/heat/metrics all
+// operate on the filtered set. Call graph is unaffected (no filter applied to it).
+function applyRepoFilter(){
+  refreshFilterPills();
+  if(currentMode!=="include") return; // call graph: no repo filter applied
+  if(!_rawIncludeGraph) return;
+  const fg=filteredIncludeGraph();
+  // Even if 0 nodes, call loadGraph — it handles the empty case (shows emptyMsg).
+  loadGraph(fg,"include",null);
+  // Restore include-graph reference so mode-switch back to include uses filtered data
+  includeGraphData=fg;
+}
+
+repoFilterAllBtn .addEventListener("click",()=>setAllRepos(true));
+repoFilterNoneBtn.addEventListener("click",()=>setAllRepos(false));
+
 /* ── Boot ─────────────────────────────────────────────────────────────── */
 let controlsAttached=false;
 function maybeAttachControls(){
@@ -2343,10 +2527,26 @@ function maybeAttachControls(){
   attachControls();controlsAttached=true;
 }
 function handleIncludeData(g){
-  includeGraphData=g;maybeAttachControls();
+  // Preserve raw graph for filter; initialize filter pills.
+  _rawIncludeGraph=g;
+  // Reset checkedRepos so new graph gets fresh all-on state only on first load.
+  // If checkedRepos already has entries (e.g. user toggled then mode-switched),
+  // we keep their selection — applyRepoFilter will reconcile missing repos by
+  // only showing nodes whose repo is in the set.
+  if(checkedRepos.size===0&&g&&g.nodes){
+    collectRepos(g.nodes).forEach(({repo})=>checkedRepos.add(repo));
+  }
+  renderRepoFilter(g?g.nodes:[]);
+  maybeAttachControls();
   if(currentMode==="include"){
-    if(!g||!g.nodes||!g.nodes.length) emptyMsg.style.display="flex";
-    else loadGraph(g,"include",null);
+    if(!g||!g.nodes||!g.nodes.length){
+      emptyMsg.style.display="flex";
+    } else {
+      // Load the filtered view (all repos on by default = full graph)
+      const fg=filteredIncludeGraph();
+      includeGraphData=fg;
+      loadGraph(fg,"include",null);
+    }
   }
 }
 if(ensureRenderer()){attachControls();controlsAttached=true;}
