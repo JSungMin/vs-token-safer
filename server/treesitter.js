@@ -836,3 +836,155 @@ export async function tsFileDeclDocs(absPath, { maxBytes = 2_000_000, gap = 3 } 
   }
   return out;
 }
+
+// ── HTML EMBEDDED-CODE INJECTION (the robustness upgrade over the textstruct.js heuristic brace-scan). The
+// HTML structure provider locates `<script>`/`<style>` blocks and, WITHIN them, the top-level JS functions /
+// CSS rules by counting brace depth — exact for well-formatted code, but a minified or oddly-formatted block
+// degrades to the whole block. Tree-sitter is the official parser for those very languages, so here we re-parse
+// each embedded block with the real javascript / css grammar and hand back EXACT decl ranges. textstruct.js
+// stays pure (no fs/async/tree-sitter) — it tags its heuristic embedded heads with `embedded` and core.js
+// supplies THIS as the injector, which REPLACES those heads when tree-sitter is available. Returns null when
+// tree-sitter is unavailable (caller keeps the heuristic) — never throws.
+
+// Count of newlines before a string offset (= the 0-based line the offset sits on; added to a within-block
+// 1-based line to get the absolute 1-based line).
+function _newlinesBefore(s, idx) {
+  let n = 0;
+  for (let i = 0; i < idx && i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+// Walk a raw source STRING with a hand-tuned cfg (decl set + kind map) and return declarations with EXACT
+// start+end lines (1-based, within the string). `maxBlockDepth` bounds how deeply nested a decl may be (depth =
+// the count of enclosing `{ }` scopes — statement_block / class_body): 0 = top-level only, 1 ALSO captures the
+// VERY common pattern of a script wrapped in one top-level IIFE (`(function(){ … })()`) and the methods of a
+// top-level class, while still skipping the inner helper closures (depth ≥ 2) that would clutter the outline.
+// This is the robustness win over the heuristic, which — like a depth-0 filter — misses an IIFE-wrapped decl
+// entirely. Best-effort → [].
+const _TS_BLOCK = new Set(["statement_block", "class_body"]);
+async function tsDeclsInString(wasmBase, src, cfg, maxBlockDepth = 1) {
+  const lang = await loadLanguage(wasmBase);
+  if (!lang || !_TS) return [];
+  let parser, tree;
+  try {
+    parser = new _TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return [];
+  }
+  const out = [];
+  const stack = [[tree.rootNode, 0]]; // [node, enclosing-block depth]
+  let guard = 0;
+  while (stack.length && out.length < 5000 && guard++ < 200000) {
+    const [node, bd] = stack.pop();
+    if (cfg.decl.has(node.type) && (maxBlockDepth == null || bd <= maxBlockDepth)) {
+      const nm = nameOf(node);
+      if (nm && /[A-Za-z_$]/.test(nm))
+        out.push({
+          name: nm.slice(0, 80),
+          kind: cfg.kind[node.type] || node.type,
+          line: node.startPosition.row + 1,
+          endLine: node.endPosition.row + 1,
+        });
+    }
+    const childBd = bd + (_TS_BLOCK.has(node.type) ? 1 : 0);
+    for (let i = node.namedChildCount - 1; i >= 0; i--) stack.push([node.namedChild(i), childBd]);
+  }
+  try {
+    tree.delete && tree.delete();
+    parser.delete && parser.delete();
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+// Top-level CSS rules / at-rules with EXACT ranges (the css grammar has its own node shapes, so a small
+// dedicated walk rather than the cfg-driven one). rule_set → its selector text; at-rules → the text up to `{`.
+const _CSS_AT = new Set(["media_statement", "keyframes_statement", "supports_statement", "at_rule"]);
+async function tsCssDeclsInString(src) {
+  const lang = await loadLanguage("css");
+  if (!lang || !_TS) return [];
+  let parser, tree;
+  try {
+    parser = new _TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return [];
+  }
+  const out = [];
+  const root = tree.rootNode;
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const node = root.namedChild(i);
+    let name = null,
+      kind = null;
+    if (node.type === "rule_set") {
+      let sel = null;
+      for (let j = 0; j < node.namedChildCount; j++)
+        if (node.namedChild(j).type === "selectors") {
+          sel = node.namedChild(j);
+          break;
+        }
+      name = (sel ? sel.text : node.text.split("{")[0]).replace(/\s+/g, " ").trim();
+      kind = "rule";
+    } else if (_CSS_AT.has(node.type)) {
+      name = node.text.split("{")[0].replace(/\s+/g, " ").trim();
+      kind = "at-rule";
+    }
+    if (name && /\S/.test(name))
+      out.push({ name: name.slice(0, 80), kind, line: node.startPosition.row + 1, endLine: node.endPosition.row + 1 });
+  }
+  try {
+    tree.delete && tree.delete();
+    parser.delete && parser.delete();
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+// Re-parse every `<script>`/`<style>` block of an HTML document with the real javascript/css grammar and return
+// the embedded decls as flat heads [{ level:2, title, line, endLine, kind, embedded }] in ABSOLUTE 1-based
+// lines. core.js merges these over textstruct's heuristic embedded heads. null ⇒ tree-sitter unavailable.
+export async function htmlEmbeddedDecls(text) {
+  await ensureTS();
+  if (!_TS) return null;
+  const src = String(text);
+  const out = [];
+  let m;
+  const reScript = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  while ((m = reScript.exec(src))) {
+    const attrs = m[1] || "";
+    const inner = m[2] || "";
+    // Skip non-JS scripts (JSON, importmap, text/template) — only real JS/module blocks carry decls.
+    const ty = /\btype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs);
+    if (ty && !/^(text\/)?(javascript|ecmascript|babel|jsx)$|module/i.test(ty[1])) continue;
+    if (!inner.trim()) continue;
+    const offset = _newlinesBefore(src, m.index + (m[0].length - inner.length - 9)); // 9 = "</script>"
+    let decls;
+    try {
+      decls = await tsDeclsInString("javascript", inner, JSTS, 1); // depth ≤ 1 → top-level + one IIFE wrapper
+    } catch {
+      decls = [];
+    }
+    for (const d of decls)
+      out.push({ level: 2, title: d.name, line: d.line + offset, endLine: d.endLine + offset, kind: d.kind, embedded: "script" });
+  }
+  const reStyle = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  while ((m = reStyle.exec(src))) {
+    const inner = m[1] || "";
+    if (!inner.trim()) continue;
+    const offset = _newlinesBefore(src, m.index + (m[0].length - inner.length - 8)); // 8 = "</style>"
+    let decls;
+    try {
+      decls = await tsCssDeclsInString(inner);
+    } catch {
+      decls = [];
+    }
+    for (const d of decls)
+      out.push({ level: 2, title: d.name, line: d.line + offset, endLine: d.endLine + offset, kind: d.kind, embedded: "style" });
+  }
+  return out;
+}

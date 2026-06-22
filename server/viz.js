@@ -135,8 +135,8 @@ export function buildVizData(root) {
   const tiers = [
     { key: "exact", rung: 1, name: "Exact", engine: "Language server — clangd · Roslyn · tsserver · pyright", when: "you know the name and a toolchain is present", cert: "COMPLETE", tools: EXACT_TOOLS, saved: exactStat.saved, runs: exactStat.runs },
     { key: "syntactic", rung: 2, name: "Syntactic", engine: "tree-sitter — 17 languages, zero setup", when: "no toolchain — declarations + tag-query references", cert: "SYNTACTIC", tools: [], reach: "17 languages", saved: 0, runs: 0 },
-    { key: "fuzzy", rung: 3, name: "Fuzzy", engine: "concept dictionary mined from the repo's own naming — no embeddings", when: "you only know the intent, not the symbol name", cert: "SYNTACTIC", tools: ["concept_search"], saved: fuzzyStat.saved, runs: fuzzyStat.runs },
-    { key: "section", rung: 4, name: "Section", engine: "Markdown · TOML · YAML · JSON · … addressed by heading", when: "it's a doc or config, not code", cert: "COMPLETE", tools: [], reach: "md · mdx · adoc · rst · toml · ini · yaml · json · txt", saved: 0, runs: 0 },
+    { key: "fuzzy", rung: 3, name: "Fuzzy", engine: "concept dictionary mined from the repo's own naming — no embeddings", when: "you only know the intent, not the symbol name", cert: "FUZZY", tools: ["concept_search"], saved: fuzzyStat.saved, runs: fuzzyStat.runs },
+    { key: "section", rung: 4, name: "Section", engine: "Markdown · TOML · YAML · JSON · HTML · CSS · … addressed by heading/selector/rule", when: "it's a doc or config, not code", cert: "SECTION", tools: [], reach: "md · mdx · adoc · rst · toml · ini · yaml · json · html · css · scss · txt", saved: 0, runs: 0 },
   ];
   // SURFACE COVERAGE (the "whole repo an agent sees" pillar): semantic backends detected in this root + the
   // syntactic language reach + the document formats. filesystem (find_files/search_text) is the non-tiered
@@ -144,13 +144,17 @@ export function buildVizData(root) {
   const surfaces = {
     semantic: census, // per-backend file counts in this root
     syntacticLangs: 17, // tree-sitter: 10 hand-tuned + 7 tags-query
-    docFormats: ["markdown", "mdx", "asciidoc", "rst", "toml", "ini", "yaml", "json", "txt"],
+    docFormats: ["markdown", "mdx", "asciidoc", "rst", "toml", "ini", "yaml", "json", "html", "css", "scss", "txt"],
     filesystem: { saved: fsStat.saved, runs: fsStat.runs },
   };
-  // Completeness-certificate legend (the precision-honesty pillar) — the labels vts stamps on every answer.
+  // Completeness-certificate legend (the precision-honesty pillar) — the labels vts stamps on every answer. The
+  // first four name a precision RUNG (exact → COMPLETE, syntactic, fuzzy, section); the last two are coverage
+  // states a capped/timed-out answer of ANY rung falls through to.
   const certs = [
-    { key: "COMPLETE", desc: "semantic, every match returned (within the indexed/scoped set)" },
-    { key: "SYNTACTIC", desc: "tree-sitter declarations, zero setup — does not resolve refs/overloads/types" },
+    { key: "COMPLETE", desc: "exact rung (semantic), every match returned (within the indexed/scoped set)" },
+    { key: "SYNTACTIC", desc: "syntactic rung — tree-sitter declarations, zero setup; does not resolve refs/overloads/types" },
+    { key: "FUZZY", desc: "fuzzy rung — concept dictionary mined from the repo's own naming (no embeddings); related, not exact" },
+    { key: "SECTION", desc: "section rung — doc/config structure by heading/selector/rule; exact spans, not semantic code" },
     { key: "PARTIAL", desc: "capped or time-boxed — more exists, recoverable via the tee / a higher cap" },
     { key: "INCONCLUSIVE", desc: "index still building or a 0 from a truncated walk — not a true zero" },
   ];
