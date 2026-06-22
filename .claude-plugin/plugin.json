@@ -1,7 +1,7 @@
 {
   "name": "vs-token-safer",
   "description": "Sits between Claude Code and your codebase and hands back a short file:line list instead of dumping source into the chat. It uses a real language server when it can (clangd / Roslyn / tsserver / pyright), tree-sitter when there's no toolchain, and a fuzzy search built from your repo's own naming when you don't know the exact name (no embeddings). It section-edits Markdown and config files the same way. Everything stays on your machine. No IDE required. Bundles gamedev-log-analyzer for reading huge editor/build logs.",
-  "version": "0.33.15",
+  "version": "0.33.16",
   "author": { "name": "JSungMin", "url": "https://github.com/JSungMin" },
   "homepage": "https://github.com/JSungMin/vs-token-safer",
   "repository": "https://github.com/JSungMin/vs-token-safer",
