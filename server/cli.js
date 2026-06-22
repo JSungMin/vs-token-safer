@@ -51,6 +51,10 @@ Commands:
                  Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'. reconcile is forced to preview (-n).
   index          Build the committable .vts-index/symbols.jsonl (tree-sitter; instant cold-start symbol tier,
                  no toolchain needed — commit it to share with the team). [--projectPath --status (show current)]
+  concept        FUZZY search for a concept/intent you can't name exactly ("auth login flow"). Mines a concept
+                 dictionary from the repo's OWN identifier+comment co-occurrence (no embeddings, nothing sent)
+                 and ranks declarations; --flow also expands the top hit along the call graph.
+                 [--q <phrase> --projectPath <dir> --flow --maxResults N]
   warmup         Pre-build the index (IDE-style) so later searches are fast. [--projectPath --backend]
   setup          Persist config. [--projectPath --backend --maxResults]
                  [--genCompileDb dry|apply] — also generate the C++ compile DB in this step (dry-run prints
@@ -82,7 +86,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set([]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow"]);
 
 function parseArgs(argv) {
   const a = {};
@@ -98,7 +102,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", concept: "concept_search", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }

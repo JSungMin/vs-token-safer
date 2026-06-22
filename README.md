@@ -78,6 +78,7 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | `diagnostics` | `vts diagnostics` | Compiler/linter errors + warnings as a token-capped `file:line:col severity: message` list — the compact stand-in for reading raw build output. One file by default; `scope=directory` scans the project. |
 | `find_files` | `vts files` | Find files by name/glob — token-capped stand-in for `find -name`. |
 | `search_text` | `vts text` | Raw text/regex search — capped stand-in for `grep` (`path=`/`glob=`/`docs=true` to target). |
+| `concept_search` | `vts concept` | **Fuzzy** search for a concept you can't name (`"auth login flow"`) — mines a dictionary from the repo's own identifier+comment co-occurrence (no embeddings, nothing sent) and ranks declarations; `--flow` traces the top hit's call graph. |
 
 **Edit (symbol-level — name it, don't line-count)** — preview by default, `apply=true` writes.
 
