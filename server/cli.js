@@ -40,6 +40,10 @@ Commands:
                  [--symbol <name> --text <text> [--path <file> --line N --apply]]
   safe-delete    Delete a named declaration; refuses while referenced unless --force. Preview; --apply.
                  [--symbol <name> [--path <file> --line N --force --apply]]
+  dce            Preview-only dead-code analysis. From seed symbol(s), walk the call graph to a fixpoint and
+                 list DEAD / HELD / ENTRY / INCONCLUSIVE candidates + a safe deletion order. NEVER deletes —
+                 each DEAD candidate still goes through safe-delete's own reference guard.
+                 [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --maxNodes N]]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
@@ -85,7 +89,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
   pyright     — Python (pyproject/setup.py/requirements or *.py; bundled pyright-langserver)
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
-const LIST_FLAGS = new Set([]);
+const LIST_FLAGS = new Set(["seeds", "entry"]);
 const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow"]);
 
 function parseArgs(argv) {
@@ -102,7 +106,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", concept: "concept_search", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", dce: "vts_dce", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", concept: "concept_search", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }
