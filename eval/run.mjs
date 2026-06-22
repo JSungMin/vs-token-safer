@@ -1815,7 +1815,17 @@ if (tsAvailable()) {
   const tsRefs = await tsSearchReferences(tsDir, "buildWidgetTree", { skipDir: (n) => SKIP.has(n) });
   const refOk = pyRefs.some((r) => /d\.py$/.test(r.file) && r.line === 3) && !pyRefs.some((r) => /c\.py$/.test(r.file)) // the def is not a ref
     && tsRefs.some((r) => /e\.ts$/.test(r.file) && r.line === 2);
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk;
+  // (e) NO-BACKEND find_references tool path: a Go repo (vts has no wired Go backend) must NOT hard-error on
+  // getClient — it falls to the SYNTACTIC tree-sitter call-reference tier (the search_symbol no-backend parity
+  // for references). Go has no entry in pickBackend's detect order, so backendName is falsy here.
+  const goDir = path.join(os.tmpdir(), `vts-eval-${process.pid}-gonobe`);
+  fs.mkdirSync(goDir, { recursive: true });
+  fs.writeFileSync(path.join(goDir, "go.mod"), "module nobe\n\ngo 1.21\n");
+  fs.writeFileSync(path.join(goDir, "pay.go"), "package pay\nfunc ProcessPayment(n int) bool { return n > 0 }\nfunc Run() { ok := ProcessPayment(3); _ = ok }\n");
+  const goRefs = await runTool("find_references", { symbol: "ProcessPayment", projectPath: goDir });
+  const noBackendRefOk = !goRefs.isError && /tree-sitter call reference/.test(goRefs.text) && /pay\.go:3/.test(goRefs.text) && !/pay\.go:2\b/.test(goRefs.text); // call site captured, decl line is not a ref
+  try { fs.rmSync(goDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");

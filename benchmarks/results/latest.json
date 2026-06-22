@@ -7,147 +7,453 @@
     50,
     150
   ],
-  "bySize": {
-    "10": [
-      {
-        "scenario": "find symbol declaration",
-        "grepTok": 439,
-        "grepLines": 23,
-        "grepCapped": false,
-        "vtsTok": 154,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.6492027334851936
+  "languages": [
+    "TypeScript",
+    "Python",
+    "Go"
+  ],
+  "byLang": {
+    "TypeScript": {
+      "bySize": {
+        "10": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 439,
+            "grepLines": 23,
+            "grepCapped": false,
+            "vtsTok": 152,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.6537585421412301
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 439,
+            "grepLines": 23,
+            "grepCapped": false,
+            "vtsTok": 120,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.7266514806378133
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 399,
+            "grepLines": 21,
+            "grepCapped": false,
+            "vtsTok": 438,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": -0.09774436090225569
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 132,
+            "grepLines": 20,
+            "grepCapped": false,
+            "vtsTok": 76,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.4242424242424242
+          }
+        ],
+        "50": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 1999,
+            "grepLines": 103,
+            "grepCapped": false,
+            "vtsTok": 152,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.9239619809904952
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 1999,
+            "grepLines": 103,
+            "grepCapped": false,
+            "vtsTok": 321,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.8394197098549274
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 1959,
+            "grepLines": 101,
+            "grepCapped": false,
+            "vtsTok": 1260,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.3568147013782542
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 682,
+            "grepLines": 100,
+            "grepCapped": false,
+            "vtsTok": 216,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.6832844574780059
+          }
+        ],
+        "150": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 4917,
+            "grepLines": 303,
+            "grepCapped": true,
+            "vtsTok": 168,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.9658328248932275
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 4917,
+            "grepLines": 303,
+            "grepCapped": true,
+            "vtsTok": 433,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.9119381736831401
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 4917,
+            "grepLines": 301,
+            "grepCapped": true,
+            "vtsTok": 1287,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.738255033557047
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 1883,
+            "grepLines": 300,
+            "grepCapped": true,
+            "vtsTok": 328,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.8258098778544876
+          }
+        ]
       },
-      {
-        "scenario": "find all references",
-        "grepTok": 439,
-        "grepLines": 23,
-        "grepCapped": false,
-        "vtsTok": 122,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.7220956719817768
+      "syn": {
+        "10": {
+          "tok": 50,
+          "n": 2
+        },
+        "50": {
+          "tok": 50,
+          "n": 2
+        },
+        "150": {
+          "tok": 51,
+          "n": 2
+        }
       },
-      {
-        "scenario": "text search ('retry loop')",
-        "grepTok": 399,
-        "grepLines": 21,
-        "grepCapped": false,
-        "vtsTok": 439,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": -0.10025062656641603
-      },
-      {
-        "scenario": "find file by name ('caller')",
-        "grepTok": 132,
-        "grepLines": 20,
-        "grepCapped": false,
-        "vtsTok": 77,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": 0.41666666666666663
-      }
-    ],
-    "50": [
-      {
-        "scenario": "find symbol declaration",
-        "grepTok": 1999,
-        "grepLines": 103,
-        "grepCapped": false,
-        "vtsTok": 154,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.9229614807403702
-      },
-      {
-        "scenario": "find all references",
-        "grepTok": 1999,
-        "grepLines": 103,
-        "grepCapped": false,
-        "vtsTok": 323,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.8384192096048024
-      },
-      {
-        "scenario": "text search ('retry loop')",
-        "grepTok": 1959,
-        "grepLines": 101,
-        "grepCapped": false,
-        "vtsTok": 1261,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": 0.3563042368555386
-      },
-      {
-        "scenario": "find file by name ('caller')",
-        "grepTok": 682,
-        "grepLines": 100,
-        "grepCapped": false,
-        "vtsTok": 217,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": 0.6818181818181819
-      }
-    ],
-    "150": [
-      {
-        "scenario": "find symbol declaration",
-        "grepTok": 4917,
-        "grepLines": 303,
-        "grepCapped": true,
-        "vtsTok": 170,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.9654260728086231
-      },
-      {
-        "scenario": "find all references",
-        "grepTok": 4917,
-        "grepLines": 303,
-        "grepCapped": true,
-        "vtsTok": 435,
-        "vtsMode": "semantic",
-        "vtsOk": true,
-        "reduction": 0.9115314215985357
-      },
-      {
-        "scenario": "text search ('retry loop')",
-        "grepTok": 4917,
-        "grepLines": 301,
-        "grepCapped": true,
-        "vtsTok": 1288,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": 0.7380516575147448
-      },
-      {
-        "scenario": "find file by name ('caller')",
-        "grepTok": 1883,
-        "grepLines": 300,
-        "grepCapped": true,
-        "vtsTok": 329,
-        "vtsMode": "filesystem",
-        "vtsOk": true,
-        "reduction": 0.8252788104089219
-      }
-    ]
-  },
-  "syntacticBySize": {
-    "10": {
-      "tok": 52,
-      "n": 2
+      "ext": "ts"
     },
-    "50": {
-      "tok": 52,
-      "n": 2
+    "Python": {
+      "bySize": {
+        "10": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 536,
+            "grepLines": 33,
+            "grepCapped": false,
+            "vtsTok": 168,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.6865671641791045
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 536,
+            "grepLines": 33,
+            "grepCapped": false,
+            "vtsTok": 125,
+            "vtsMode": "semantic",
+            "vtsOk": true,
+            "reduction": 0.7667910447761194
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 373,
+            "grepLines": 21,
+            "grepCapped": false,
+            "vtsTok": 401,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": -0.07506702412868638
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 132,
+            "grepLines": 20,
+            "grepCapped": false,
+            "vtsTok": 76,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.4242424242424242
+          }
+        ],
+        "50": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 2536,
+            "grepLines": 153,
+            "grepCapped": false,
+            "vtsTok": 168,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.9337539432176656
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 2536,
+            "grepLines": 153,
+            "grepCapped": false,
+            "vtsTok": 346,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.863564668769716
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 1833,
+            "grepLines": 101,
+            "grepCapped": false,
+            "vtsTok": 1135,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.3807965084560829
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 682,
+            "grepLines": 100,
+            "grepCapped": false,
+            "vtsTok": 216,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.6832844574780059
+          }
+        ],
+        "150": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 4221,
+            "grepLines": 453,
+            "grepCapped": true,
+            "vtsTok": 168,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.9601990049751243
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 4221,
+            "grepLines": 453,
+            "grepCapped": true,
+            "vtsTok": 830,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.8033641317223407
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 4604,
+            "grepLines": 301,
+            "grepCapped": true,
+            "vtsTok": 1182,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.7432667245873154
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 1883,
+            "grepLines": 300,
+            "grepCapped": true,
+            "vtsTok": 328,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.8258098778544876
+          }
+        ]
+      },
+      "syn": {
+        "10": {
+          "tok": 51,
+          "n": 2
+        },
+        "50": {
+          "tok": 51,
+          "n": 2
+        },
+        "150": {
+          "tok": 52,
+          "n": 2
+        }
+      },
+      "ext": "py"
     },
-    "150": {
-      "tok": 53,
-      "n": 2
+    "Go": {
+      "bySize": {
+        "10": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 415,
+            "grepLines": 23,
+            "grepCapped": false,
+            "vtsTok": 155,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.6265060240963856
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 415,
+            "grepLines": 23,
+            "grepCapped": false,
+            "vtsTok": 184,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.5566265060240965
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 378,
+            "grepLines": 21,
+            "grepCapped": false,
+            "vtsTok": 80,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.7883597883597884
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 142,
+            "grepLines": 20,
+            "grepCapped": false,
+            "vtsTok": 77,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.4577464788732394
+          }
+        ],
+        "50": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 1895,
+            "grepLines": 103,
+            "grepCapped": false,
+            "vtsTok": 155,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.9182058047493403
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 1895,
+            "grepLines": 103,
+            "grepCapped": false,
+            "vtsTok": 364,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.807915567282322
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 1858,
+            "grepLines": 101,
+            "grepCapped": false,
+            "vtsTok": 80,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.9569429494079655
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 732,
+            "grepLines": 100,
+            "grepCapped": false,
+            "vtsTok": 217,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.7035519125683061
+          }
+        ],
+        "150": [
+          {
+            "scenario": "find symbol declaration",
+            "grepTok": 4667,
+            "grepLines": 303,
+            "grepCapped": true,
+            "vtsTok": 156,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.9665738161559888
+          },
+          {
+            "scenario": "find all references",
+            "grepTok": 4667,
+            "grepLines": 303,
+            "grepCapped": true,
+            "vtsTok": 848,
+            "vtsMode": "syntactic",
+            "vtsOk": true,
+            "reduction": 0.8182986929505035
+          },
+          {
+            "scenario": "text search ('retry loop')",
+            "grepTok": 4667,
+            "grepLines": 301,
+            "grepCapped": true,
+            "vtsTok": 81,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.982644096850225
+          },
+          {
+            "scenario": "find file by name ('caller')",
+            "grepTok": 1983,
+            "grepLines": 300,
+            "grepCapped": true,
+            "vtsTok": 329,
+            "vtsMode": "filesystem",
+            "vtsOk": true,
+            "reduction": 0.8340897629853756
+          }
+        ]
+      },
+      "syn": {
+        "10": {
+          "tok": 53,
+          "n": 2
+        },
+        "50": {
+          "tok": 53,
+          "n": 2
+        },
+        "150": {
+          "tok": 53,
+          "n": 2
+        }
+      },
+      "ext": "go"
     }
+  },
+  "aggregateAtMax": {
+    "files": 150,
+    "grepTok": 47547,
+    "vtsTok": 6138,
+    "reduction": 0.8709066818095779
   },
   "costAtMax": {
     "files": 150,
@@ -155,23 +461,23 @@
       {
         "model": "Haiku 4.5",
         "price": 1,
-        "grepCost": 0.016634,
-        "vtsCost": 0.002222,
-        "saved": 0.014412
+        "grepCost": 0.047547,
+        "vtsCost": 0.006138,
+        "saved": 0.041409
       },
       {
         "model": "Sonnet 4.x",
         "price": 3,
-        "grepCost": 0.049902,
-        "vtsCost": 0.006666,
-        "saved": 0.043236000000000004
+        "grepCost": 0.142641,
+        "vtsCost": 0.018414,
+        "saved": 0.12422699999999999
       },
       {
         "model": "Opus 4.x",
         "price": 15,
-        "grepCost": 0.24950999999999998,
-        "vtsCost": 0.03333,
-        "saved": 0.21617999999999998
+        "grepCost": 0.713205,
+        "vtsCost": 0.09207,
+        "saved": 0.621135
       }
     ]
   },
