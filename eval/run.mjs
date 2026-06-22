@@ -1591,15 +1591,18 @@ const htmlSelfContainedOk =
 // + find_references (36k saved) → exact tier = 90k / 5 runs; syntactic/section = 0 saved + a reach string.
 const exactT = vd.tiers.find((t) => t.key === "exact");
 const synT = vd.tiers.find((t) => t.key === "syntactic");
+const fuzzyT = vd.tiers.find((t) => t.key === "fuzzy");
+const sectionT = vd.tiers.find((t) => t.key === "section");
 const tiersOk =
   vd.tiers.length === 4 &&
   vd.tiers.map((t) => t.rung).join("") === "1234" &&
   vd.tiers.map((t) => t.name).join(",") === "Exact,Syntactic,Fuzzy,Section" &&
   !!exactT && exactT.saved === 90000 && exactT.runs === 5 && exactT.cert === "COMPLETE" && // attributed, no double-count
   !!synT && synT.saved === 0 && /17 languages/.test(synT.reach || "") &&                   // syntactic: reach, not saved
-  vd.surfaces.syntacticLangs === 17 && Array.isArray(vd.surfaces.docFormats) && vd.surfaces.docFormats.length === 9 && vd.surfaces.docFormats.includes("markdown") &&
+  !!fuzzyT && fuzzyT.cert === "FUZZY" && !!sectionT && sectionT.cert === "SECTION" &&       // each rung labels its OWN precision (no fuzzy↦SYNTACTIC mislabel)
+  vd.surfaces.syntacticLangs === 17 && Array.isArray(vd.surfaces.docFormats) && vd.surfaces.docFormats.length === 12 && vd.surfaces.docFormats.includes("markdown") && vd.surfaces.docFormats.includes("css") &&
   vd.surfaces.semantic && vd.surfaces.semantic.clangd === 3 &&
-  vd.certs.length === 4 && vd.certs.map((c) => c.key).join(",") === "COMPLETE,SYNTACTIC,PARTIAL,INCONCLUSIVE";
+  vd.certs.length === 6 && vd.certs.map((c) => c.key).join(",") === "COMPLETE,SYNTACTIC,FUZZY,SECTION,PARTIAL,INCONCLUSIVE";
 const { startServer } = await import("../server/serve.js");
 const { server, port, url } = await startServer(vizRoot, 0); // port 0 → OS-assigned ephemeral
 const httpGet = (p) => new Promise((res, rej) => { http.get({ host: "127.0.0.1", port, path: p }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b, ct: r.headers["content-type"] })); }).on("error", rej); });
@@ -1721,7 +1724,17 @@ const certWired = /\[completeness: COMPLETE/.test(certScan.text || "");
 const certScopedOk = completenessCert({ shown: 3, total: 3, semantic: true, scoped: true }).includes("within the configured indexing scope")
   && !completenessCert({ shown: 3, total: 3, semantic: true, scoped: false }).includes("within the configured");
 try { fs.rmSync(certDir, { recursive: true, force: true }); } catch { /* ignore */ }
-const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired && certScopedOk;
+// UNIFIED PRECISION LABEL (#6): the cert names WHICH RUNG answered — exact / syntactic / fuzzy / section — so
+// each tier is honestly labeled (fuzzy is NOT mislabeled SYNTACTIC, section carries its own label), and the
+// INCONCLUSIVE advisory is ACTIONABLE (the concrete vts setup --scope / vts preindex auto-scope commands).
+const certExactRung = completenessCert({ shown: 3, total: 3, semantic: true }).includes("EXACT rung");
+const certFuzzy = (() => { const s = completenessCert({ shown: 5, total: 5, fuzzy: true }); return s.includes("FUZZY rung") && !s.includes("SYNTACTIC"); })();
+const certSection = completenessCert({ shown: 4, section: true }).includes("SECTION rung");
+const certSyntacticRung = completenessCert({ shown: 2, total: 2, syntactic: true }).includes("SYNTACTIC rung");
+const certAutoScope = completenessCert({ shown: 0, truncated: "time" }).includes("vts setup --scope")
+  && completenessCert({ truncated: "index" }).includes("vts preindex");
+const certOk = certComplete && certPartial && certTime && certIndex && certOff && certWired && certScopedOk &&
+  certExactRung && certFuzzy && certSection && certSyntacticRung && certAutoScope;
 
 // 77) counterfactual shadow measurement — the quasi-controlled answer to "did vts reach the same answer as
 // grep?". relateSets classifies vts's answer set against grep's; maybeCounterfactual (opt-in
@@ -1920,7 +1933,25 @@ if (tsAvailable()) {
   const incrOk = ib1.reparsed === 2 && ib1.reused === 0 && ib2.reparsed === 0 && ib2.reused === 2
     && ib3.reparsed === 1 && ib3.reused === 1 && !!(incrHit && incrHit.length);
   try { fs.rmSync(incrDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk;
+  // (h) HTML EMBEDDED-CODE INJECTION: re-parse `<script>`/`<style>` blocks with the real javascript/css
+  // grammar for EXACT decl ranges, robust where the textstruct heuristic brace-scan degrades — a MINIFIED
+  // script (`var z=1;function mini(a){...}class C{}` on one line) and TWO CSS rules on one line, both of
+  // which the heuristic misses. The injector replaces the heuristic embedded heads; non-embedded heads stay.
+  const { htmlEmbeddedDecls: hED } = await import("../server/treesitter.js");
+  const { structOutlineInjected: sInj } = await import("../server/textstruct.js");
+  const injHtml = "<html>\n<h1>T</h1>\n<style>\n.box{color:red}.b2{margin:0}\n</style>\n<script>\n(function(){\nfunction iifeFn(){ return 1; }\nconst k = 2;\n})();\n</script>\n<script>var z=1;function mini(a){return a}class C{}</script>\n</html>\n";
+  const injO = await sInj("p.html", injHtml, hED);
+  const injDirect = await hED(injHtml);
+  const iife = injO.find((s) => s.title === "iifeFn");
+  const htmlInjectOk =
+    Array.isArray(injDirect) &&
+    injO.some((s) => s.title === ".box" && s.level === 2) &&
+    injO.some((s) => s.title === ".b2" && s.level === 2) &&          // 2nd rule on the SAME line — heuristic misses, injection finds
+    !!iife && iife.level === 2 && iife.line === 8 && iife.endLine === 8 && // IIFE-WRAPPED fn — the heuristic (depth-0) misses it; depth≤1 injection recovers it (the dashboard.html pattern)
+    injO.some((s) => s.title === "mini" && s.level === 2) &&         // minified one-line script — injection recovers the decls
+    injO.some((s) => s.title === "C" && s.level === 2) &&
+    injO.some((s) => s.title === "T" && s.level === 1);              // non-embedded heading preserved
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
@@ -2027,7 +2058,18 @@ const htmlStructOk = sIs("page.html") &&
   htmlO.some((s) => s.title === "helper" && s.level === 2) &&    // arrow-const inside <script>
   !!htmlFn && htmlFn.line === 7 && htmlFn.endLine === 7 &&        // resolve a function → its EXACT brace-matched span (no over-capture)
   htmlO.find((s) => s.title === "doThing").endLine === 7;        // single-line fn closes on its own line
-const structOk = outlineOk && resolveOk && structToolOk && htmlStructOk;
+// CSS / SCSS provider (surface extension): a stylesheet's rule hierarchy is its section tree — top-level
+// selectors / at-rules at level 1, SCSS-nested rules deeper, each with an EXACT brace-matched span. So
+// read_symbol returns ONE rule and replace_symbol_body splices exactly it (no whole-file Read).
+const cssTxt = ".box {\n  color: red;\n}\n#main { padding: 0; }\n@media screen {\n  .inner {\n    margin: 1px;\n  }\n}\n";
+const cssO = sOutline("style.css", cssTxt);
+const cssInner = sResolve("style.scss", cssTxt, ".inner");
+const cssStructOk = sIs("style.css") && sIs("a.scss") && sIs("b.less") &&
+  cssO.find((s) => s.title === ".box" && s.level === 1)?.endLine === 3 &&        // multi-line rule, exact span
+  cssO.find((s) => s.title === "#main" && s.level === 1)?.endLine === 4 &&       // single-line rule closes on its own line
+  cssO.find((s) => s.title === "@media screen" && s.level === 1)?.endLine === 9 &&
+  !!cssInner && cssInner.level === 2 && cssInner.line === 6 && cssInner.endLine === 8; // nested rule → level 2, exact span
+const structOk = outlineOk && resolveOk && structToolOk && htmlStructOk && cssStructOk;
 
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
@@ -2109,15 +2151,15 @@ const rows = [
   ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
   ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
   ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],
-  ["completeness certificate: COMPLETE/PARTIAL/INCONCLUSIVE label + wired into search_text + toggle", certOk, "true", certOk],
+  ["completeness certificate: unified precision label (exact/syntactic/fuzzy/section rung) + PARTIAL/INCONCLUSIVE coverage + actionable auto-scope advisory + wired into search_text + toggle", certOk, "true", certOk],
   ["counterfactual shadow grep: relateSets algebra + maybeCounterfactual records (vts⊆grep) + report + toggle", counterfactualEvalOk, "true", counterfactualEvalOk],
   ["adaptive escalation controller: warn/block policy (soft/escalate/back-off) + conversion crediting + report", adaptiveCtrlOk, "true", adaptiveCtrlOk],
   ["indexing scope: scopeDirs/inScope + scopedCdb prune + stats + fallbacks + clangd-indexer kill switch", scopeOk, "true", scopeOk],
   ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
-  ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
+  ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index + HTML <script>/<style> exact-range injection", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
-  ["structure tier: section outline/read/edit for md/toml/yaml/html/… via the symbol tools (no backend, by heading/selector/function)", structOk, "true", structOk],
+  ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
