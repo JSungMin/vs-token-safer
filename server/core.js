@@ -19,10 +19,10 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
-import { isStructFile, structOutline, resolveSection, fmtOutline } from "./textstruct.js";
+import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -1089,29 +1089,45 @@ function factorCommonPrefix(lines) {
 function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false, fuzzy = false, section = false } = {}) {
   if (!certOn()) return "";
-  // The SYNTACTIC tier (tree-sitter / committed index) finds DECLARATIONS without a toolchain, but it does not
-  // resolve references, overloads, or types — so even a "complete" syntactic answer is not the semantic
-  // certainty the LSP gives. Label it as such so the agent knows a language server would tighten it.
+  // ONE label names BOTH which precision RUNG answered AND how complete the set is (the unified precision
+  // label). The four ladder rungs — exact (semantic LSP) / syntactic (tree-sitter) / fuzzy (concept dictionary)
+  // / section (structure tier) — each carry their own honesty caveat; a capped/timed-out result falls through
+  // to the PARTIAL / INCONCLUSIVE coverage states instead. So the agent always sees exactly which rung it's on.
+  //
+  // SECTION rung — the structure tier (docs/config) addressed by heading/selector/rule. Exact text spans, but
+  // document structure, not semantic code analysis.
+  if (section) {
+    return `\n[completeness: SECTION rung — the structure tier returned ${shown} section(s) addressed by heading/selector/rule (exact text spans, no language server); this is document structure, not semantic code.]`;
+  }
+  // FUZZY rung — the concept dictionary mined from the repo's own naming (no embeddings). Related, not exact.
+  if (fuzzy && truncated !== "cap" && !(total != null && shown < total)) {
+    return `\n[completeness: FUZZY rung — a concept dictionary mined from the repo's own naming matched ${shown} declaration(s) by co-occurrence (no embeddings); related, not exact. Climb to find_references/goto_definition on a hit for ground truth.]`;
+  }
+  // SYNTACTIC rung — tree-sitter / committed index finds DECLARATIONS without a toolchain, but does not resolve
+  // references, overloads, or types — so even a "complete" syntactic answer is not the semantic certainty the
+  // LSP gives. Label it as such so the agent knows a language server would tighten it.
   if (syntactic && truncated !== "cap" && !(total != null && shown < total)) {
-    return `\n[completeness: SYNTACTIC — tree-sitter found ${shown} declaration(s) with zero project setup; this tier locates decls but does NOT resolve references/overloads/types. Install a language server (or generate compile_commands.json) for semantic certainty.]`;
+    return `\n[completeness: SYNTACTIC rung — tree-sitter found ${shown} declaration(s) with zero project setup; this tier locates decls but does NOT resolve references/overloads/types. Install a language server (or generate compile_commands.json) for semantic certainty.]`;
   }
   // When an indexing scope is active, a semantic COMPLETE (or authoritative 0) is complete WITHIN THE SCOPE,
   // not across the whole project — qualify it so the agent doesn't read it as project-wide coverage.
   const within = scoped ? " within the configured indexing scope (not the whole project — widen or unset the scope for full coverage)" : "";
+  // INCONCLUSIVE walks are where AUTO-SCOPE pays off: a bounded scan on a big tree is exactly the case a scoped
+  // index fixes, so the advisory is actionable (the concrete `vts setup --scope` + `vts preindex` commands).
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
-    return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete; narrow the scope or use a semantic tool (search_symbol/find_references) to certify.]`;
+    return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete. Narrow the indexing scope (vts setup --scope <module>, then vts preindex) or use a semantic tool (search_symbol/find_references) to certify.]`;
   }
   if (truncated === "index") {
-    return `\n[completeness: INCONCLUSIVE — this backend answers from open/indexed files only, so a symbol whose file isn't indexed yet can be missed; this is not an authoritative 0.]`;
+    return `\n[completeness: INCONCLUSIVE — this backend answers from open/indexed files only, so a symbol whose file isn't indexed yet can be missed; this is not an authoritative 0. A big tree indexes far faster scoped (vts setup --scope <module>, then vts preindex).]`;
   }
   if (truncated === "cap" || (total != null && shown < total)) {
     const more = total != null ? `${shown} of ${total}` : `the top ${shown}`;
     return `\n[completeness: PARTIAL — showing ${more}; the remainder is known and recoverable (raise the cap or read the tee file).]`;
   }
-  return `\n[completeness: COMPLETE — ${semantic ? "the language-server index" : "the bounded scan"} returned every match${within} (${shown}).]`;
+  return `\n[completeness: ${semantic ? "EXACT rung, COMPLETE" : "COMPLETE"} — ${semantic ? "the language-server index" : "the bounded scan"} returned every match${within} (${shown}).]`;
 }
 export { completenessCert };
 function fmtLocations(locs, max, label) {
@@ -1706,16 +1722,18 @@ async function structTool(name, a, root, { finishOut, err, symbolEditResult }) {
   const file = (path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path))).replace(/\\/g, "/");
   let text; try { text = fs.readFileSync(file, "utf8"); } catch { return err(`structure: cannot read ${a.path}.`); }
   const max = Number(a.maxResults) || MAX_RESULTS;
+  // Compute the outline once. For HTML the embedded `<script>`/`<style>` JS/CSS decls are REFINED to exact
+  // tree-sitter ranges (htmlEmbeddedDecls) when the grammars are present, else the heuristic brace-scan stands.
+  const o = await structOutlineInjected(file, text, htmlEmbeddedDecls);
   if (name === "document_symbols") {
-    const o = structOutline(file, text);
     if (!o.length) return finishOut([], `No sections found in ${file} (no headings/keys recognised).`);
     try { recordQueryResults(root, [file]); } catch { /* best-effort */ }
-    return finishOut(o, `outline of ${file} — ${o.length} section(s) (structure tier, no language server):\n` + fmtOutline(o, max));
+    return finishOut(o, `outline of ${file} — ${o.length} section(s) (structure tier, no language server):\n` + fmtOutline(o, max) + completenessCert({ shown: o.length, section: true }));
   }
   // the remaining tools target one named section (accept `symbol` — reuses the symbol tools — or `section`).
   const title = a.symbol != null ? a.symbol : a.section;
   if (title == null) return err(`${name} on a text file needs \`symbol\` (the section heading/key to target). Run document_symbols on it first to see the sections.`);
-  const sec = resolveSection(file, text, title, { line: a.line != null ? Number(a.line) + 1 : null });
+  const sec = resolveInOutline(o, title, { line: a.line != null ? Number(a.line) + 1 : null });
   if (!sec) return err(`No section titled "${title}" in ${file}. Run document_symbols to list the headings (match is exact-then-substring; pass line= to disambiguate repeats).`);
   const lines = text.split(/\r?\n/);
   // synthesise an LSP-shaped range that spans whole section lines: start of the heading line → start of the
@@ -1732,7 +1750,7 @@ async function structTool(name, a, root, { finishOut, err, symbolEditResult }) {
     const omitted = sec.endLine - end;
     const note = omitted > 0 ? `\n… ${omitted} more line(s)${sigOnly ? " (heading only — omit signatureOnly for the section)" : ` — raise VTS_SYMBOL_MAX_LINES (now ${cap})`}.` : "";
     try { recordQueryResults(root, [file]); } catch { /* best-effort */ }
-    return finishOut(text, `section "${sec.title}" @ ${file}:${sec.line}-${sec.endLine} (structure tier):\n` + body + note);
+    return finishOut(text, `section "${sec.title}" @ ${file}:${sec.line}-${sec.endLine} (structure tier):\n` + body + note + completenessCert({ shown: 1, section: true }));
   }
   const apply = a.apply === true || a.apply === "true";
   if (name === "replace_symbol_body") {
@@ -2049,11 +2067,11 @@ export async function runTool(name, a = {}) {
       const floor = (scoredAll[0]?.sc || 0) * Number(process.env.VTS_CONCEPT_FLOOR || 0.2);
       const conceptMax = Math.min(max, envInt("VTS_CONCEPT_MAX", 15));
       const ranked = scoredAll.filter((r) => r.sc >= floor).slice(0, conceptMax);
-      if (!ranked.length) return finishOut([], `No concept matches for "${a.q}" under ${root} (the repo's own naming may not bridge those words — try search_text, or a synonym).` + EMPTY_HINT + completenessCert({ shown: 0, total: 0, syntactic: true }));
+      if (!ranked.length) return finishOut([], `No concept matches for "${a.q}" under ${root} (the repo's own naming may not bridge those words — try search_text, or a synonym).` + EMPTY_HINT + completenessCert({ shown: 0, total: 0, fuzzy: true }));
       const expTerms = [...enriched].filter(([t]) => !qToks.includes(t)).slice(0, 8).map(([t]) => t);
       const rows = ranked.map((r) => `${r.s.file}:${r.s.line}: ${r.s.kind} ${r.s.name}`);
       const expLine = expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "";
-      const cert = completenessCert({ shown: rows.length, total: ranked.length, truncated: null, syntactic: true });
+      const cert = completenessCert({ shown: rows.length, total: ranked.length, truncated: null, fuzzy: true });
       let flow = "";
       if (a.flow === true || a.flow === "true") {
         try {
