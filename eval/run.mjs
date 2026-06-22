@@ -1590,7 +1590,19 @@ const serveOk =
 await new Promise((r) => server.close(r));
 try { fs.rmSync(vizRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 fs.writeFileSync(GDS, "{}"); // reset so it doesn't leak into any later savings assertion
-const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk && tiersOk;
+// IMPORT-GRAPH fix: a JS/TS/Py repo has no #include edges, so its files were absent from the cache-only
+// force-graph (live-found: "the viz only shows the C++ tree, not my JS repo"). buildVizData now merges a
+// root-scoped IMPORT graph (concept.js importSpecifiers) and ranks the dashboard root's files first.
+const igRoot = path.join(os.tmpdir(), `vts-eval-${process.pid}-vizjs`);
+fs.mkdirSync(igRoot, { recursive: true });
+fs.writeFileSync(path.join(igRoot, "alpha.js"), "import { beta } from './beta.js';\nexport function alpha(){ return beta(); }\n");
+fs.writeFileSync(path.join(igRoot, "beta.js"), "export function beta(){ return 1; }\n");
+const vjs = buildVizData(igRoot);
+const importGraphOk =
+  vjs.graph.nodes.some((n) => n.label === "alpha.js") && vjs.graph.nodes.some((n) => n.label === "beta.js") && // JS files present (root-prioritized)
+  vjs.graph.links.some((l) => /alpha\.js$/.test(String(l.source)) && /beta\.js$/.test(String(l.target)));      // import edge, no #include
+try { fs.rmSync(igRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk && tiersOk && importGraphOk;
 
 // 74) result RERANK (Semble-inspired, charter-pure): rankSymbols reorders the OFFICIAL engine's results
 // BEFORE the top-N cap, so the row the model wants survives the cap. Lexical tier (exact > prefix > word/camel
