@@ -1529,10 +1529,13 @@ async function conceptIndexFor(root) {
         if (files >= fileCap) break;
         files++;
         let decls; try { decls = await tsFileDeclDocs(p); } catch { continue; }
+        // path tokens (the dir + filename, ext stripped) — a free locality signal shared by every decl in
+        // the file: a symbol under auth/session.ts scores for "auth session" even if its name doesn't say so.
+        const pt = tokenize(path.relative(root, p).replace(/\.[^./]+$/, ""));
         for (const d of decls) {
           const nt = splitIdent(d.name), dt = tokenize(d.doc);
           units.push([...nt, ...dt]);
-          symbols.push({ name: d.name, kind: d.kind, file: p.replace(/\\/g, "/"), line: d.line, nt, dt });
+          symbols.push({ name: d.name, kind: d.kind, file: p.replace(/\\/g, "/"), line: d.line, nt, dt, pt });
         }
       }
     }
@@ -1966,7 +1969,7 @@ export async function runTool(name, a = {}) {
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
       const scoredAll = symbols
-        .map((s) => ({ s, sc: scoreSymbol(model, enriched, s.nt, s.dt) * kindW(s.kind) }))
+        .map((s) => ({ s, sc: scoreSymbol(model, enriched, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
         .filter((r) => r.sc > 0)
         .sort((a2, b2) => b2.sc - a2.sc);
       // Fuzzy results have a long low-relevance tail (a trivial local matching one weak expansion term). Cap

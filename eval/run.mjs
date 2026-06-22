@@ -1850,11 +1850,18 @@ let conceptToolOk = true;
 if (tsAvailable()) {
   const cdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
   fs.mkdirSync(cdir, { recursive: true });
+  // write every fixture BEFORE the first query — conceptIndexFor caches the model per root on first use.
   fs.writeFileSync(path.join(cdir, "auth.ts"), "export function validateSession(){ return 1; }\nexport function refreshToken(){ return 2; }\n");
   fs.writeFileSync(path.join(cdir, "ui.ts"), "export function renderWidget(){ return 3; }\n");
+  // path-locality channel: two identically-named symbols, one in a topically-named file — the file whose PATH
+  // matches the query wins, even though the symbol names are identical (the path is a free locality signal).
+  fs.writeFileSync(path.join(cdir, "billing.ts"), "export function handle(){ return 1; }\n");
+  fs.writeFileSync(path.join(cdir, "unrelated.ts"), "export function handle(){ return 2; }\n");
   const cr = await runTool("concept_search", { q: "session token", projectPath: cdir });
+  const cp = await runTool("concept_search", { q: "billing", projectPath: cdir });
+  const pathLocalityOk = !cp.isError && /billing\.ts/.test(cp.text) && !/unrelated\.ts/.test(cp.text);
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
-    /ladder.*[Cc]limb/.test(cr.text); // precision-ladder navigation: the fuzzy rung points up to the exact rung
+    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk; // ladder navigation + path-locality scoring
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
