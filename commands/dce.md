@@ -13,12 +13,27 @@ Run it with the seed symbol(s). Prefer the `vts_admin` MCP tool (server `vs-sear
 vts_admin { "op": "dce", "params": { "seed": "Foo", "projectPath": "<the project root>" } }
 ```
 
-For several seeds use `"seeds": "Foo,Bar,Baz"`. If the `vs-search` server is unavailable, run the CLI instead:
+For several seeds use `"seeds": "Foo,Bar,Baz"`. Prefer the MCP tool — it runs in the warm server process, and
+`vts` is often not on PATH in Bash. If the `vs-search` server is unavailable, run the bundled CLI:
 
 ```
-vts dce --seed Foo --projectPath <root>
-# or:  vts dce --seeds Foo,Bar,Baz --projectPath <root> [--entry main,registerPlugin --maxNodes 120]
+node "$CLAUDE_PLUGIN_ROOT/server/cli.js" dce --seed Foo --projectPath <root>
+# (if vts is on PATH:  vts dce --seeds Foo,Bar,Baz --projectPath <root> [--entry main,registerPlugin --maxNodes 120])
 ```
+
+## Warm-index requirement (C++/clangd)
+
+For a clangd (C/C++) project the call graph must be **warm** — a cold or large tree (e.g. an Unreal monorepo,
+~26k TUs) under-reports callers, so a live symbol could look DEAD. `dce` therefore **refuses on a cold clangd
+index** and tells you to build one. Indexing the whole tree is heavy, so scope it first:
+
+```
+vts setup --scope Source --projectPath <root>   # narrow to the module subtree, not the whole monorepo
+vts preindex --projectPath <root>               # build the scoped index (or keep the MCP server warm)
+```
+
+Then re-run `dce`. To inspect the structure on a cold index anyway, pass `allowCold=true` — every verdict is
+then forced to INCONCLUSIVE (nothing is ever marked DEAD). TypeScript/Python/C# index on open and are not gated.
 
 Then show the output **verbatim**. It classifies every symbol reachable from the seeds as:
 

@@ -42,8 +42,10 @@ Commands:
                  [--symbol <name> [--path <file> --line N --force --apply]]
   dce            Preview-only dead-code analysis. From seed symbol(s), walk the call graph to a fixpoint and
                  list DEAD / HELD / ENTRY / INCONCLUSIVE candidates + a safe deletion order. NEVER deletes —
-                 each DEAD candidate still goes through safe-delete's own reference guard.
-                 [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --maxNodes N]]
+                 each DEAD candidate still goes through safe-delete's own reference guard. clangd needs a WARM
+                 (persisted) index — a cold/large tree under-reports callers, so it refuses unless warm; run
+                 'vts preindex' first (or --allowCold to inspect with every verdict forced to INCONCLUSIVE).
+                 [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --maxNodes N --allowCold]]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
@@ -90,7 +92,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set(["seeds", "entry"]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold"]);
 
 function parseArgs(argv) {
   const a = {};
