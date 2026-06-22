@@ -89,6 +89,8 @@ source bodies). MCP server `vs-search`; same tools as the `vts` CLI.
 | `insert_symbol` | `vts insert` | Insert text next to a declaration — `position=after` (default, e.g. a sibling method) or `before` (e.g. an import/attribute). |
 | `safe_delete` | `vts safe-delete` | Delete a declaration — **refuses while it's still referenced** unless `force=true`. |
 
+> **Docs & config too (structure tier).** Point any of `document_symbols` / `read_symbol` / `replace_symbol_body` / `insert_symbol` / `safe_delete` at a **Markdown / AsciiDoc / reST / TOML / INI / YAML / JSON / text** file and the "symbol" is a **section** (heading, `[section]`, or key): outline a 2000-line `CLAUDE.md` in ~30 lines, read or replace one `## Section` by name without Reading the whole file. No language server, no new tools — same token-safer move, for documents.
+
 **Admin / meta — one MCP tool `vts_admin {op, params}`** (folded to keep the per-session tool-definition
 cost small; the CLI keeps the bare subcommands):
 
