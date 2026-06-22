@@ -1267,8 +1267,8 @@ const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
 // cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
 const cfgViaOp = await runTool("vts_" + "config", {});
 const toolsBudgetOk =
-  TOOL_DEFS.length === 14 && // hot search/nav/edit (incl. read_symbol) + diagnostics + vts_admin
-  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol"].every((n) => toolNames.includes(n)) && // hot tools first-class
+  TOOL_DEFS.length === 15 && // hot search/nav/edit (incl. read_symbol + concept_search) + diagnostics + vts_admin
+  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol", "concept_search"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
   !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db", "trace_calls"].some((n) => toolNames.includes(n)) && // cold tools folded away; trace_calls folded INTO find_references (direction param), not a new tool
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
@@ -1836,6 +1836,28 @@ const roslynOsPathOk =
   /Library[\\/]Application Support[\\/]Code[\\/]User[\\/]globalStorage$/.test(_gM) &&
   /\.config[\\/]Code[\\/]User[\\/]globalStorage$/.test(_gL);
 
+// 83) FUZZY concept retrieval (approach B): concept.js pure functions + the concept_search tool. The local
+// concept dictionary (identifier+comment co-occurrence) answers a concept query with no embeddings. Pure-fn
+// checks always run; the tool integration self-skips if the tree-sitter deps are absent.
+const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore } = await import("../server/concept.js");
+const splitOk = JSON.stringify(cSplit("authenticateUser")) === JSON.stringify(["authenticate", "user"]) && cMatch("auth", "authenticate") === 0.7 && cTok("How does the auth flow?").includes("auth");
+// co-occurrence: auth co-occurs with login twice (>= minCooc) → expansion surfaces it; ui never co-occurs.
+const cModel = cBuild([["auth", "login", "session"], ["auth", "login", "token"], ["render", "button", "ui"]]);
+const cEnr = cExpand(cModel, ["auth"]);
+const expandOk = cEnr.has("login") && cEnr.get("auth") === 1 && cEnr.get("login") < 1 && !cEnr.has("ui");
+const scoreOk = cScore(cModel, cEnr, ["session", "auth"], []) > cScore(cModel, cEnr, ["render", "button"], []);
+let conceptToolOk = true;
+if (tsAvailable()) {
+  const cdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
+  fs.mkdirSync(cdir, { recursive: true });
+  fs.writeFileSync(path.join(cdir, "auth.ts"), "export function validateSession(){ return 1; }\nexport function refreshToken(){ return 2; }\n");
+  fs.writeFileSync(path.join(cdir, "ui.ts"), "export function renderWidget(){ return 3; }\n");
+  const cr = await runTool("concept_search", { q: "session token", projectPath: cdir });
+  conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text);
+  try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1922,6 +1944,7 @@ const rows = [
   ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
+  ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
