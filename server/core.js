@@ -19,8 +19,9 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsAvailable } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol } from "./concept.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -1502,6 +1503,45 @@ async function syntacticSymbols(root, q, max) {
     return { lines, source, truncated: hits.truncated || null, total: hits.length };
   } catch { return null; }
 }
+// CONCEPT INDEX (fuzzy retrieval, approach B): mine a local concept dictionary from the repo's OWN identifier+
+// comment co-occurrence (server/concept.js) so a fuzzy "how does the auth flow work" query finds related
+// declarations WITHOUT embeddings — nothing transmitted, output still token-capped file:line. Built from the
+// same tree-sitter pass as the syntactic tier (tsFileDeclDocs = decl + its leading docstring). Cached per root
+// for the process lifetime (a big tree is walked once; restart/re-setup to refresh). Bounded walk (time+file).
+const _conceptCache = new Map(); // root → { model, symbols } | building promise
+async function conceptIndexFor(root) {
+  if (_conceptCache.has(root)) return _conceptCache.get(root);
+  const build = (async () => {
+    const symbols = [], units = [];
+    const dirs = scopeDirsFor(root);
+    const within = dirs.length ? (p) => inScope(p, dirs) : () => true;
+    const stack = [root]; const t0 = Date.now(); let files = 0;
+    const budget = envInt("VTS_CONCEPT_BUILD_MS", 15000), fileCap = envInt("VTS_CONCEPT_FILE_CAP", 6000);
+    while (stack.length) {
+      if (Date.now() - t0 >= budget || files >= fileCap) break;
+      const dir = stack.pop();
+      let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const e of ents) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
+        if (!tsSupports(e.name) || !within(p)) continue;
+        if (files >= fileCap) break;
+        files++;
+        let decls; try { decls = await tsFileDeclDocs(p); } catch { continue; }
+        for (const d of decls) {
+          const nt = splitIdent(d.name), dt = tokenize(d.doc);
+          units.push([...nt, ...dt]);
+          symbols.push({ name: d.name, kind: d.kind, file: p.replace(/\\/g, "/"), line: d.line, nt, dt });
+        }
+      }
+    }
+    return { model: buildConceptModel(units), symbols, files };
+  })();
+  _conceptCache.set(root, build);
+  const res = await build;
+  _conceptCache.set(root, res); // replace the promise with the resolved value
+  return res;
+}
 // Counterfactual shadow measurement (opt-in VTS_COUNTERFACTUAL=1): run a LOCAL literal grep for the same
 // symbol NAME, compare what grep WOULD have returned (tokens + match positions) against the vts answer, and
 // record the comparison. The grep output is DISCARDED — only the numbers reach the local ledger, never the
@@ -1849,6 +1889,48 @@ export async function runTool(name, a = {}) {
     }
     // find_files / search_text are pure filesystem (no language server) — they work even when no backend
     // is set, and are the sanctioned, token-capped replacements for `find -name` / `grep`.
+    if (name === "concept_search") {
+      // FUZZY retrieval (approach B): answer a concept/intent query ("how does the auth flow work") that does
+      // NOT name a symbol, using a concept dictionary mined locally from the repo's own identifier+comment
+      // co-occurrence — no embeddings, nothing transmitted, output token-capped file:line. Seed the query
+      // lexically (sub-token + dictionary expansion), rank declarations; flow=true also expands the top seed
+      // along the language server's call graph (the seed→expand→flow method).
+      if (!a.q) return err("concept_search needs q (a concept/intent phrase, e.g. \"auth login flow\").");
+      const root = resolveRoot(a);
+      if (!tsAvailable()) return err("concept_search needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms); they install with the plugin. Until then use search_text (multi-word, ranked by term coverage).");
+      const max = Number(a.maxResults) || MAX_RESULTS;
+      const { model, symbols } = await conceptIndexFor(root);
+      if (!symbols.length) return finishOut([], `No indexable declarations under ${root} for concept search (no tree-sitter-supported files in scope?).` + EMPTY_HINT);
+      const qToks = tokenize(String(a.q));
+      if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words). Try concrete nouns: "auth session token".`);
+      const enriched = expandQuery(model, qToks);
+      // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
+      // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
+      const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
+      const scoredAll = symbols
+        .map((s) => ({ s, sc: scoreSymbol(model, enriched, s.nt, s.dt) * kindW(s.kind) }))
+        .filter((r) => r.sc > 0)
+        .sort((a2, b2) => b2.sc - a2.sc);
+      // Fuzzy results have a long low-relevance tail (a trivial local matching one weak expansion term). Cap
+      // tighter than an exact search and drop anything below a fraction of the top score — fuzzy wants the
+      // confident few, not 60 maybes. VTS_CONCEPT_FLOOR / VTS_CONCEPT_MAX tune it.
+      const floor = (scoredAll[0]?.sc || 0) * Number(process.env.VTS_CONCEPT_FLOOR || 0.2);
+      const conceptMax = Math.min(max, envInt("VTS_CONCEPT_MAX", 15));
+      const ranked = scoredAll.filter((r) => r.sc >= floor).slice(0, conceptMax);
+      if (!ranked.length) return finishOut([], `No concept matches for "${a.q}" under ${root} (the repo's own naming may not bridge those words — try search_text, or a synonym).` + EMPTY_HINT + completenessCert({ shown: 0, total: 0, syntactic: true }));
+      const expTerms = [...enriched].filter(([t]) => !qToks.includes(t)).slice(0, 8).map(([t]) => t);
+      const rows = ranked.map((r) => `${r.s.file}:${r.s.line}: ${r.s.kind} ${r.s.name}`);
+      const expLine = expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "";
+      const cert = completenessCert({ shown: rows.length, total: ranked.length, truncated: null, syntactic: true });
+      let flow = "";
+      if (a.flow === true || a.flow === "true") {
+        try {
+          const fr = await runTool("find_references", { symbol: ranked[0].s.name, direction: a.direction || "callees", depth: Number(a.depth) || 2, projectPath: root });
+          if (fr && !fr.isError) flow = `\n\nflow of the top seed (${ranked[0].s.name}) along the call graph:\n${fr.text}`;
+        } catch { /* flow is best-effort */ }
+      }
+      return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + flow);
+    }
     if (name === "find_files") {
       if (!a.q) return err("find_files needs q (a filename substring or glob like *Manager.cpp).");
       const root = resolveRoot(a);
