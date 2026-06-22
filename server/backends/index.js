@@ -84,12 +84,22 @@ function findRoslynMsDll() {
 }
 const ROSLYN_MS_DLL = findRoslynMsDll();
 
+// VS Code's per-user data dir (where globalStorage lives) is OS-specific: Windows %APPDATA%\Code,
+// macOS ~/Library/Application Support/Code, Linux ~/.config/Code. Hardcoding the Windows path made the
+// Roslyn dotnet-host lookup silently miss on macOS/Linux → it fell back to system `dotnet` (too old for
+// net10) → Roslyn never launched → C# had no semantic parse (live-reported on a Mac mini). Per-OS now.
+export function vscodeGlobalStorage() {
+  const home = os.homedir();
+  if (process.platform === "win32") return path.join(home, "AppData", "Roaming", "Code", "User", "globalStorage");
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "Code", "User", "globalStorage");
+  return path.join(home, ".config", "Code", "User", "globalStorage"); // linux / other
+}
 // Microsoft.CodeAnalysis.LanguageServer targets a recent .NET (currently net10), which the system
 // `dotnet` (often an older SDK) can't host. The VS Code C# extension acquires a private runtime via
 // the vscode-dotnet-runtime extension — find its newest dotnet host and use it to launch the dll.
 // Override with VTS_ROSLYN_CMD. Falls back to "dotnet" (works if a new-enough runtime is on PATH).
 function findRoslynDotnetHost() {
-  const base = path.join(os.homedir(), "AppData", "Roaming", "Code", "User", "globalStorage", "ms-dotnettools.vscode-dotnet-runtime", ".dotnet");
+  const base = path.join(vscodeGlobalStorage(), "ms-dotnettools.vscode-dotnet-runtime", ".dotnet");
   let dirs;
   try { dirs = fs.readdirSync(base).filter((n) => /^\d+\.\d+/.test(n)); } catch { return "dotnet"; }
   // Newest version folder first (e.g. "10.0.8~x64~aspnetcore"); pick the first with a dotnet.exe.
