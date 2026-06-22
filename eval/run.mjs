@@ -1853,7 +1853,8 @@ if (tsAvailable()) {
   fs.writeFileSync(path.join(cdir, "auth.ts"), "export function validateSession(){ return 1; }\nexport function refreshToken(){ return 2; }\n");
   fs.writeFileSync(path.join(cdir, "ui.ts"), "export function renderWidget(){ return 3; }\n");
   const cr = await runTool("concept_search", { q: "session token", projectPath: cdir });
-  conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text);
+  conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
+    /ladder.*[Cc]limb/.test(cr.text); // precision-ladder navigation: the fuzzy rung points up to the exact rung
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 const conceptOk = splitOk && expandOk && scoreOk && conceptToolOk;
