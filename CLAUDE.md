@@ -122,7 +122,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   whole file), `replace_symbol_body`/`insert_symbol`/`safe_delete` → edit a section BY ITS HEADING/KEY (no
   whole-file Read + line-count). EXTENSIBLE provider registry (`PROVIDERS`: ext→parser): markdown/mdx (ATX+
   setext, fence-aware), asciidoc, reStructuredText, toml/ini (`[section]`), yaml (indent-nested keys), json
-  (pretty-printed keys), txt (heuristic). Each provider emits `[{level,title,line}]`; shared `computeSpans` sets
+  (pretty-printed keys), txt (heuristic), **html/htm/xhtml** (`parseHtml`: `<h1-6>` + `<style>`/`<script>` blocks +
+  id-landmarks at L1, and WITHIN style/script the top-level CSS selectors / JS FUNCTIONS at L2 via a brace-depth
+  scan `htmlNetBraces`/`htmlJsDecl` — so read/replace_symbol target a rule or function BY NAME; dogfooded on
+  dashboard.html, a function read at ~124×. Heuristic not a sub-language parse [degrades to block on minified];
+  tree-sitter INJECTION for exact JS/CSS ranges is the deferred robustness upgrade). Each provider emits `[{level,title,line}]`; shared `computeSpans` sets
   the section span (to the next heading of level ≤ this), `resolveSection` (exact-then-substring, `line` disambig)
   + `fmtOutline` are format-agnostic — add a format = add one parser. core.js: `STRUCT_TOOLS` + `structTool`
   (synthesises an LSP-shaped range from a section span → reuses `symbolEditResult`/`applyEditsToText`); an
