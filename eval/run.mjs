@@ -1554,7 +1554,23 @@ const htmlSelfContainedOk =
   /<!doctype html>/i.test(html) && /fetch\("\/data"\)/.test(html) &&
   !/src\s*=\s*["']https?:/i.test(html) && !/cdn|unpkg|jsdelivr|googleapis/i.test(html) && // no external script / CDN
   /\/vendor\/three\.module\.min\.js/.test(html) && /import \* as THREE/.test(html) &&     // 3D: vendored Three.js, same-origin
-  /fetch\("\/callgraph/.test(html);                                                       // call-graph mode wired
+  /fetch\("\/callgraph/.test(html) &&                                                     // call-graph mode wired
+  /precision ladder/i.test(html) && /ladderPanel/.test(html) && /surfacePanel/.test(html) && /certsPanel/.test(html); // paper-identity panels present
+// PRECISION-LADDER data model: 4 rungs (exact→syntactic→fuzzy→section), savings attributed without
+// double-counting (exact = the LSP tools; fuzzy = concept_search; syntactic/section show reach, 0 saved),
+// + surface coverage + the completeness-certificate legend. The fixture ledger has search_symbol (54k saved)
+// + find_references (36k saved) → exact tier = 90k / 5 runs; syntactic/section = 0 saved + a reach string.
+const exactT = vd.tiers.find((t) => t.key === "exact");
+const synT = vd.tiers.find((t) => t.key === "syntactic");
+const tiersOk =
+  vd.tiers.length === 4 &&
+  vd.tiers.map((t) => t.rung).join("") === "1234" &&
+  vd.tiers.map((t) => t.name).join(",") === "Exact,Syntactic,Fuzzy,Section" &&
+  !!exactT && exactT.saved === 90000 && exactT.runs === 5 && exactT.cert === "COMPLETE" && // attributed, no double-count
+  !!synT && synT.saved === 0 && /17 languages/.test(synT.reach || "") &&                   // syntactic: reach, not saved
+  vd.surfaces.syntacticLangs === 17 && Array.isArray(vd.surfaces.docFormats) && vd.surfaces.docFormats.length === 9 && vd.surfaces.docFormats.includes("markdown") &&
+  vd.surfaces.semantic && vd.surfaces.semantic.clangd === 3 &&
+  vd.certs.length === 4 && vd.certs.map((c) => c.key).join(",") === "COMPLETE,SYNTACTIC,PARTIAL,INCONCLUSIVE";
 const { startServer } = await import("../server/serve.js");
 const { server, port, url } = await startServer(vizRoot, 0); // port 0 → OS-assigned ephemeral
 const httpGet = (p) => new Promise((res, rej) => { http.get({ host: "127.0.0.1", port, path: p }, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res({ status: r.statusCode, body: b, ct: r.headers["content-type"] })); }).on("error", rej); });
@@ -1574,7 +1590,7 @@ const serveOk =
 await new Promise((r) => server.close(r));
 try { fs.rmSync(vizRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 fs.writeFileSync(GDS, "{}"); // reset so it doesn't leak into any later savings assertion
-const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk;
+const dashboardOk = vizDataOk && htmlSelfContainedOk && serveOk && combinedReportOk && tiersOk;
 
 // 74) result RERANK (Semble-inspired, charter-pure): rankSymbols reorders the OFFICIAL engine's results
 // BEFORE the top-N cap, so the row the model wants survives the cap. Lexical tier (exact > prefix > word/camel
@@ -2025,7 +2041,7 @@ const rows = [
   ["clangd index advisory: file-not-in-DB vs index-incomplete (%), toggle", idxAdvOk, "true", idxAdvOk],
   ["call hierarchy folded into find_references (direction=callers/callees, depth-bounded)", traceOk, "true", traceOk],
   ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],
-  ["dashboard: 3D viz + vendored Three.js route + combined gamedev savings + 127.0.0.1", dashboardOk, "true", dashboardOk],
+  ["dashboard: precision-ladder + surfaces + cert panels, 3D viz + vendored Three.js, combined savings, 127.0.0.1", dashboardOk, "true", dashboardOk],
   ["on-demand call graph + symbol autocomplete: buildCallGraph/listSymbols + /callgraph + /symbols routes", callGraphAllOk, "true", callGraphAllOk],
   ["result rerank (Semble-inspired, charter-pure): lexical+kind+history, stable, before the cap", rerankOk, "true", rerankOk],
   ["effective cuts: focus (exact→few) + concept (multi-term rank) + read-avoidance ledger", effectiveCutsOk, "true", effectiveCutsOk],

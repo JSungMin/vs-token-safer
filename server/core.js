@@ -182,11 +182,14 @@ function textSymbolSteer(q, truncated) {
   if (!textSteerOn()) return "";
   const sym = symbolHuntInText(q);
   if (!sym) return "";
-  const strong = /::|<|>/.test(String(q));
+  // "strong" cue = a code expression (`::`/`<>`) OR a BARE identifier (the whole query is one symbol name,
+  // e.g. `SmoothSyncBudget`). A bare-identifier text search ALWAYS has a strictly better semantic tool, so
+  // steer even when it completed (not just when truncated) — that's the case the model keeps reaching for.
+  const strong = /::|<|>/.test(String(q)) || /^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(String(q).trim());
   if (!truncated && !strong) return "";
   return truncated
     ? `\n↪ "${sym}" looks like a symbol and this text scan was TRUNCATED. find_references symbol="${sym}" is semantic + COMPLETE (no time-box) and ~10–20× smaller; search_symbol q="${sym}" for the declaration.`
-    : `\n↪ Hunting where "${sym}" is declared/used? find_references symbol="${sym}" / search_symbol q="${sym}" use the LSP index — semantic and token-capped, unlike a text scan.`;
+    : `\n↪ "${sym}" is a symbol — find_references symbol="${sym}" (all uses, semantic, file:line only, COMPLETE) or search_symbol q="${sym}" (its declaration) is far smaller than a text scan, which returns full line text.`;
 }
 // Appended to a FOCUSED symbol/definition result: the model just located a declaration, the moment right
 // BEFORE it would Read the whole file to Edit it. Point it at the symbol-edit tools, which edit by NAME and
@@ -2084,7 +2087,12 @@ export async function runTool(name, a = {}) {
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
       const textCert = completenessCert({ shown: hits.length, total: hits.truncated ? null : hits.length, truncated: hits.truncated || null, semantic: false });
-      return finishOut(hits, `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + steer + textCert);
+      const textBody = `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + textCert;
+      // LEAD with the symbol-hunt steer (not trail it): the model acts on the first lines it reads, so an
+      // actionable "use find_references instead" buried under 60 matches is seen too late (live: a symbol
+      // text-search ran, the model used the partial body before reaching the trailing steer). A plain text
+      // search has no steer → body unchanged.
+      return finishOut(hits, steer ? steer.replace(/^\n+/, "") + "\n\n" + textBody : textBody);
     }
     // vts_git / vts_p4 — run the real VCS command and COMPACT its output before it reaches the model. The
     // language-server index can't help here (status/log/diff/opened aren't source symbols), but the raw dump

@@ -213,6 +213,101 @@ body.graph-focused .graph-focus-btn::before{content:"✕  ";font-size:10px}
 }
 body.graph-focused .graph-kb-hint{display:block}
 
+/* ── Precision Ladder ─────────────────────────────────────────────────── */
+/* Rung accent palette */
+:root{
+  --rung1:#0070F3;   /* exact  — language server */
+  --rung2:#38BDF8;   /* syntactic — tree-sitter  */
+  --rung3:#A78BFA;   /* fuzzy — concept dict     */
+  --rung4:#34D399;   /* section — doc/config     */
+  --rung1-dim:rgba(0,112,243,.12);
+  --rung2-dim:rgba(56,189,248,.12);
+  --rung3-dim:rgba(167,139,250,.12);
+  --rung4-dim:rgba(52,211,153,.12);
+}
+
+.ladder-wrap{display:flex;gap:0;align-items:stretch;position:relative}
+/* connector line under rungs */
+.ladder-wrap::before{
+  content:"";position:absolute;bottom:-1px;left:0;right:0;
+  height:1px;background:var(--border);z-index:0;
+}
+
+.rung-card{
+  flex:1;min-width:0;
+  border-right:1px solid var(--border);
+  padding:16px 18px 14px;
+  position:relative;
+  transition:background .14s;
+  cursor:default;
+}
+.rung-card:last-child{border-right:none}
+.rung-card:hover{background:var(--panel-hover)}
+
+/* staircase step notch — bottom right corner cut */
+.rung-card::after{
+  content:"";
+  position:absolute;bottom:0;right:0;
+  width:0;height:0;
+  border-style:solid;
+  border-width:0 0 10px 10px;
+  border-color:transparent transparent var(--bg) transparent;
+  pointer-events:none;
+}
+/* step offset per rung so they visually descend */
+.rung-card[data-rung="1"]{padding-top:10px}
+.rung-card[data-rung="2"]{padding-top:16px}
+.rung-card[data-rung="3"]{padding-top:22px}
+.rung-card[data-rung="4"]{padding-top:28px}
+
+.rung-num{
+  font-family:var(--mono);font-size:10px;font-weight:700;
+  letter-spacing:.05em;text-transform:uppercase;
+  margin-bottom:6px;display:flex;align-items:center;gap:6px;
+}
+.rung-pip{
+  width:7px;height:7px;border-radius:50%;flex-shrink:0;
+}
+.rung-name{font-size:13px;font-weight:600;margin-bottom:3px;line-height:1.3}
+.rung-engine{
+  font-family:var(--mono);font-size:10px;color:var(--faint);
+  margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.rung-when{font-size:11px;color:var(--dim);line-height:1.4;margin-bottom:8px;min-height:2.8em}
+.rung-footer{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:auto}
+.cert-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-family:var(--mono);font-size:10px;font-weight:600;
+  padding:2px 7px;border-radius:3px;letter-spacing:.03em;
+  border:1px solid;
+}
+.rung-stat{
+  font-family:var(--mono);font-size:10px;color:var(--faint);
+  white-space:nowrap;
+}
+.rung-stat span{color:var(--ink)}
+
+/* ── Surface Coverage card ─────────────────────────────────────────── */
+.surf-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+.surf-section-label{
+  font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--faint);margin-bottom:5px;
+}
+.surf-row{
+  display:flex;align-items:center;gap:6px;margin-bottom:5px;
+  font-size:11px;color:var(--dim);
+}
+.surf-row:last-child{margin-bottom:0}
+.surf-dot{
+  width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--faint);
+}
+.surf-val{font-family:var(--mono);font-size:11px;color:var(--ink);white-space:nowrap}
+
+/* ── Cert legend card ──────────────────────────────────────────────── */
+.cert-legend{display:flex;flex-direction:column;gap:8px}
+.cert-row{display:flex;align-items:flex-start;gap:8px}
+.cert-desc{font-size:11px;color:var(--dim);line-height:1.4;flex:1}
+
 /* Focus ring */
 :focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 
@@ -273,6 +368,26 @@ body.graph-focused .graph-kb-hint{display:block}
           <div class="stat-sub">tool invocations</div>
         </div>
       </div>
+    </div>
+
+    <!-- Precision Ladder (full width) -->
+    <div class="col-12 panel" id="ladderPanel" style="padding:0;display:none">
+      <div style="padding:12px 18px 0;border-bottom:1px solid var(--border)">
+        <div class="panel-title" style="margin-bottom:0;padding-bottom:10px">Precision Ladder — how vts answers</div>
+      </div>
+      <div class="ladder-wrap" id="ladderWrap">
+        <!-- injected by renderLadder() -->
+      </div>
+    </div>
+
+    <!-- Row: Surfaces + Certs (shown when /data has tiers) -->
+    <div class="col-8 panel" id="surfacePanel" style="display:none">
+      <div class="panel-title">Surface Coverage</div>
+      <div id="surfaceContent"><div class="empty">loading…</div></div>
+    </div>
+    <div class="col-4 panel" id="certsPanel" style="display:none">
+      <div class="panel-title">Completeness Certificates</div>
+      <div class="cert-legend" id="certsContent"></div>
     </div>
 
     <!-- Row 2: 30-day chart -->
@@ -605,6 +720,142 @@ function renderTools(tools){
   container.innerHTML=html;
 }
 
+/* ── Cert badge helpers ──────────────────────────────────────────────── */
+const CERT_COLORS={
+  COMPLETE:  {color:"#34D399",bg:"rgba(52,211,153,.12)"},
+  SYNTACTIC: {color:"#38BDF8",bg:"rgba(56,189,248,.12)"},
+  PARTIAL:   {color:"#FACC15",bg:"rgba(250,204,21,.12)"},
+  INCONCLUSIVE:{color:"#737373",bg:"rgba(115,115,115,.12)"},
+};
+const RUNG_COLORS=["","#0070F3","#38BDF8","#A78BFA","#34D399"];
+const RUNG_BG=["","rgba(0,112,243,.12)","rgba(56,189,248,.12)","rgba(167,139,250,.12)","rgba(52,211,153,.12)"];
+
+function certBadgeHtml(certKey){
+  const c=CERT_COLORS[certKey]||{color:"#737373",bg:"rgba(115,115,115,.12)"};
+  return `<span class="cert-badge" style="color:${c.color};background:${c.bg};border-color:${c.color}">${certKey}</span>`;
+}
+
+/* ── Precision Ladder ────────────────────────────────────────────────── */
+function renderLadder(tiers){
+  const panel=document.getElementById("ladderPanel");
+  const wrap=document.getElementById("ladderWrap");
+  if(!tiers||!tiers.length){return;}
+  panel.style.display="";
+
+  let html="";
+  tiers.forEach(function(t){
+    const rung=t.rung||1;
+    const color=RUNG_COLORS[rung]||"#737373";
+    const bg=RUNG_BG[rung]||"transparent";
+    const hasSaved=(typeof t.saved==="number")&&t.saved>0;
+    const hasRuns=(typeof t.runs==="number")&&t.runs>0;
+    const reach=t.reach||"";
+
+    let statHtml="";
+    if(hasSaved){
+      statHtml+=`<span class="rung-stat"><span>${fmtTok(t.saved)}</span> tok saved</span>`;
+    }
+    if(hasRuns){
+      statHtml+=`<span class="rung-stat"><span>${t.runs.toLocaleString()}</span> runs</span>`;
+    }
+    if(!hasSaved&&reach){
+      statHtml+=`<span class="rung-stat"><span>${reach}</span></span>`;
+    }
+
+    html+=`<div class="rung-card" data-rung="${rung}" style="background:${bg}">
+      <div class="rung-num" style="color:${color}">
+        <span class="rung-pip" style="background:${color}"></span>
+        Rung ${rung}
+      </div>
+      <div class="rung-name" style="color:${color}">${t.name||""}</div>
+      <div class="rung-engine">${t.engine||""}</div>
+      <div class="rung-when">${t.when||""}</div>
+      <div class="rung-footer">
+        ${certBadgeHtml(t.cert||"COMPLETE")}
+        ${statHtml}
+      </div>
+    </div>`;
+  });
+  wrap.innerHTML=html;
+}
+
+/* ── Surface Coverage ────────────────────────────────────────────────── */
+function renderSurfaces(surfaces){
+  const panel=document.getElementById("surfacePanel");
+  const content=document.getElementById("surfaceContent");
+  if(!surfaces){return;}
+  panel.style.display="";
+
+  const sem=surfaces.semantic||{};
+  const semEntries=[
+    {key:"clangd",label:"C++",color:"#F7768E"},
+    {key:"typescript",label:"TS/JS",color:"#38BDF8"},
+    {key:"roslyn",label:"C#",color:"#A78BFA"},
+    {key:"pyright",label:"Python",color:"#34D399"},
+  ].filter(function(e){return(sem[e.key]||0)>0;});
+
+  const docFormats=surfaces.docFormats||[];
+  const fs=surfaces.filesystem||{};
+
+  let codeRows="";
+  semEntries.forEach(function(e){
+    codeRows+=`<div class="surf-row"><span class="surf-dot" style="background:${e.color}"></span>${e.label}<span class="surf-val" style="margin-left:auto">${(sem[e.key]||0).toLocaleString()} files</span></div>`;
+  });
+  if(!semEntries.length){
+    codeRows=`<div class="surf-row" style="color:var(--faint)">no backend detected</div>`;
+  }
+  const tsLangs=surfaces.syntacticLangs||17;
+  codeRows+=`<div class="surf-row"><span class="surf-dot" style="background:#38BDF8"></span>tree-sitter<span class="surf-val" style="margin-left:auto">${tsLangs} langs</span></div>`;
+
+  let docRows="";
+  if(docFormats.length){
+    docRows=docFormats.map(function(f){
+      return`<div class="surf-row"><span class="surf-dot" style="background:#34D399"></span>${f}</div>`;
+    }).join("");
+  }else{
+    docRows=`<div class="surf-row" style="color:var(--faint)">md · toml · yaml · json · txt</div>`;
+  }
+
+  let fsHtml="";
+  if((fs.runs||0)>0){
+    fsHtml=`<div class="surf-row"><span class="surf-dot" style="background:#FACC15"></span>find_files / search_text<span class="surf-val" style="margin-left:auto">${fmtTok(fs.saved||0)} tok · ${(fs.runs||0).toLocaleString()} runs</span></div>`;
+  }else{
+    fsHtml=`<div class="surf-row"><span class="surf-dot" style="background:#FACC15"></span>find_files / search_text<span class="surf-val" style="color:var(--faint);margin-left:auto">sanctioned grep replacement</span></div>`;
+  }
+
+  content.innerHTML=`<div class="surf-grid">
+    <div>
+      <div class="surf-section-label">Code (semantic + syntactic)</div>
+      ${codeRows}
+    </div>
+    <div>
+      <div class="surf-section-label">Docs &amp; Config (section-level)</div>
+      ${docRows}
+      <div style="margin-top:10px">
+        <div class="surf-section-label">Filesystem</div>
+        ${fsHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ── Completeness Certs legend ───────────────────────────────────────── */
+function renderCerts(certs){
+  const panel=document.getElementById("certsPanel");
+  const content=document.getElementById("certsContent");
+  if(!certs||!certs.length){return;}
+  panel.style.display="";
+
+  let html="";
+  certs.forEach(function(c){
+    html+=`<div class="cert-row">
+      ${certBadgeHtml(c.key)}
+      <span class="cert-desc">${c.desc||""}</span>
+    </div>`;
+  });
+  content.innerHTML=html;
+}
+
 /* ── Resize re-render (2D panels only) ───────────────────────────────── */
 let _resizeTimer=null;
 let _lastData=null;
@@ -654,6 +905,10 @@ fetch("/data")
     renderBars(s.days||[]);
     renderDonut(data.census||{});
     renderTools(s.tools||[]);
+
+    if(data.tiers) renderLadder(data.tiers);
+    if(data.surfaces) renderSurfaces(data.surfaces);
+    if(data.certs) renderCerts(data.certs);
 
     const g=data.graph||{nodes:[],links:[]};
     if(window.__dashDispatch) window.__dashDispatch(g);
