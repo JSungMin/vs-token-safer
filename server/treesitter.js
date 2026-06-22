@@ -6,7 +6,11 @@
 // scan (scanTextUnder) — which returns every USAGE line, not declarations, and can't tell a class from a
 // comment. Tree-sitter is an OFFICIAL standard parser (the GitHub / neovim engine), shipped here as prebuilt
 // wasm grammars (tree-sitter-wasms) run by the wasm runtime (web-tree-sitter) — no native build, works on
-// Windows. It gives a real AST → DECLARATIONS with names + lines, for 36 languages, with ZERO project setup.
+// Windows. It gives a real AST → DECLARATIONS with names + lines, with ZERO project setup. 36 grammars ship;
+// declaration extraction is configured for ~17 languages today — 10 with a hand-tuned node-type walk (the
+// flagship set: C/C++/C#/JS/TS/Py/Go/Java/Rust/Ruby, where C++ declarator-drilling needs care) and 7 more via
+// canonical `tags.scm` queries (php/swift/kotlin/scala/dart/zig/bash) — and a grammar with neither degrades
+// to a generic walk rather than going dark. Adding a language = a hand config OR a server/tags/<grammar>.scm.
 //
 // This tier is SYNTACTIC, not semantic: it finds where a symbol is DECLARED (and a file's outline), but it
 // does NOT resolve references, overloads, or types across files — that stays the LSP's job. So it slots
@@ -235,6 +239,11 @@ const GENERIC = {
   ]),
   kind: {},
 };
+// Sentinel config: "extract declarations via the canonical tags query in server/tags/<grammar>.scm" instead
+// of a hand-tuned node-type walk. This is how coverage EXTENDS beyond the flagship languages — the official
+// tree-sitter tags-query DSL (`@definition.<kind>` + `@name`) is loaded from a file, so adding a language is
+// adding a .scm (+ an EXT_MAP entry), no JS. Charter-pure: tree-sitter's own query interface, glue = ours.
+const TAGS = { tags: true };
 
 // ext → { wasm, cfg }. wasm = tree-sitter-wasms/out/<wasm>.wasm basename (no extension).
 const EXT_MAP = {
@@ -264,6 +273,20 @@ const EXT_MAP = {
   java: ["java", JAVA],
   rs: ["rust", RUST],
   rb: ["ruby", RUBY],
+  // Tags-query tier (canonical .scm extraction; validated against the bundled grammars). Extends the
+  // syntactic rung past the hand-tuned flagship languages — see server/tags/*.scm.
+  php: ["php", TAGS],
+  php5: ["php", TAGS],
+  phtml: ["php", TAGS],
+  sh: ["bash", TAGS],
+  bash: ["bash", TAGS],
+  swift: ["swift", TAGS],
+  kt: ["kotlin", TAGS],
+  kts: ["kotlin", TAGS],
+  scala: ["scala", TAGS],
+  sc: ["scala", TAGS],
+  dart: ["dart", TAGS],
+  zig: ["zig", TAGS],
 };
 
 let _req; // createRequire anchor (or false once we know it's unavailable)
@@ -362,6 +385,65 @@ function tailName(name) {
   return m[m.length - 1] || name;
 }
 
+// ── TAGS-QUERY tier (the canonical, file-driven extractor for languages without a hand-tuned node config).
+// A `server/tags/<grammar>.scm` written in tree-sitter's own query DSL captures `@definition.<kind>` on each
+// declaration node and `@name` on its identifier; we read those out of the query matches. The file ships
+// with the package (next to this module), so it resolves in every install layout without createRequire.
+function tagsDir() {
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+  return path.join(here, "tags");
+}
+const _defTagsCache = new Map(); // wasm base → constructed Query | null (absent/failed)
+async function defTagsQueryFor(wasmBase) {
+  if (_defTagsCache.has(wasmBase)) return _defTagsCache.get(wasmBase);
+  let q = null;
+  try {
+    const src = fs.readFileSync(path.join(tagsDir(), `${wasmBase}.scm`), "utf8");
+    const lang = await loadLanguage(wasmBase);
+    if (lang && _TS) q = new _TS.Query(lang, src);
+  } catch {
+    q = null; // no .scm for this grammar, or it failed to construct against the bundled version → graceful
+  }
+  _defTagsCache.set(wasmBase, q);
+  return q;
+}
+// Map a `@definition.<suffix>` capture to a short kind label (parity with the hand-tuned KIND maps).
+const TAG_KIND = {
+  function: "func", method: "method", class: "class", struct: "struct", interface: "interface",
+  enum: "enum", trait: "trait", type: "type", module: "namespace", namespace: "namespace",
+  constant: "const", field: "field", macro: "macro", object: "object", protocol: "protocol", union: "union",
+};
+// Pull declarations out of a tags query's matches: each match carries a `@definition.<kind>` and a `@name`.
+function extractTagDefs(q, root) {
+  const out = [];
+  for (const m of q.matches(root)) {
+    let nameNode = null, kind = null;
+    for (const c of m.captures) {
+      if (c.name === "name") nameNode = c.node;
+      else if (c.name.startsWith("definition.")) kind = TAG_KIND[c.name.slice(11)] || c.name.slice(11);
+    }
+    if (nameNode && kind && /[A-Za-z_]/.test(nameNode.text))
+      out.push({ name: nameNode.text.slice(0, 80), kind, line: nameNode.startPosition.row + 1, col: nameNode.startPosition.column });
+  }
+  return out;
+}
+// Pull call references named `want` out of a tags query's `@reference.*` captures. A reference pattern
+// captures the call target either directly (`@reference.call`) or via `@name` alongside a `@reference.*`;
+// match the named node's text and dedupe by position.
+function extractTagRefs(q, root, want) {
+  const out = [];
+  for (const m of q.matches(root)) {
+    const hasRef = m.captures.some((c) => c.name.startsWith("reference"));
+    if (!hasRef) continue;
+    for (const c of m.captures) {
+      if ((c.name.startsWith("reference") || c.name === "name") && c.node.text === want)
+        out.push({ name: want, line: c.node.startPosition.row + 1, col: c.node.startPosition.column });
+    }
+  }
+  const seen = new Set();
+  return out.filter((r) => { const k = `${r.line}:${r.col}`; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
 // Parse one file and return its declarations: [{ name, kind, line (1-based), col (0-based) }].
 // Bounded by maxBytes (a 2 MB generated file isn't worth parsing). Best-effort: any failure → [].
 export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
@@ -388,6 +470,23 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
     tree = parser.parse(src);
   } catch {
     return [];
+  }
+  // Tags-query tier: a file-driven .scm extracts declarations for languages without a hand-tuned node config.
+  if (cfg.tags) {
+    const q = await defTagsQueryFor(wasmBase);
+    let defs = [];
+    try {
+      if (q) defs = extractTagDefs(q, tree.rootNode);
+    } catch {
+      defs = [];
+    }
+    try {
+      tree.delete && tree.delete();
+      parser.delete && parser.delete();
+    } catch {
+      /* ignore */
+    }
+    return defs.slice(0, 5000);
   }
   const out = [];
   const decl = cfg.decl,
@@ -547,7 +646,9 @@ export async function tsFileReferences(absPath, name, { maxBytes = 2_000_000 } =
   const entry = EXT_MAP[extOf(absPath)];
   if (!entry) return [];
   const wasmBase = entry[0];
-  const q = await refQueryFor(wasmBase);
+  const cfg = entry[1] || GENERIC;
+  // TAGS languages carry their `@reference.*` captures in the same .scm; others use the inline REF_QUERIES.
+  const q = cfg.tags ? await defTagsQueryFor(wasmBase) : await refQueryFor(wasmBase);
   if (!q) return [];
   let src;
   try {
@@ -567,12 +668,16 @@ export async function tsFileReferences(absPath, name, { maxBytes = 2_000_000 } =
   } catch {
     return [];
   }
-  const out = [];
+  let out = [];
   const want = String(name);
   try {
-    for (const c of q.captures(tree.rootNode)) {
-      if (c.node.text === want)
-        out.push({ name: want, line: c.node.startPosition.row + 1, col: c.node.startPosition.column });
+    if (cfg.tags) {
+      out = extractTagRefs(q, tree.rootNode, want);
+    } else {
+      for (const c of q.captures(tree.rootNode)) {
+        if (c.node.text === want)
+          out.push({ name: want, line: c.node.startPosition.row + 1, col: c.node.startPosition.column });
+      }
     }
   } catch {
     /* ignore */
@@ -665,7 +770,9 @@ export async function tsFileDeclDocs(absPath, { maxBytes = 2_000_000, gap = 3 } 
   const entry = EXT_MAP[extOf(absPath)];
   if (!entry) return [];
   const [wasmBase, cfgIn] = entry;
-  const cfg = cfgIn || GENERIC;
+  // TAGS-tier languages have no node-type `decl` set — use the GENERIC walk for the concept-unit doc pass
+  // (best-effort; the tags tier itself drives symbol/reference, this only feeds the fuzzy concept dictionary).
+  const cfg = cfgIn && cfgIn.decl ? cfgIn : GENERIC;
   let src;
   try {
     const st = fs.statSync(absPath);

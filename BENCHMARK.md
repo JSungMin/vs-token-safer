@@ -6,13 +6,16 @@ the model's context. Benchmarks here are **A/B**: the same query **without the p
 `grep`/`rg`, i.e. what the model receives when it greps) versus **with the plugin** (Arm B — the
 clangd/Roslyn index, formatted and token-capped).
 
-> **Run it yourself (zero API, deterministic):** `npm run bench` sweeps a synthetic TypeScript corpus
-> across sizes and prints a grep-vs-vts token table + a per-model cost table — no API key, no spend, same
-> numbers on any machine. The token *delta* is model-independent; cost = `delta × input price`. Details,
-> methodology, and honest caveats in [`benchmarks/README.md`](benchmarks/README.md). Representative: at a
-> 150-file corpus the four everyday scenarios cut **~61%** of search tokens overall (find-references ~55%,
-> find-symbol ~84%, text ~54%, find-file ~32%); the reduction **climbs with repo size** (grep scales with
-> matches, vts stays capped). The numbers below are the large real-world UE ceiling.
+> **Run it yourself (zero API, deterministic):** `npm run bench` sweeps synthetic corpora in **three
+> languages** (TypeScript, Python, Go) across sizes and prints a per-language grep-vs-vts token table + a
+> per-model cost table — no API key, no spend, same numbers on any machine. The token *delta* is
+> model-independent; cost = `delta × input price`. Two axes on purpose: a single corpus could be
+> cherry-picked, so the same four scenarios run on a language vts has a **semantic** backend for
+> (TypeScript/Python) AND one it has **no** backend for (Go → the **syntactic** tree-sitter tier), at three
+> sizes each. Details, methodology, and honest caveats in [`benchmarks/README.md`](benchmarks/README.md).
+> Representative: at a 150-file corpus the all-language total cuts **~87%** of search tokens (per language:
+> TypeScript ~87%, Python ~83%, Go ~91%); the reduction **climbs with repo size** (grep scales with matches,
+> vts stays capped). The numbers below are the large real-world UE ceiling.
 
 > No source code, file paths, or project symbol names are reproduced here — only aggregate counts,
 > sizes, and timings. The query below is a **public Unreal Engine framework symbol** (`FGameplayTag`),

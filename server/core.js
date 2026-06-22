@@ -1905,7 +1905,9 @@ export async function runTool(name, a = {}) {
       const t0 = Date.now();
       const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now() });
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
-      return out(`Built committable symbol index${scopeNote}: ${r.symbols} symbol(s) over ${r.files} file(s) → ${r.path} in ${((Date.now() - t0) / 1000).toFixed(1)}s.${r.partial ? " (PARTIAL — time-boxed; raise VTS via a narrower scope or rerun.)" : ""}\n  Commit .vts-index/ to share it / speed teammates' cold starts. It answers search_symbol instantly until a language server indexes (which then supersedes it).`);
+      // Incremental note: how many files were reused (no re-parse) vs re-parsed this run — the cold→warm win.
+      const incrNote = r.reparsed != null && (r.reused || r.reparsed) ? ` [incremental: re-parsed ${r.reparsed}, reused ${r.reused} unchanged]` : "";
+      return out(`Built committable symbol index${scopeNote}: ${r.symbols} symbol(s) over ${r.files} file(s) → ${r.path} in ${((Date.now() - t0) / 1000).toFixed(1)}s${incrNote}.${r.partial ? " (PARTIAL — time-boxed; raise VTS via a narrower scope or rerun.)" : ""}\n  Commit .vts-index/ to share it / speed teammates' cold starts. It answers search_symbol instantly until a language server indexes (which then supersedes it).`);
     }
     if (name === "vts_gen_compile_db") {
       // The user's choice: run UBT GenerateClangDatabase for full semantic clangd, OR don't and stay in
@@ -2149,6 +2151,24 @@ export async function runTool(name, a = {}) {
       const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
       if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
       return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
+    }
+    // find_references with NO backend (a Go/Rust/… repo we have no language server for): the SYNTACTIC
+    // reference fallback (tree-sitter call sites, then a literal scan) — the SAME tier search_symbol uses
+    // above. Without this, getClient(root, null) hard-errors before the by-name fallback inside the handler
+    // can run, so find_references-by-name dead-ends on a toolchain-less repo (live-found on a Go corpus).
+    if (!backendName && name === "find_references") {
+      if (!a.symbol) return err("find_references needs `symbol` (a name) when no language-server backend is available — a position query (path/line/character) requires a backend.");
+      const want = String(a.symbol);
+      const fmax = Number(a.maxResults) || MAX_RESULTS;
+      const tsRefs = await tsSearchReferences(root, want, { skipDir });
+      if (tsRefs && tsRefs.length) {
+        const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
+        const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
+        return finishOut(refLines, `No language-server backend for ${root} — ${tsRefs.length} tree-sitter call reference(s) for "${want}" (syntactic, file:line; not semantic — a language server resolves which overload/scope):\n` + body + completenessCert({ shown: refLines.length, total: tsRefs.length, truncated: tsRefs.truncated, syntactic: true }));
+      }
+      const hits = scanTextUnder(root, want, fmax);
+      if (hits.length) return finishOut(hits, `No language-server backend for ${root} — literal usage matches for "${want}" (file:line of the name, not semantic references):\n` + hits.join("\n"));
+      return finishOut([], `No backend resolved and no tree-sitter/text reference for "${want}" under ${root}.` + EMPTY_HINT);
     }
     if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn|typescript|pyright, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++), a .sln/.csproj (C#), a tsconfig/package.json (JS/TS), or a pyproject.toml/*.py (Python).`);
     const max = Number(a.maxResults) || MAX_RESULTS;

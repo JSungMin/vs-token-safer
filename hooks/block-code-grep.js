@@ -415,17 +415,16 @@ function notTextLogTarget(ti) {
 }
 // Block default-ON; VTS_GREP_BLOCK=0/false/off reverts the symbol-hunt escalation to warn-only.
 const grepBlockOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_GREP_BLOCK ?? "1"));
-// Reassuring block copy for a symbol-hunt Grep — leads with the win (tokens + accuracy), frames the red box
-// as a friendly "hold on", and embeds the READY-TO-USE search_symbol/search_text call (grepNudgeFor).
+// Truncate a caught pattern/command for display (the "what was intercepted" line).
+const clip = (s, n = 56) => { s = String(s).replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
+// Concise block copy for a symbol-hunt Grep: what was caught · the ready semantic call · the win · opt-out.
 function grepBlockMsg(ti) {
-  const head = KO
-    ? "✨ vs-token-safer가 심볼 검색을 가로챘어요 — 고장이 아니라 의도된 동작이고, 토큰 절약 + 정확도↑입니다. 🎉\n" +
-      "(빨간 박스는 훅이 \"잠깐\"이라고 말하는 신호일 뿐, 실패가 아니에요.)\n" +
-      "이 패턴은 '심볼 사냥'이라 시맨틱 도구가 더 작고 정확합니다 (정규식 거짓양성 없음 — `void.*Foo\\(`는 `SetActiveFoo`도 긁어요):\n"
-    : "✨ vs-token-safer caught a SYMBOL search — intended, not broken; it saves tokens AND improves accuracy. 🎉\n" +
-      "(The red box is just the hook saying \"hold on\" — not a failure.)\n" +
-      "This pattern is a symbol hunt → a semantic tool is smaller + exact (no regex false positives — `void.*Foo\\(` also catches `SetActiveFoo`):\n";
-  return head + grepNudgeFor(ti) + (KO ? "\nwarn-only로 되돌리려면: VTS_GREP_BLOCK=0." : "\nPrefer warn-only? VTS_GREP_BLOCK=0.");
+  const pat = String(ti.pattern || "");
+  const ident = /^[A-Za-z_][A-Za-z0-9_]*$/.test(pat);
+  const call = ident ? `find_references symbol="${pat}" / search_symbol q="${pat}"` : `search_text q="${clip(pat, 40)}"`;
+  return KO
+    ? `✨ vs-token-safer: 심볼검색 가로챔 (토큰↓·정확도↑) — /${clip(pat)}/\n→ ${call} — 시맨틱, file:line, 보통 ~90%↓ (정규식 거짓양성 없음). warn전환: VTS_GREP_BLOCK=0`
+    : `✨ vs-token-safer: caught a symbol search (fewer tokens, exact) — /${clip(pat)}/\n→ ${call} — semantic, file:line, ~90% smaller (no regex false positives). Warn-only: VTS_GREP_BLOCK=0`;
 }
 // Glob / Search TOOL — the built-in filename search. vts's find_files is the token-capped, walk-bounded
 // equivalent (skips Intermediate/Binaries/node_modules, time-boxed) — the built-in Glob has no result cap
@@ -480,14 +479,8 @@ function globBlockMsg(ti) {
   const hint = globRootHint(ti);
   const call = `find_files q="${base}"${hint ? ` projectPath="${hint}"` : ""}`;
   return KO
-    ? "✨ vs-token-safer가 파일명 검색을 가로챘어요 — 고장이 아니라 의도된 동작이고, 거대 트리 타임아웃을 막아줍니다. 🎉\n" +
-      "(빨간 박스는 \"잠깐\"의 신호일 뿐, 실패가 아니에요.) find_files는 walk-bound(Intermediate/Binaries/node_modules " +
-      "스킵 + 시간박스)라 UE 트리에서도 안 멈춰요.\n어시스턴트는 이렇게 다시 실행하세요: " + call +
-      " (루트를 좁힐수록 빠름). 끄기: VTS_GREP_BLOCK=0 / VTS_ENFORCE=0."
-    : "✨ vs-token-safer caught a filename search — intended, not broken; it avoids a giant-tree timeout. 🎉\n" +
-      "(The red box is just a \"hold on\", not a failure.) find_files is walk-bounded (skips Intermediate/Binaries/" +
-      "node_modules + time-boxed) so it won't hang on a UE tree.\nAssistant: re-run as: " + call +
-      " (narrow the root for speed). Disable: VTS_GREP_BLOCK=0 / VTS_ENFORCE=0.";
+    ? `✨ vs-token-safer: 파일명검색 가로챔 (거대 트리 타임아웃 방지) — \`${clip(ti.pattern)}\`\n→ ${call} — walk-bound(Intermediate/Binaries/node_modules 스킵)·토큰캡. warn전환: VTS_GREP_BLOCK=0`
+    : `✨ vs-token-safer: caught a filename search (avoids giant-tree timeout) — \`${clip(ti.pattern)}\`\n→ ${call} — walk-bounded (skips Intermediate/Binaries/node_modules), token-capped. Warn-only: VTS_GREP_BLOCK=0`;
 }
 const LOG_NUDGE = KO
   ? "[vs-token-safer] 이 검색은 LOG가 대상입니다. 언어 서버 인덱스는 소스 코드만 다뤄요 — 로그 분석은 grep 대신 " +
@@ -496,37 +489,25 @@ const LOG_NUDGE = KO
     "analysis use gamedev-log (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate " +
     "/ fields / diff) instead of grep. Disable: VTS_ENFORCE=0.";
 
-const BLOCK_MSG = KO
-  ? "✨ vs-token-safer가 코드 검색을 가로챘어요 — 고장난 게 아니라 의도된 동작이고, 토큰을 왕창 아꼈습니다. 🎉\n" +
-    "(빨간 박스는 훅이 \"잠깐\"이라고 말하는 유일한 방법이에요 — 실패가 아니라 친절한 안내입니다.)\n" +
-    "같은 검색을 언어 서버 인덱스로 하면 file:line으로 토큰캡되어 보통 ~90% 작고(큰 repo면 20~60배),\n" +
-    "grep의 거짓 양성(주석·문자열·유사명)도 없습니다. 어시스턴트는 이 검색을 의도에 맞는 vts 도구로 다시 실행하세요:\n" +
-    "  - 심볼 / 클래스 / 함수 / 타입   → search_symbol   (q, projectPath, backend, maxResults)\n" +
-    "  - 참조 / 사용처                 → find_references (symbol — 이름만; 코드수정 primitive)\n" +
-    "  - 정의로 이동                   → goto_definition (path, line, character — 0-based)\n" +
-    "  - 원시 텍스트 / 문자열 / 주석   → search_text     (q, projectPath) — 토큰캡 grep\n" +
-    "  - 파일명 검색                   → find_files      (q, projectPath) — glob 또는 부분일치\n" +
-    "또는 컨텍스트 격리 `code-locator` 서브에이전트에 위임할 수 있습니다.\n" +
-    "CLI(비-MCP): `vts symbol --q <이름> --projectPath <루트>` (vts text / files / hover 도).\n" +
-    "백엔드는 루트에서 자동 감지(compile_commands.json→clangd, .sln/.csproj→roslyn, tsconfig/package.json→typescript, pyproject/*.py→pyright).\n" +
-    "팁: 단순한 grep 하나는 자동 변환됩니다(빨간 박스 없음) — 이번 건 여러 부분이라 차단됐으니 위 중 하나를 실행하세요. " +
-    "로그/설정 텍스트는 비코드 파일이나 gamedev-log로. 끄기: VTS_ENFORCE=0."
-  : "✨ vs-token-safer caught a code search before it flooded your context — nothing broke, this is on\n" +
-    "purpose, and it just saved you a pile of tokens. 🎉 (A red box is the only way a hook can say\n" +
-    "\"hold on\" — it's a friendly redirect, not a failure.) The very same lookup through the language-server\n" +
-    "index comes back token-capped to file:line, usually ~90% smaller (often 20–60× on a big repo), and\n" +
-    "WITHOUT grep's false positives. The assistant should re-run this lookup with the vts tool matching the intent:\n" +
-    "  - symbol / class / function / type → search_symbol  (args: q, projectPath, backend, maxResults)\n" +
-    "  - references / usages of a symbol  → find_references (args: symbol — just the name; the edit primitive)\n" +
-    "  - definition of a symbol           → goto_definition (args: path, line, character — 0-based)\n" +
-    "  - raw text / string / comment      → search_text     (args: q, projectPath) — token-capped grep\n" +
-    "  - file by name                     → find_files      (args: q, projectPath) — glob or substring\n" +
-    "Or delegate the whole lookup to the context-isolated `code-locator` subagent.\n" +
-    "CLI alternative (no MCP): `vts symbol --q <name> --projectPath <root>` (also: vts text / files / hover).\n" +
-    "Backend auto-detects from the root (compile_commands.json → clangd, .sln/.csproj → roslyn,\n" +
-    "tsconfig/package.json → typescript, pyproject.toml/*.py → pyright).\n" +
-    "Tip: a SINGLE simple grep is auto-rewritten for you (no red box at all) — this one had several parts,\n" +
-    "so just run one of the above. Logs/config text → target a non-code file or gamedev-log. Opt out anytime: VTS_ENFORCE=0.";
+// Concise block copy for a Bash code-grep that couldn't be safely auto-rewritten (a pipeline / complex
+// pattern). Shows: what was intercepted · the equivalent vts call (best-effort from the first code segment)
+// · the typical token win · opt-out. Multi-part commands fall to a short tool list when no single call fits.
+function suggestCallFor(seg) {
+  const exec = execOf(seg);
+  if (exec === "find") { const g = extractFindName(seg); return g ? `find_files q="${g}"` : null; }
+  const pat = extractGrepPattern(seg, exec === "git");
+  if (!pat) return null;
+  if (IDENT.test(pat)) return `search_symbol q="${pat}" (or find_references symbol="${pat}")`;
+  return `search_text q="${clip(pat, 40)}"`;
+}
+function blockMsg(codeSegs) {
+  const seg = codeSegs[0] || "";
+  const call = suggestCallFor(seg) || "search_symbol / search_text / find_files";
+  const caught = clip(seg);
+  return KO
+    ? `✨ vs-token-safer: 코드검색 가로챔 (토큰 절약) — \`${caught}\`\n→ ${call} — file:line로 토큰캡, 보통 ~90%↓ (큰 repo면 20~60×), grep 거짓양성 없음.\n단일 grep은 자동 변환됨(이 건 멀티세그먼트라 차단). 끄기: VTS_ENFORCE=0`
+    : `✨ vs-token-safer: caught a code search (saves tokens) — \`${caught}\`\n→ ${call} — token-capped to file:line, ~90% smaller (20–60× on a big repo), no grep false positives.\nA single grep auto-rewrites (this was multi-segment). Disable: VTS_ENFORCE=0`;
+}
 
 let input = "";
 process.stdin.on("data", (d) => (input += d));
@@ -636,9 +617,9 @@ process.stdin.on("end", () => {
           permissionDecision: "allow",
           permissionDecisionReason: `Rerouted ${v.bin} ${v.sub} → vts ${v.tool} (output grouped/deduped/token-capped).`,
           updatedInput: { ...ti, command: v.cmd },
-          additionalContext:
-            `[vs-token-safer] Compacted \`${v.bin} ${v.sub}\` output (grouped/deduped/capped) to save tokens. ` +
-            `Disable VCS compaction: VTS_COMPACT_VCS=0. Disable all rewrites: VTS_REWRITE=0.`,
+          additionalContext: KO
+            ? `[vs-token-safer] \`${v.bin} ${v.sub}\` → vts ${v.tool}: 출력 그룹/dedup/토큰캡으로 절약. 끄기: VTS_COMPACT_VCS=0.`
+            : `[vs-token-safer] \`${v.bin} ${v.sub}\` → vts ${v.tool}: output grouped/deduped/capped to save tokens. Disable: VTS_COMPACT_VCS=0.`,
         },
       }) + "\n");
       process.exit(0);
@@ -662,16 +643,15 @@ process.stdin.on("end", () => {
             permissionDecision: "allow",
             permissionDecisionReason: `Rerouted code search → vts ${rw.tool} (language-server-grade, token-capped to file:line).`,
             updatedInput: { ...ti, command: rw.cmd },
-            additionalContext:
-              `[vs-token-safer] Rewrote your search → \`vts ${rw.tool}\` (q="${rw.q}"), token-capped to file:line. ` +
-              `For SYMBOLS (class/function/type) prefer the vs-search MCP search_symbol — semantic, not text. ` +
-              `Disable rewrite: VTS_REWRITE=0 (then it blocks instead). Disable entirely: VTS_ENFORCE=0.`,
+            additionalContext: KO
+              ? `[vs-token-safer] grep → vts ${rw.tool} q="${rw.q}" — file:line 토큰캡(보통 ~90%↓). 심볼이면 search_symbol(시맨틱) 권장. 끄기: VTS_REWRITE=0.`
+              : `[vs-token-safer] grep → vts ${rw.tool} q="${rw.q}" — token-capped file:line (~90% smaller). For symbols prefer search_symbol (semantic). Disable: VTS_REWRITE=0.`,
           },
         }) + "\n");
         process.exit(0);
       }
     }
-    process.stderr.write(BLOCK_MSG + setup + "\n");
+    process.stderr.write(blockMsg(codeSegs) + setup + "\n");
     process.exit(2); // block
   }
   // Docs/text grep with an explicit file target (not code, not log) → reroute to `vts text --path <file>`,
@@ -685,9 +665,9 @@ process.stdin.on("end", () => {
           permissionDecision: "allow",
           permissionDecisionReason: `Rerouted docs/text grep → vts search_text scoped to ${dr.file} (token-capped).`,
           updatedInput: { ...ti, command: dr.cmd },
-          additionalContext:
-            `[vs-token-safer] Rewrote your grep over ${dr.file} → \`vts text --path ${dr.file}\` (q="${dr.q}"), ` +
-            `token-capped — search_text path= auto-includes that file's extension. Disable: VTS_REWRITE=0 / VTS_ENFORCE=0.`,
+          additionalContext: KO
+            ? `[vs-token-safer] grep ${dr.file} → vts text --path ${dr.file} (q="${dr.q}") — 토큰캡. 끄기: VTS_REWRITE=0.`
+            : `[vs-token-safer] grep ${dr.file} → vts text --path ${dr.file} (q="${dr.q}") — token-capped. Disable: VTS_REWRITE=0.`,
         },
       }) + "\n");
       process.exit(0);

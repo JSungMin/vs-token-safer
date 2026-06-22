@@ -53,7 +53,8 @@
     "concept.js",
     "textstruct.js",
     "ensure-deps.mjs",
-    "backends/"
+    "backends/",
+    "tags/"
   ],
   "scripts": {
     "start": "node index.js",
