@@ -13,6 +13,49 @@ import os from "node:os";
 import path from "node:path";
 import { languageCensus } from "./warmset.js";
 import { findProjectRoot } from "./backends/index.js";
+import { importSpecifiers } from "./concept.js";
+
+// A bounded, root-scoped IMPORT graph for the languages whose dependency edges the include-graph cache does
+// NOT carry. That cache stores `#include` relationships (built by clangd's centrality walk → C/C++ only), so
+// a JS/TS/Py file lands in it with an EMPTY edge list — which is why a JS repo showed an empty force-graph
+// while a cached C++ tree dominated. Here we read the root's source files and extract their import targets
+// (concept.js importSpecifiers covers JS/TS, Python, and C/C++ #include), resolving each to a sibling file by
+// basename. Live but bounded (file cap + time box + skip heavy dirs) and cached per-root (process lifetime).
+const SKIP_VIZ = new Set(["node_modules", ".git", "build", "dist", "out", "obj", "Intermediate", "Binaries", "Saved", "DerivedDataCache", ".cache", ".vts-index", ".vs"]);
+const SRC_EXT_VIZ = /\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
+const _importGraphCache = new Map();
+function importGraphForRoot(root, { fileCap = 4000, timeBudgetMs = 3000 } = {}) {
+  if (!root) return { edges: [], files: [] };
+  if (_importGraphCache.has(root)) return _importGraphCache.get(root);
+  const t0 = Date.now();
+  const files = [];
+  const stack = [root];
+  while (stack.length && files.length < fileCap && Date.now() - t0 < timeBudgetMs) {
+    const dir = stack.pop();
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP_VIZ.has(e.name)) stack.push(p); continue; }
+      if (SRC_EXT_VIZ.test(e.name)) files.push(p);
+    }
+  }
+  const byBase = new Map(); // basename-without-extension → file, to resolve an import target within the repo
+  for (const p of files) { const b = path.basename(p).replace(/\.[^.]+$/, "").toLowerCase(); if (!byBase.has(b)) byBase.set(b, p); }
+  const edges = [];
+  for (const p of files) {
+    let txt;
+    try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
+    const ext = (p.match(/\.([^.]+)$/) || [])[1] || "";
+    for (const spec of importSpecifiers(txt, ext)) {
+      const tgt = byBase.get(String(spec).toLowerCase());
+      if (tgt && tgt !== p) edges.push([p, tgt]);
+    }
+  }
+  const out = { edges, files };
+  _importGraphCache.set(root, out);
+  return out;
+}
 
 // Which repository a file belongs to (nearest project root's basename) — so the viz can group/color nodes by
 // repo. Cached per dir. "external" when no enclosing project. Mirrors core.js repoLabelFor for the include graph.
@@ -112,26 +155,40 @@ export function buildVizData(root) {
     { key: "INCONCLUSIVE", desc: "index still building or a 0 from a truncated walk — not a true zero" },
   ];
 
-  // include-graph → force-graph: nodes = cached files, edges = include relationships (basename match), node
-  // weight = include fan-in (how many files include it). Capped to the highest-weight VTS_VIZ_MAX_NODES so the
-  // browser sim stays smooth; links to dropped nodes are pruned.
+  // dependency graph → force-graph: edges = include/import relationships (basename match), node weight =
+  // fan-in. TWO sources merged: (1) the persistent include-graph cache (clangd #include edges, mostly C/C++,
+  // GLOBAL across every repo touched) + (2) a live, root-scoped IMPORT graph for JS/TS/Py (whose edges the
+  // cache lacks). Ranking puts the DASHBOARD ROOT's files FIRST, then fan-in — so the repo you pointed the
+  // dashboard at always appears instead of being drowned by a huge unrelated cached tree (the live-found
+  // "viz only shows MyGame, not my JS repo" gap). Capped to VTS_VIZ_MAX_NODES; links to dropped nodes pruned.
   const graph = (() => {
     const g = readJson(GRAPH_FILE);
     const entries = Object.entries(g).filter(([, e]) => e && Array.isArray(e.i));
-    if (!entries.length) return { nodes: [], links: [] };
     const byBase = new Map();
     for (const [p] of entries) { const b = path.basename(p).toLowerCase(); if (!byBase.has(b)) byBase.set(b, p); }
-    const fanin = new Map();
     const rawLinks = [];
     for (const [p, e] of entries) {
       const seen = new Set();
       for (const b of e.i) {
         const tgt = byBase.get(b);
-        if (tgt && tgt !== p && !seen.has(tgt)) { seen.add(tgt); rawLinks.push([p, tgt]); fanin.set(tgt, (fanin.get(tgt) || 0) + 1); }
+        if (tgt && tgt !== p && !seen.has(tgt)) { seen.add(tgt); rawLinks.push([p, tgt]); }
       }
     }
+    // (2) import edges for the dashboard root (JS/TS/Py — absent from the #include cache).
+    const ig = importGraphForRoot(root);
+    for (const [a, b] of ig.edges) rawLinks.push([a, b]);
+    if (!rawLinks.length && !ig.files.length) return { nodes: [], links: [] };
+    const fanin = new Map();
+    for (const [, b] of rawLinks) fanin.set(b, (fanin.get(b) || 0) + 1);
+    const allFiles = new Set([...entries.map(([p]) => p), ...ig.files]);
     const cap = envInt("VTS_VIZ_MAX_NODES", 200);
-    const ranked = entries.map(([p]) => p).sort((a, b) => (fanin.get(b) || 0) - (fanin.get(a) || 0)).slice(0, cap);
+    const normRoot = root ? String(root).replace(/\\/g, "/").toLowerCase() : null;
+    const underRoot = (p) => normRoot && String(p).replace(/\\/g, "/").toLowerCase().startsWith(normRoot);
+    const ranked = [...allFiles].sort((a, b) => {
+      const ra = underRoot(a) ? 0 : 1, rb = underRoot(b) ? 0 : 1; // dashboard-root files first
+      if (ra !== rb) return ra - rb;
+      return (fanin.get(b) || 0) - (fanin.get(a) || 0);
+    }).slice(0, cap);
     const keep = new Set(ranked);
     const nodes = ranked.map((p) => ({ id: p, label: path.basename(p), repo: repoLabelFor(p), weight: fanin.get(p) || 0 }));
     const links = rawLinks.filter(([a, b]) => keep.has(a) && keep.has(b)).map(([a, b]) => ({ source: a, target: b }));
