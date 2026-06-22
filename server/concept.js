@@ -202,29 +202,25 @@ export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2
   return weights;
 }
 
-// Score one symbol against the expanded query. `symTokens` = sub-tokens of the symbol name; `docTokens` =
-// sub-tokens of its attached comment/docstring (matched at a discount, since a name is a stronger signal than
-// a comment). Each enriched query token contributes its weight x best token-match x idf; the comment channel
-// adds a smaller bonus. The result is comparable across symbols (no length normalisation needed because idf
-// already damps ubiquitous tokens, and a longer name simply has more chances to match — which is fair).
-export function scoreSymbol(model, enriched, symTokens, docTokens = [], { docFactor = 0.5 } = {}) {
+// Score one symbol against the expanded query across three channels, strongest first: the symbol NAME, the
+// file PATH it lives in, and its attached comment/docstring. Related code clusters by directory and filename
+// (an auth helper lives under `auth/` in a `session.ts`), so a query token that matches the path is real,
+// free, local evidence — weaker than a name hit, comparable to a comment hit. Each enriched query token
+// contributes its weight x best token-match x idf per channel (path/doc at a discount). idf already damps
+// ubiquitous tokens, so no length normalisation is needed.
+export function scoreSymbol(model, enriched, symTokens, docTokens = [], { docFactor = 0.5, pathTokens = [], pathFactor = 0.4 } = {}) {
+  const bestMatch = (qt, toks) => {
+    let best = 0;
+    for (const t of toks) { const m = tokMatch(qt, t); if (m > best) best = m; }
+    return best;
+  };
   let score = 0;
   for (const [qt, w] of enriched) {
     const weight = w * idf(model, qt);
-    let best = 0;
-    for (const st of symTokens) {
-      const m = tokMatch(qt, st);
-      if (m > best) best = m;
-    }
-    if (best) score += weight * best;
-    if (docFactor && docTokens.length) {
-      let dbest = 0;
-      for (const dt of docTokens) {
-        const m = tokMatch(qt, dt);
-        if (m > dbest) dbest = m;
-      }
-      if (dbest && dbest * docFactor > 0) score += weight * dbest * docFactor;
-    }
+    const nameHit = bestMatch(qt, symTokens);
+    if (nameHit) score += weight * nameHit;
+    if (pathFactor && pathTokens.length) { const ph = bestMatch(qt, pathTokens); if (ph) score += weight * ph * pathFactor; }
+    if (docFactor && docTokens.length) { const dh = bestMatch(qt, docTokens); if (dh) score += weight * dh * docFactor; }
   }
   return score;
 }
