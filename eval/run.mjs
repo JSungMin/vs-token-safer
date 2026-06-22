@@ -2004,7 +2004,19 @@ let structToolOk;
     !srep.isError && /NEW BODY/.test(after) && after.includes("## Alpha") && !after.includes("b body line"); // edit swapped just Beta
   try { fs.rmSync(sdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
-const structOk = outlineOk && resolveOk && structToolOk;
+// HTML provider (surface extension): headings + <style>/<script> blocks + WITHIN them the top-level CSS
+// selectors / JS functions as level-2 sections, so read_symbol/replace_symbol_body target a rule or function
+// BY NAME (dogfooded on the dashboard.html itself — a function read at ~124× vs the whole file).
+const htmlTxt = "<html>\n<h1>Title</h1>\n<style>\n.box { color: red; }\n</style>\n<script>\nfunction doThing(){ return 1; }\nconst helper = () => 2;\n</script>\n</html>\n";
+const htmlO = sOutline("page.html", htmlTxt);
+const htmlFn = sResolve("page.html", htmlTxt, "doThing");
+const htmlStructOk = sIs("page.html") &&
+  htmlO.some((s) => s.title === "Title" && s.level === 1) &&
+  htmlO.some((s) => s.title === ".box" && s.level === 2) &&      // CSS selector inside <style>
+  htmlO.some((s) => s.title === "doThing" && s.level === 2) &&   // JS function inside <script>
+  htmlO.some((s) => s.title === "helper" && s.level === 2) &&    // arrow-const inside <script>
+  !!htmlFn && htmlFn.line === 7;                                 // resolve a function by name → its span
+const structOk = outlineOk && resolveOk && structToolOk && htmlStructOk;
 
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
@@ -2094,7 +2106,7 @@ const rows = [
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
-  ["structure tier: section outline/read/edit for md/toml/yaml/… via the symbol tools (no backend, by heading)", structOk, "true", structOk],
+  ["structure tier: section outline/read/edit for md/toml/yaml/html/… via the symbol tools (no backend, by heading/selector/function)", structOk, "true", structOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
