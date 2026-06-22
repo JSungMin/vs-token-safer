@@ -71,6 +71,47 @@ export function buildVizData(root) {
   let census = { clangd: 0, roslyn: 0, typescript: 0, pyright: 0, total: 0 };
   try { if (root) census = languageCensus(root); } catch { /* best-effort */ }
 
+  // PRECISION LADDER (the paper's identity made visible): vts answers at the highest precision it can reach
+  // and labels which rung. Each rung carries its engine, WHEN it applies, the completeness-certificate label
+  // it stamps, and — where the per-tool ledger attributes UNAMBIGUOUSLY — live saved/runs.
+  // ATTRIBUTION HONESTY (the per-tool ledger has no per-tier tag): the exact rung sums ONLY tools that are
+  // never anything but semantic-code — search_symbol/find_references/goto/hover/rename/diagnostics. The five
+  // DUAL-USE tools (read_symbol/document_symbols/replace_symbol_body/insert_symbol/safe_delete) also serve
+  // the SECTION tier (structTool runs them on .md/.toml/.yaml), so their savings can't be split code-vs-doc
+  // from the ledger alone — they are deliberately LEFT OUT of every rung's `saved` (they still count in the
+  // headline total + the per-tool bars). So a rung's `saved` is a clean lower bound, never cross-attributed.
+  // Syntactic activity flows through the exact tools as a documented fallback; its own saved stays 0 (reach
+  // shown instead). Section/syntactic show `reach`, not `saved` — no rung claims another's tokens.
+  const toolStat = (names) => names.reduce((a, n) => {
+    const v = (s.tools || {})[n];
+    if (v) { a.saved += Math.max(0, (v.rawTok || 0) - (v.outTok || 0)); a.runs += v.runs || 0; }
+    return a;
+  }, { saved: 0, runs: 0 });
+  const EXACT_TOOLS = ["search_symbol", "find_references", "goto_definition", "hover", "rename", "diagnostics"];
+  const exactStat = toolStat(EXACT_TOOLS), fuzzyStat = toolStat(["concept_search"]), fsStat = toolStat(["find_files", "search_text"]);
+  const tiers = [
+    { key: "exact", rung: 1, name: "Exact", engine: "Language server — clangd · Roslyn · tsserver · pyright", when: "you know the name and a toolchain is present", cert: "COMPLETE", tools: EXACT_TOOLS, saved: exactStat.saved, runs: exactStat.runs },
+    { key: "syntactic", rung: 2, name: "Syntactic", engine: "tree-sitter — 17 languages, zero setup", when: "no toolchain — declarations + tag-query references", cert: "SYNTACTIC", tools: [], reach: "17 languages", saved: 0, runs: 0 },
+    { key: "fuzzy", rung: 3, name: "Fuzzy", engine: "concept dictionary mined from the repo's own naming — no embeddings", when: "you only know the intent, not the symbol name", cert: "SYNTACTIC", tools: ["concept_search"], saved: fuzzyStat.saved, runs: fuzzyStat.runs },
+    { key: "section", rung: 4, name: "Section", engine: "Markdown · TOML · YAML · JSON · … addressed by heading", when: "it's a doc or config, not code", cert: "COMPLETE", tools: [], reach: "md · mdx · adoc · rst · toml · ini · yaml · json · txt", saved: 0, runs: 0 },
+  ];
+  // SURFACE COVERAGE (the "whole repo an agent sees" pillar): semantic backends detected in this root + the
+  // syntactic language reach + the document formats. filesystem (find_files/search_text) is the non-tiered
+  // sanctioned grep replacement.
+  const surfaces = {
+    semantic: census, // per-backend file counts in this root
+    syntacticLangs: 17, // tree-sitter: 10 hand-tuned + 7 tags-query
+    docFormats: ["markdown", "mdx", "asciidoc", "rst", "toml", "ini", "yaml", "json", "txt"],
+    filesystem: { saved: fsStat.saved, runs: fsStat.runs },
+  };
+  // Completeness-certificate legend (the precision-honesty pillar) — the labels vts stamps on every answer.
+  const certs = [
+    { key: "COMPLETE", desc: "semantic, every match returned (within the indexed/scoped set)" },
+    { key: "SYNTACTIC", desc: "tree-sitter declarations, zero setup — does not resolve refs/overloads/types" },
+    { key: "PARTIAL", desc: "capped or time-boxed — more exists, recoverable via the tee / a higher cap" },
+    { key: "INCONCLUSIVE", desc: "index still building or a 0 from a truncated walk — not a true zero" },
+  ];
+
   // include-graph → force-graph: nodes = cached files, edges = include relationships (basename match), node
   // weight = include fan-in (how many files include it). Capped to the highest-weight VTS_VIZ_MAX_NODES so the
   // browser sim stays smooth; links to dropped nodes are pruned.
@@ -101,6 +142,9 @@ export function buildVizData(root) {
     root: root || "",
     savings: { totalSaved, rawTok: rawCombined, outTok: outCombined, ratio, runs: runsCombined, usd: +((totalSaved / 1e6) * usdRate).toFixed(2), days, tools, sources },
     census,
+    tiers,
+    surfaces,
+    certs,
     graph,
   };
 }
