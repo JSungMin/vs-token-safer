@@ -224,6 +224,16 @@ const EDIT_STEER =
   "(position=after|before) / safe_delete (preview by default, apply=true writes). It skips reading the file into " +
   "context. (VTS_EDIT_STEER=0 to hide.)";
 const editSteerOn = () => process.env.VTS_EDIT_STEER !== "0" && process.env.VTS_EDIT_STEER !== "false";
+const refNavOn = () => process.env.VTS_REF_NAV !== "0" && process.env.VTS_REF_NAV !== "false";
+// Appended to a LARGE flat find_references result: the same dependents can be read far cheaper as a per-file
+// blast-radius SUMMARY (detail=file) or navigated as the transitive caller TREE (direction=callers) — point
+// the model at those instead of scrolling a long flat list. Only when the set is big (a handful of refs
+// doesn't need a summary). `VTS_REF_NAV=0` hides it.
+export function refNavSteer(n, max) {
+  if (!refNavOn()) return "";
+  if (n <= max && n < envInt("VTS_REF_NAV_MIN", 25)) return "";
+  return `\n↪ ${n} references — smaller views of the same set: detail=file (per-file blast-radius summary) or detail=dir; direction=callers (the transitive caller tree, before you change it). (VTS_REF_NAV=0 to hide.)`;
+}
 
 // First-use setup nudge: if the plugin has never been configured (no config file), prepend a one-time
 // pointer to setup the FIRST time a search/nav tool runs in a process. Once per process (not per call) so
@@ -2340,7 +2350,8 @@ export async function runTool(name, a = {}) {
       const detail = String(a.detail || "").toLowerCase();
       const refBody = (detail === "file" || detail === "dir") ? fmtRefSummary(locList, detail, max) : fmtLocations(locs, max, "reference(s)");
       const refCert = completenessCert({ shown: Math.min(locList.length, max), total: locList.length, truncated: locList.length > max ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
-      const refBodyFull = backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refCert;
+      const refNav = detail ? "" : refNavSteer(locList.length, max); // a flat list with no detail= → offer the cheaper views
+      const refBodyFull = backendAdvisory(backendName, root) + `references of ${originLabel} (backend: ${backendName})${refTee}:\n` + refBody + refNav + refCert;
       if (a.symbol) maybeCounterfactual("find_references", String(a.symbol), root, locList, refBodyFull); // by-name → a NAME to shadow-grep
       return finishOut(locs, refBodyFull);
     }

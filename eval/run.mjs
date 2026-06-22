@@ -296,6 +296,16 @@ const findFileOpsOk =
   hFindDuMulti.status === 0 && !parseRw(hFindDuMulti).updatedInput &&
   hFindXargs.status === 0 && !parseRw(hFindXargs).updatedInput &&
   hFindTypeD.status === 0 && !parseRw(hFindTypeD).updatedInput;
+// BASH-EDIT steer (#7): a Bash command EDITING a code file (sed -i / awk inplace / python-write heredoc)
+// bypasses the Edit-tool steer → WARN toward replace_symbol_body/insert_symbol (never block). A read-only
+// or generation command (python build.py) is NOT nagged. The warn rides emitWarn → stdout additionalContext.
+const hSedI = runHook({ tool_name: "Bash", tool_input: { command: "sed -i 's/foo/bar/' src/Thing.cpp" } });
+const hPyWrite = runHook({ tool_name: "Bash", tool_input: { command: "python - <<'PY'\nopen('App.ts','w').write(x)\nPY" } });
+const hPyBuild = runHook({ tool_name: "Bash", tool_input: { command: "python build.py --target Editor" } });
+const bashEditOk =
+  hSedI.status === 0 && /replace_symbol_body/.test(hSedI.out || "") &&        // sed -i a code file → warn
+  hPyWrite.status === 0 && /replace_symbol_body/.test(hPyWrite.out || "") &&  // python write-heredoc → warn
+  hPyBuild.status === 0 && !/replace_symbol_body/.test(hPyBuild.out || "");   // python build (no write) → silent
 const rewriteOk =
   /cli\.js" files --q "\*\.cpp"/.test(hFind.updatedInput?.command || "") &&
   /cli\.js" symbol --q "SpawnActor"/.test(hGitGrep.updatedInput?.command || "") &&  // git grep identifier → symbol
@@ -1182,7 +1192,13 @@ const setupClangdOk =
 // 58) search_text → symbol steer — a TEXT query that is really a symbol/class usage hunt (a `Foo<Bar>`
 // template arg, `::` scope, or CamelCase/snake identifier) gets a one-line nudge toward find_references /
 // search_symbol (semantic, complete, no time-box) appended to the result; freeform/keyword text does NOT.
-const { symbolHuntInText, altSymbols } = await import("../server/core.js");
+const { symbolHuntInText, altSymbols, refNavSteer } = await import("../server/core.js");
+// refNavSteer: a LARGE flat find_references result offers the cheaper views (detail=file / direction=callers);
+// a small set is left alone (no nag). Pure fn, env-gated (VTS_REF_NAV=0 hides — default on).
+const refNavOk =
+  /detail=file/.test(refNavSteer(40, 60)) && /direction=callers/.test(refNavSteer(40, 60)) && // big set → offer summary/tree
+  refNavSteer(70, 60) !== "" &&                                                                // over the cap → offer
+  refNavSteer(5, 60) === "";                                                                   // small set → silent
 const huntUnitOk =
   symbolHuntInText("FindComponentByClass<UMyComp>") === "UMyComp" &&   // template arg is the hunted type
   symbolHuntInText("MaxWalkSpeed") === "MaxWalkSpeed" &&               // dominant CamelCase identifier
@@ -1205,7 +1221,7 @@ const stHunt = await runTool("search_text", { q: "Helper<UMyWidget>", projectPat
 const stPlain = await runTool("search_text", { q: "plainword", projectPath: stDir });
 const stAlt = await runTool("search_text", { q: "MakeWidgetAlpha|MakeWidgetBeta", projectPath: stDir }); // 2-symbol alternation
 const textSteerOk =
-  huntUnitOk && altUnitOk &&
+  huntUnitOk && altUnitOk && refNavOk &&
   /find_references symbol="UMyWidget"/.test(stHunt.text) &&   // symbol hunt → steer with the right name
   !/find_references/.test(stPlain.text) &&                     // plain word → no steer
   /ALTERNATION of 2 symbols/.test(stAlt.text) &&               // alternation → per-symbol steer
@@ -2010,6 +2026,7 @@ const rows = [
   ["log steer + empty hint → gamedev-log", logSteerOk, "true", logSteerOk],
   ["hook: rewrite code-grep / warn log+grep", hookOk, "true", hookOk],
   ["hook: rewrite find/git-grep, block complex/pipe, exclude", rewriteOk, "true", rewriteOk],
+  ["hook: bash code-edit steer (sed -i / python-write → replace_symbol_body; build script spared)", bashEditOk, "true", bashEditOk],
   ["search_text JS/TS + symbol→text fallback", jsTextOk, "true", jsTextOk],
   ["language census + adaptive cap + multi-prewarm", warmRatioOk, "true", warmRatioOk],
   ["vts_setup language census auto-config", setupOk, "true", setupOk],
