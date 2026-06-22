@@ -113,7 +113,11 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   a strongly-matching file is lifted by `VTS_CONCEPT_IMPORT_FACTOR` 0.3 × the neighbour's score — reranks the
   matched set, never invents a match). A **click-feedback loop was CRITIC-REJECTED** (self-confirming via
   position bias, non-deterministic, unmeasurable, erodes inspectability); the charter-pure adaptation paths are
-  these code-mined structural signals + (future) an explicit committable synonym file. PRECISION-LADDER NAV
+  these code-mined structural signals + a **committable synonym file** (DONE): a team-curated, git-committable
+  `<root>/.vts-index/concept-synonyms.json` (`{ "term": ["syn", …] }`) — `concept.js parseSynonyms` (tokenises
+  keys+values) feeds `expandQuery({synonyms})`, injecting a curated bridge at weight 0.95 (below an exact 1.0,
+  above a mined neighbour); additive (absent/malformed → mined model alone), inspectable, deterministic, no
+  drift. Eval guard 83. PRECISION-LADDER NAV
   (`VTS_CONCEPT_STEER`): search_symbol(exact)+multi-word-miss → steers DOWN to concept_search; concept_search →
   points UP to find_references/goto. See [[identity-and-roadmap]].
 - `server/textstruct.js` — STRUCTURE tier for prose/config files (the naming-umbrella extension: token-safer

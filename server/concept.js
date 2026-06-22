@@ -214,9 +214,20 @@ export function idf(model, t) {
 // Expand a query's tokens through the local concept dictionary. Returns a Map<token, weight>: the query's own
 // tokens at weight 1, plus up to `k` neighbours per query token weighted by a saturating function of their
 // association (capped below 1 so an expanded term never outranks an exact one). minAssoc filters weak links.
-export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2, neighborMax = 0.85 } = {}) {
+// `synonyms` (optional Map<token, string[]>, from parseSynonyms over a committable .vts-index/concept-
+// synonyms.json) is the critic-approved charter-pure adaptation path: a human-curated, version-controlled,
+// inspectable expansion with NO drift (vs a self-learning click loop). A curated synonym is injected JUST
+// BELOW an exact match (0.95) and above any mined co-occurrence neighbour, so a hand-declared bridge
+// (auth → login/session) reliably beats the noisy mined ones without ever outranking a literal hit.
+export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2, neighborMax = 0.85, synonyms = null } = {}) {
   const weights = new Map();
   for (const t of qTokens) weights.set(t, 1);
+  if (synonyms) {
+    for (const t of qTokens) {
+      const ex = synonyms.get(t);
+      if (ex) for (const s of ex) { const st = String(s).toLowerCase(); if ((weights.get(st) || 0) < 0.95) weights.set(st, 0.95); }
+    }
+  }
   for (const t of qTokens) {
     const m = model.cooc.get(t);
     if (!m) continue;
@@ -275,4 +286,32 @@ export function scoreSymbol(
     }
   }
   return score;
+}
+
+// Parse a committable synonym file (JSON `{ "term": ["syn", …], … }`) into a Map<token, string[]> for
+// expandQuery. PURE (text → Map, no fs — the caller reads the file). Keys and values are tokenised the same
+// way identifiers are (CamelCase/snake split, lowercased), so a key `auth` or `AuthFlow` and a value
+// `login_session` all normalise to the same concept tokens the model uses. Returns null on a malformed /
+// empty file (the fuzzy rung then runs on the mined dictionary alone — the synonym file is purely additive).
+export function parseSynonyms(text) {
+  let obj;
+  try {
+    obj = JSON.parse(String(text));
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const m = new Map();
+  for (const [k, v] of Object.entries(obj)) {
+    const arr = Array.isArray(v) ? v : [v];
+    const terms = [];
+    for (const x of arr) for (const t of splitIdent(String(x))) terms.push(t);
+    const keys = splitIdent(String(k)); // a multi-token key (e.g. "auth flow") maps each of its tokens
+    for (const key of keys.length ? keys : [String(k).toLowerCase()]) {
+      const cur = m.get(key) || [];
+      for (const t of terms) if (!cur.includes(t)) cur.push(t);
+      if (cur.length) m.set(key, cur);
+    }
+  }
+  return m.size ? m : null;
 }
