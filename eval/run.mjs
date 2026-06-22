@@ -1821,6 +1821,21 @@ if (tsAvailable()) {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
 }
 
+// 82) Roslyn dotnet-host path is OS-aware (Mac mini C# regression): VS Code's globalStorage dir differs per
+// platform; a Windows-only hardcode made the Roslyn .NET host miss on macOS/Linux → system dotnet (too old
+// for net10) → Roslyn never launched → no semantic C#. Assert the per-OS path tail by stubbing platform.
+const { vscodeGlobalStorage } = await import("../server/backends/index.js");
+const _origPlat = process.platform;
+const _setPlat = (p) => Object.defineProperty(process, "platform", { value: p, configurable: true });
+_setPlat("win32"); const _gW = vscodeGlobalStorage();
+_setPlat("darwin"); const _gM = vscodeGlobalStorage();
+_setPlat("linux"); const _gL = vscodeGlobalStorage();
+_setPlat(_origPlat);
+const roslynOsPathOk =
+  /AppData[\\/]Roaming[\\/]Code[\\/]User[\\/]globalStorage$/.test(_gW) &&
+  /Library[\\/]Application Support[\\/]Code[\\/]User[\\/]globalStorage$/.test(_gM) &&
+  /\.config[\\/]Code[\\/]User[\\/]globalStorage$/.test(_gL);
+
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
 const rows = [
@@ -1906,6 +1921,7 @@ const rows = [
   ["indexing scope: scopeDirs/inScope + scopedCdb prune + stats + fallbacks + clangd-indexer kill switch", scopeOk, "true", scopeOk],
   ["tool-routing policy: suppress steer on generated/build paths (CC-native) + routing digest + toggle", policyOk, "true", policyOk],
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index", tsTierOk, "true", tsTierOk],
+  ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
