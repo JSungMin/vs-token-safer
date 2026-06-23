@@ -1968,7 +1968,18 @@ if (tsAvailable()) {
     injO.some((s) => s.title === "mini" && s.level === 2) &&         // minified one-line script — injection recovers the decls
     injO.some((s) => s.title === "C" && s.level === 2) &&
     injO.some((s) => s.title === "T" && s.level === 1);              // non-embedded heading preserved
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk;
+  // (e) cAST structural chunking (migrated from arXiv:2506.15655): tsChunkEnd cuts an over-budget body at a
+  // WHOLE-CHILD boundary (no mid-statement break), returns null on an unsupported ext / when nothing to gain.
+  const { tsChunkEnd } = await import("../server/treesitter.js");
+  const chunkFile = path.join(tsDir, "chunk.js");
+  const chunkSrc = "function big() {\n" + Array.from({ length: 12 }, (_, i) => `  const v${i} = ${i};`).join("\n") + "\n}\n";
+  fs.writeFileSync(chunkFile, chunkSrc);
+  const ck = await tsChunkEnd(chunkFile, 0, 13, 6);                       // decl rows 0..13, 6-line budget
+  const ckBad = await tsChunkEnd(path.join(tsDir, "x.unknownext"), 0, 5, 3); // unsupported ext → null
+  const chunkOk = !!ck && ck.endRow > 0 && ck.endRow < 13 && ck.omitted > 0 &&
+    /;\s*$/.test(chunkSrc.split("\n")[ck.endRow]) &&                      // the cut row ends a WHOLE statement
+    ckBad === null;
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
