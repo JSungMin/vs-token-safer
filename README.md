@@ -15,15 +15,16 @@
 
 > Your coding agent has a small context window. Your repo is large. **vs-token-safer sits in between.**
 >
-> Ask it where something is, what calls it, or even "how does the auth flow work?" when you can't remember the
-> name. It answers with a short `file:line` list — not a wall of source pasted into the chat.
+> Ask where something is, what calls it, or even "how does the auth flow work?" when the name escapes you — and
+> instead of pasting a wall of source into the chat, it replies with a short `file:line` list.
 >
-> - **Know the name?** You get precise answers, because it reads the same code index your IDE does *(clangd, Roslyn, tsserver, pyright)*.
-> - **No compiler or project set up yet?** It still finds your functions and classes instantly, with zero configuration.
-> - **Only remember what the code *does*, not what it's called?** It finds it from the words your own code already uses — no AI model, nothing sent to a server.
-> - **Markdown or config, not code?** Read or edit a single section by its heading, without opening the whole file.
+> When your project builds normally, the answers are exact: it reads the same code index your editor relies on.
+> When it doesn't, it still locates your functions and classes with nothing to set up. And when you've forgotten
+> the name and only remember what the code does, it finds it from the vocabulary your own code already uses — no
+> AI model, nothing uploaded. Markdown and config files work the same way: jump straight to one section by its
+> heading instead of opening the whole file.
 >
-> A sibling plugin even reads tens-of-MB editor/build logs without pasting them into the chat. **Everything stays on your machine.**
+> A companion plugin does the same for giant editor and build logs. **None of it leaves your machine.**
 
 <p align="center">
   <img src="docs/vts-demo.gif" alt="vs-token-safer demo — grep dumps source into context; the language-server index returns a token-capped file:line list" width="760">
