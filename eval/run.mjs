@@ -2155,6 +2155,27 @@ let structToolOk;
     !srep.isError && /NEW BODY/.test(after) && after.includes("## Alpha") && !after.includes("b body line"); // edit swapped just Beta
   try { fs.rmSync(sdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
+// 88) document_symbols banks the AVOIDED whole-file Read (baseline = file text), NOT the tiny outline objects —
+// else outlining a big file records ~0 savings despite saving the full-file Read (dogfound on a 368-line wiki
+// page: document_symbols showed ~0 while read_symbol on the same file correctly banked the avoided read).
+let dsBaselineOk;
+{
+  const { rawTokensOf } = await import("../server/core.js");
+  const ddir = path.join(os.tmpdir(), `vts-eval-${process.pid}-dsbase`);
+  fs.mkdirSync(ddir, { recursive: true });
+  const bigMd = "# Doc\n" + Array.from({ length: 40 }, (_, i) => `## Section ${i}\n` + "filler body line ".repeat(12) + "\n").join("\n");
+  const bf = path.join(ddir, "big.md");
+  fs.writeFileSync(bf, bigMd);
+  const fileTok = rawTokensOf(bigMd);                      // the whole-file Read this outline avoids
+  const outlineTok = rawTokensOf(sOutline("big.md", bigMd)); // the old (wrong) baseline = tiny outline objects
+  const before = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")).tools?.document_symbols?.rawTok || 0; } catch { return 0; } })();
+  await runTool("document_symbols", { path: bf, projectPath: ddir });
+  const after = (() => { try { return JSON.parse(fs.readFileSync(SV, "utf8")).tools?.document_symbols?.rawTok || 0; } catch { return 0; } })();
+  const deltaRaw = after - before;
+  // the recorded baseline for THIS call must be ~the file's tokens (avoided-read), far above the outline baseline
+  dsBaselineOk = fileTok > 200 && outlineTok < fileTok && deltaRaw >= fileTok * 0.8;
+  try { fs.rmSync(ddir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
 // HTML provider (surface extension): headings + <style>/<script> blocks + WITHIN them the top-level CSS
 // selectors / JS functions as level-2 sections, so read_symbol/replace_symbol_body target a rule or function
 // BY NAME (dogfooded on the dashboard.html itself — a function read at ~124× vs the whole file).
@@ -2254,6 +2275,7 @@ const rows = [
   ["read_symbol: symbol source span only (not whole file) + miss", readSymbolOk, "true", readSymbolOk],
   ["find_references detail=file|dir: blast-radius summary (ranked)", refSummaryOk, "true", refSummaryOk],
   ["document_symbols scope=directory: signatures-only repo skeleton", skeletonOk, "true", skeletonOk],
+  ["document_symbols savings baseline = avoided whole-file Read (not the outline)", dsBaselineOk, "true", dsBaselineOk],
   ["clangd index advisory: file-not-in-DB vs index-incomplete (%), toggle", idxAdvOk, "true", idxAdvOk],
   ["call hierarchy folded into find_references (direction=callers/callees, depth-bounded)", traceOk, "true", traceOk],
   ["include-graph content-hash (FNV-1a) + mtime+size composite key", contentHashOk, "true", contentHashOk],

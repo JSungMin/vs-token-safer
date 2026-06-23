@@ -1729,7 +1729,9 @@ async function structTool(name, a, root, { finishOut, err, symbolEditResult }) {
   if (name === "document_symbols") {
     if (!o.length) return finishOut([], `No sections found in ${file} (no headings/keys recognised).`);
     try { recordQueryResults(root, [file]); } catch { /* best-effort */ }
-    return finishOut(o, `outline of ${file} — ${o.length} section(s) (structure tier, no language server):\n` + fmtOutline(o, max) + completenessCert({ shown: o.length, section: true }));
+    // Baseline = the WHOLE FILE you'd otherwise Read to see its structure (avoided-read, like read_symbol),
+    // not the tiny outline objects — else document_symbols banks ~0 despite saving a full-file Read.
+    return finishOut(text, `outline of ${file} — ${o.length} section(s) (structure tier, no language server):\n` + fmtOutline(o, max) + completenessCert({ shown: o.length, section: true }));
   }
   // the remaining tools target one named section (accept `symbol` — reuses the symbol tools — or `section`).
   const title = a.symbol != null ? a.symbol : a.section;
@@ -2572,7 +2574,10 @@ export async function runTool(name, a = {}) {
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
-      return finishOut(syms, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max));
+      // Baseline = the whole FILE you'd otherwise Read for its structure (avoided-read), not the raw symbol
+      // tree — outlining a 700-line file saves the 700-line Read, which is what the ledger should reflect.
+      let _dsBase = syms; try { _dsBase = fs.readFileSync(a.path, "utf8"); } catch { /* keep syms baseline */ }
+      return finishOut(_dsBase, backendAdvisory(backendName, root) + `outline of ${a.path} (backend: ${backendName}):\n` + fmtDocSymbols(syms, max));
     }
     if (name === "read_symbol") {
       // READ-side twin of replace_symbol_body: name a symbol → return ONLY that symbol's source (its outline
