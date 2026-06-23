@@ -19,7 +19,7 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
@@ -297,11 +297,16 @@ function recordSavings(rawTok, outTok, tool) {
   s.history = (s.history || []).concat([{ t: new Date().toISOString(), raw: rawTok, out: outTok }]).slice(-20);
   try { fs.mkdirSync(path.dirname(SAVINGS_FILE), { recursive: true }); fs.writeFileSync(SAVINGS_FILE, JSON.stringify(s, null, 2)); } catch { /* best-effort */ }
 }
-function savingsLine(rawTok, outTok) {
+// HONEST per-tool baseline label: read_symbol/document_symbols measure the WHOLE-FILE Read they avoid; the
+// search/nav tools measure the raw language-server response they cap. Saying "raw index response" for the
+// avoided-read tools was literally wrong (the baseline is the file). One ledger, two clearly-labeled baselines.
+const AVOIDED_READ_TOOLS = new Set(["read_symbol", "document_symbols"]);
+function savingsLine(rawTok, outTok, tool) {
   if (rawTok < 2000) return "";
   const ratio = outTok > 0 ? Math.round(rawTok / outTok) : rawTok;
   const pct = (100 * (1 - outTok / Math.max(rawTok, 1))).toFixed(1);
-  return `\n\n✓ Saved ~${(rawTok - outTok).toLocaleString()} tokens here (${pct}% / ${ratio}× smaller than the raw index response).`;
+  const vs = AVOIDED_READ_TOOLS.has(tool) ? "smaller than a full-file Read" : "smaller than the raw index response";
+  return `\n\n✓ Saved ~${(rawTok - outTok).toLocaleString()} tokens here (${pct}% / ${ratio}× ${vs}).`;
 }
 const usd = (tokens) => (tokens / 1e6) * USD_PER_MTOK;
 // ASCII sparkline-style bar graph of saved tokens for the last `days` days (RTK `gain --graph` analog).
@@ -605,7 +610,13 @@ function discoverReport(a = {}) {
   // Synergy C: combine with the savings ledger → a catch-rate (caught vs still-bypassing).
   const caught = (() => { const s = readSavings(); return Math.max(0, (s.rawTok || 0) - (s.outTok || 0)); })();
   const rate = caught + rawTokTotal > 0 ? (100 * caught / (caught + rawTokTotal)).toFixed(1) : "—";
-  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts`;
+  // The search-only catch-rate is FLATTERING: it omits the edit-pre-read tokens (typically the bigger leak).
+  // Add an HONEST line that folds editReadTok into the leaking side so the true coverage — and the symbol-edit
+  // adoption gap it exposes — isn't hidden (the metric a critic rightly flagged as a vanity number).
+  const trueLeak = rawTokTotal + (editReadTok || 0);
+  const trueRate = caught + trueLeak > 0 ? (100 * caught / (caught + trueLeak)).toFixed(1) : "—";
+  const trueLine = editReadTok ? `\n  true coverage (incl. edit-pre-reads): ~${caught.toLocaleString()} caught vs ~${trueLeak.toLocaleString()} leaking (search ${rawTokTotal.toLocaleString()} + edit-read ${editReadTok.toLocaleString()}) → ${trueRate}% — symbol-edit adoption is the real gap.` : "";
+  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine;
   if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + learnLine;
   const byTool = {};
   for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
@@ -1828,7 +1839,7 @@ export async function runTool(name, a = {}) {
     // One-time setup nudge if never configured; additive log steer if this call targets a log. Neither blocks.
     let pre = "";
     if (!_setupNudged && needsSetup()) { _setupNudged = true; pre = SETUP_NUDGE; }
-    return out(pre + body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok));
+    return out(pre + body + (looksLogTarget(a) ? LOG_STEER : "") + savingsLine(rawTok, outTok, name));
   };
   // Shared preview/apply writer for the symbolic-edit tools. Preview by default (file:line span only —
   // token-light); apply=true splices the one edit and writes, reusing the rename read-only/Perforce note.
@@ -2590,12 +2601,19 @@ export async function runTool(name, a = {}) {
       const all = fs.readFileSync(r.file, "utf8").split(/\r?\n/);
       const sigOnly = a.signatureOnly === true || a.signatureOnly === "true";
       const cap = envInt("VTS_SYMBOL_MAX_LINES", 200);
-      let end = eLine;
+      let end = eLine, structural = false;
       if (sigOnly) { end = sLine; for (let i = sLine; i <= Math.min(eLine, sLine + 8); i++) { end = i; if (all[i] && (all[i].includes("{") || /[:=]\s*$/.test(all[i]))) break; } }
-      if (end - sLine + 1 > cap) end = sLine + cap - 1;
+      else if (eLine - sLine + 1 > cap) {
+        // cAST migration (arXiv:2506.15655): over the line budget → cut at a STRUCTURAL boundary (end of a whole
+        // child member/statement) instead of mid-statement, so the body stays syntactically whole. Falls back to
+        // the plain line-cap when tree-sitter can't help (deps absent / unsupported lang / parse fail).
+        let chunk = null; try { chunk = await tsChunkEnd(r.file, sLine, eLine, cap); } catch { /* fall back */ }
+        if (chunk && chunk.endRow > sLine && chunk.endRow < eLine) { end = chunk.endRow; structural = true; }
+        else end = sLine + cap - 1;
+      }
       const body = all.slice(sLine, end + 1).join("\n");
       const omitted = eLine - end;
-      const note = omitted > 0 ? `\n… ${omitted} more line(s)${sigOnly ? " (signature only — omit signatureOnly for the body)" : ` — raise VTS_SYMBOL_MAX_LINES (now ${cap})`}.` : "";
+      const note = omitted > 0 ? `\n… ${omitted} more line(s)${sigOnly ? " (signature only — omit signatureOnly for the body)" : structural ? ` (structural cut — whole member(s) omitted, no mid-statement break; raise VTS_SYMBOL_MAX_LINES, now ${cap})` : ` — raise VTS_SYMBOL_MAX_LINES (now ${cap})`}.` : "";
       const fp = r.file.replace(/\\/g, "/");
       const ambl = r.ambiguous > 1 ? ` (${r.ambiguous} same-named — pass line= to disambiguate)` : "";
       try { recordQueryResults(root, [r.file]); } catch { /* best-effort */ }
