@@ -22,6 +22,7 @@ import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms } from "./concept.js";
+import { cochangeNeighbors } from "./cochange.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
 
@@ -303,8 +304,8 @@ function savingsLine(rawTok, outTok, tool) {
   if (rawTok < 2000) return "";
   const ratio = outTok > 0 ? Math.round(rawTok / outTok) : rawTok;
   const pct = (100 * (1 - outTok / Math.max(rawTok, 1))).toFixed(1);
-  const vs = AVOIDED_READ_TOOLS.has(tool) ? "smaller than a full-file Read" : "smaller than the raw index response";
-  return `\n\n✓ Saved ~${(rawTok - outTok).toLocaleString()} tokens here (${pct}% / ${ratio}× ${vs}).`;
+  const vs = AVOIDED_READ_TOOLS.has(tool) ? "vs a full-file Read" : "vs the raw index";
+  return `\n\n✓ Saved ~${(rawTok - outTok).toLocaleString()} tok here (${pct}% / ${ratio}× ${vs}).`;
 }
 const usd = (tokens) => (tokens / 1e6) * USD_PER_MTOK;
 // ASCII sparkline-style bar graph of saved tokens for the last `days` days (RTK `gain --graph` analog).
@@ -1614,7 +1615,20 @@ async function conceptIndexFor(root) {
     const neighbors = new Map();
     const link = (a, b) => { if (a === b) return; if (!neighbors.has(a)) neighbors.set(a, new Set()); neighbors.get(a).add(b); };
     for (const [f, specs] of fileSpecs) for (const s of specs) for (const g of byBase.get(s) || []) { link(f, g); link(g, f); }
-    return { model: buildConceptModel(units), symbols, files, neighbors };
+    // GIT CO-CHANGE neighbours (a 2nd structural signal, embedding-free): files frequently committed together
+    // are semantically related even with no shared token/import — the local proxy for what vectors cluster.
+    // Built once per root (this index is cached). Off / non-git → empty map (the boost then does nothing).
+    let cochange = new Map();
+    if (!/^(0|false|off|no)$/i.test(String(process.env.VTS_CONCEPT_COCHANGE ?? "1"))) {
+      try {
+        cochange = cochangeNeighbors(root, {
+          maxCommits: envInt("VTS_COCHANGE_MAX_COMMITS", 500),
+          maxFilesPerCommit: envInt("VTS_COCHANGE_MAX_FILES_PER_COMMIT", 30),
+          minWeight: envInt("VTS_COCHANGE_MIN_WEIGHT", 2),
+        });
+      } catch { cochange = new Map(); }
+    }
+    return { model: buildConceptModel(units), symbols, files, neighbors, cochange };
   })();
   _conceptCache.set(root, build);
   const res = await build;
@@ -2041,7 +2055,7 @@ export async function runTool(name, a = {}) {
       const root = resolveRoot(a);
       if (!tsAvailable()) return err("concept_search needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms); they install with the plugin. Until then use search_text (multi-word, ranked by term coverage).");
       const max = Number(a.maxResults) || MAX_RESULTS;
-      const { model, symbols, neighbors } = await conceptIndexFor(root);
+      const { model, symbols, neighbors, cochange } = await conceptIndexFor(root);
       if (!symbols.length) return finishOut([], `No indexable declarations under ${root} for concept search (no tree-sitter-supported files in scope?).` + EMPTY_HINT);
       const qToks = tokenize(String(a.q));
       if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words). Try concrete nouns: "auth session token".`);
@@ -2086,17 +2100,25 @@ export async function runTool(name, a = {}) {
       const fileBase = new Map();
       for (const r of based) if ((fileBase.get(r.s.file) || 0) < r.base) fileBase.set(r.s.file, r.base);
       const nf = Number(process.env.VTS_CONCEPT_IMPORT_FACTOR ?? 0.3);
-      // LARGER confidence gate (arXiv:2605.16352): expand the import-graph neighbourhood ONLY from high-confidence
-      // anchors — a neighbour file lifts a symbol only if its own base clears a fraction of the strongest intrinsic
-      // match. Stops a weak/cross-cutting neighbour from dragging its imports up. VTS_CONCEPT_ANCHOR_MIN=0 = old.
+      // GIT CO-CHANGE factor — a 2nd structural neighbour channel (files committed together), weighted BELOW the
+      // import graph (a co-change is a softer signal than an explicit import). Same anchor gate. FACTOR=0 off.
+      const cf = Number(process.env.VTS_CONCEPT_COCHANGE_FACTOR ?? 0.25);
+      // LARGER confidence gate (arXiv:2605.16352): expand the neighbourhood ONLY from high-confidence anchors — a
+      // neighbour file lifts a symbol only if its own base clears a fraction of the strongest intrinsic match.
+      // Stops a weak/cross-cutting neighbour from dragging its imports/co-changes up. VTS_CONCEPT_ANCHOR_MIN=0 = old.
       const topBase = based.reduce((m, r) => (r.base > m ? r.base : m), 0);
       const anchorRatio = Number(process.env.VTS_CONCEPT_ANCHOR_MIN ?? 0.5);
+      const bestNeighbour = (map, file) => {
+        let best = 0;
+        const ns = map && map.get(file);
+        if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (anchorConfident(fb, topBase, anchorRatio) && fb > best) best = fb; }
+        return best;
+      };
       const scoredAll = based
         .map((r) => {
-          let nb = 0;
-          const ns = nf && neighbors && neighbors.get(r.s.file);
-          if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (anchorConfident(fb, topBase, anchorRatio) && fb > nb) nb = fb; }
-          return { s: r.s, sc: r.base + nb * nf, base: r.base };
+          const nb = nf ? bestNeighbour(neighbors, r.s.file) : 0;       // import-graph neighbour
+          const cb = cf ? bestNeighbour(cochange, r.s.file) : 0;        // git co-change neighbour
+          return { s: r.s, sc: r.base + nb * nf + cb * cf, base: r.base };
         })
         .sort((a2, b2) => b2.sc - a2.sc);
       // Fuzzy results have a long low-relevance tail (a trivial local matching one weak expansion term). Cap

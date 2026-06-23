@@ -2050,6 +2050,8 @@ const prfOk = fbTerms.some(([t, w]) => t === "authenticate" && w === 0.5) &&  //
   cPrf(prfModel, [["a"]], ["q"], { minDocs: 2 }).length === 0;                 // nothing clears consensus → empty
 let conceptToolOk = true;
 if (tsAvailable()) {
+  process.env.VTS_CONCEPT_COCHANGE = "0"; // pin OFF for this fixture: a CI tmpdir nested in a git repo would
+  //                                         otherwise mine unrelated history and perturb the import-graph asserts
   const cdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
   fs.mkdirSync(cdir, { recursive: true });
   // write every fixture BEFORE the first query — conceptIndexFor caches the model per root on first use.
@@ -2077,8 +2079,27 @@ if (tsAvailable()) {
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
     /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
+  delete process.env.VTS_CONCEPT_COCHANGE;
 }
 const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && anchorGateOk && prfOk && conceptToolOk;
+
+// 89) GIT CO-CHANGE signal (cochange.js) — M1 migration (the Cursor/Augment "what clusters semantically" axis,
+// embedding-free): files committed together feed a 2nd structural neighbour channel into concept_search's pass-2
+// proximity boost (alongside the import graph, same LARGER anchor gate, weighted below it). parseCoChange is PURE
+// (canned git-log text → pair weights, BOTH directions, mega-commits skipped); cochangeNeighbors degrades to an
+// empty map on a non-git dir (graceful — the boost then does nothing). Local, deterministic, nothing transmitted.
+const { parseCoChange: ccParse, cochangeNeighbors: ccNeighbors } = await import("../server/cochange.js");
+const ccSEP = "<<<VTS-COMMIT>>>";
+const ccLog = [ccSEP, "a.js", "b.js", "", ccSEP, "a.js", "b.js", "", ccSEP, "a.js", "c.js", "",
+  ccSEP, ...Array.from({ length: 31 }, (_, i) => "m" + i)].join("\n");
+const ccPairs = ccParse(ccLog);
+const cochangeOk =
+  ccPairs.get("a.js").get("b.js") === 2 &&                  // co-changed in 2 commits
+  ccPairs.get("b.js").get("a.js") === 2 &&                  // stored BOTH directions
+  ccPairs.get("a.js").get("c.js") === 1 &&                  // co-changed once
+  !ccPairs.has("m0") &&                                     // a 31-file commit > cap 30 → skipped (merge/format noise)
+  ccParse(ccLog, { maxFilesPerCommit: 1 }).size === 0 &&    // cap 1 → every commit skipped (no pairs)
+  ccNeighbors(os.tmpdir()) instanceof Map;                  // non-git (or any) dir → a Map, never throws
 
 // 85) PREVIEW-ONLY DCE (dce.js): topological dead-code analysis over an INJECTED call-graph query — pure +
 // deterministic with a mock graph. DEAD cascades to a fixpoint (a callee dies only once ALL its callers are
@@ -2317,6 +2338,7 @@ const rows = [
   ["syntactic tier: tree-sitter decl extraction (36 langs, zero setup) + committable .vts-index symbol index + HTML <script>/<style> exact-range injection", tsTierOk, "true", tsTierOk],
   ["Roslyn dotnet-host path OS-aware (macOS/Linux C# regression: win32/darwin/linux globalStorage)", roslynOsPathOk, "true", roslynOsPathOk],
   ["fuzzy concept retrieval (B): repo co-occurrence dictionary + concept_search (no embeddings, ranked decls)", conceptOk, "true", conceptOk],
+  ["git co-change signal (M1): parseCoChange pair weights (both dirs) + mega-commit skip + graceful non-git", cochangeOk, "true", cochangeOk],
   ["preview-only DCE: caller-cascade + reachability(mark-sweep from roots) + reference-verify + warm gate (safe_delete backstop)", dceOk, "true", dceOk],
   ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
 ];
