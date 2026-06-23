@@ -27,6 +27,10 @@
 > A companion plugin does the same for giant editor and build logs. **None of it leaves your machine.**
 
 <p align="center">
+  <img src="docs/vts-savings.png" alt="87% fewer tokens than grep — a deterministic 3-language, 150-file benchmark (47,547 grep tokens vs 6,195); ~99% on the zero-setup tree-sitter tier; ~138x on a real Unreal Engine 5 tree" width="900">
+</p>
+
+<p align="center">
   <img src="docs/vts-dashboard.gif" alt="The vs-token-safer local dashboard — the indexed repo as a live, rotating 3D graph (Three.js, served on 127.0.0.1)" width="640"><br>
   <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1.</sub>
 </p>

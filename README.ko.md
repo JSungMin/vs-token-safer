@@ -27,6 +27,10 @@
 > 덩치 큰 에디터·빌드 로그는 형제 플러그인이 같은 방식으로 처리합니다. **무엇도 이 기기를 벗어나지 않습니다.**
 
 <p align="center">
+  <img src="docs/vts-savings.png" alt="grep 대비 토큰 87% 절감 — 3개 언어·150파일 결정적 벤치마크(grep 47,547 토큰 vs 6,195); 무설정 tree-sitter 계층 ~99%; 실제 Unreal Engine 5 트리에서 ~138배" width="900">
+</p>
+
+<p align="center">
   <img src="docs/vts-dashboard.gif" alt="vs-token-safer 로컬 대시보드 — 인덱싱한 저장소를 살아 움직이는 3D 그래프로 (Three.js, 127.0.0.1)" width="640"><br>
   <sub>내장 대시보드(<code>vts serve</code>) — 인덱싱한 저장소를 살아 있는 3D 그래프로, 전부 127.0.0.1에서.</sub>
 </p>
