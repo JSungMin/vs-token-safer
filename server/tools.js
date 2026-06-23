@@ -62,7 +62,7 @@ export const TOOLS = [
   },
   {
     name: "diagnostics",
-    description: "Compiler/linter errors + warnings (semantic) → token-capped `file:line:col severity [code]: message`, sorted error→hint with a count. The compact alternative to raw build output. Empty = clean. Default = one file (`path`); `scope=\"directory\"` scans the project.",
+    description: "Compiler/linter errors + warnings (semantic) → token-capped `file:line:col severity [code]: message`, sorted error→hint with a count — the compact stand-in for raw build output. Empty = clean. Default = one file (`path`); `scope=\"directory\"` scans the project.",
     inputSchema: {
       type: "object",
       properties: {
@@ -105,7 +105,7 @@ export const TOOLS = [
   },
   {
     name: "read_symbol",
-    description: "Return the SOURCE of one named declaration (its span), NOT the whole file — the read twin of replace_symbol_body. Skip Read-ing a whole file for one declaration. `signatureOnly` = head only; body capped by VTS_SYMBOL_MAX_LINES.",
+    description: "USE INSTEAD OF Read on a file when you only need ONE function/class — returns just that named declaration's source (its span), not the whole file (the read twin of replace_symbol_body). `signatureOnly` = head only; body capped by VTS_SYMBOL_MAX_LINES.",
     inputSchema: {
       type: "object",
       properties: {
@@ -142,8 +142,9 @@ export const TOOLS = [
   {
     name: "replace_symbol_body",
     description:
-      "Replace a whole declaration (signature + body) by NAMING it — the outline gives the span, no " +
-      "Read + line-counting. PREVIEW by default; apply=true overwrites.",
+      "Change a whole function/class/method by NAMING it — USE INSTEAD OF Read-the-file + Edit (the outline " +
+      "gives the span, so you skip the whole-file Read and the exact-match line-counting). PREVIEW by default; " +
+      "apply=true writes it in ONE call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -183,8 +184,8 @@ export const TOOLS = [
   {
     name: "safe_delete",
     description:
-      "Delete a named declaration, but REFUSE while still referenced (lists the refs, stops unless force=true) " +
-      "— a delete can't silently orphan call sites. PREVIEW by default; apply=true writes.",
+      "Delete a named declaration — USE INSTEAD OF Edit-deleting it; REFUSES while still referenced (lists the " +
+      "refs, force=true overrides) so a delete can't silently orphan call sites. PREVIEW by default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -204,7 +205,7 @@ export const TOOLS = [
     name: "find_files",
     description:
       "Find files by name (substring or glob like *Manager.cpp) — replaces Bash `find -name`. → token-capped " +
-      "file list; walk-bounded (skips node_modules/Intermediate/Binaries, time-boxed). Read-only, no backend needed.",
+      "file list; walk-bounded (skips node_modules/build dirs, time-boxed).",
     inputSchema: {
       type: "object",
       properties: {
@@ -261,13 +262,12 @@ export const TOOLS = [
     description:
       "vs-token-safer admin/meta operations (rarely needed reflexively) — set `op` and put that op's args in " +
       "`params`:\n" +
-      "  • setup {projectPath,backend,maxResults,genCompileDb,clangdCmd} — configure (writes config; /reload-plugins after)\n" +
-      "  • config {} — show effective settings · savings {graph,daily,history} — tokens saved (local) · savings_reset {} — clear it\n" +
+      "  • setup {projectPath,backend,maxResults,genCompileDb,clangdCmd} — configure (writes config)\n" +
+      "  • config {} — show effective settings · savings {graph,daily,history} — tokens saved · savings_reset {} — clear it\n" +
       "  • discover {since,all,learn,projectPath} — find code searches that BYPASSED vts (missed savings)\n" +
-      "  • warmup {projectPath,backend} — pre-build the index so later searches are fast\n" +
-      "  • preindex {projectPath,backend} — build the index ahead of time (clangd: static --index-file if clangd-indexer present)\n" +
-      "  • scope {projectPath} — show the indexing scope + TU stats + dirs to pick (set via setup --scope)\n" +
-      "  • index {projectPath,status} — build the committable .vts-index (tree-sitter cold-start tier, no toolchain)\n" +
+      "  • warmup {projectPath,backend} — pre-build the index · preindex {projectPath,backend} — build ahead (clangd static index if available)\n" +
+      "  • scope {projectPath} — show the indexing scope + TU stats + dirs to pick\n" +
+      "  • index {projectPath,status} — build the committable .vts-index (tree-sitter cold-start tier)\n" +
       "  • gen_compile_db {projectPath,apply,inTree,engineRoot,target,…} — generate the UE clangd compile DB\n" +
       "  • git {argv|args,projectPath} · p4 {argv|args,projectPath} — run a READ-ONLY VCS command, output compacted (mutating REFUSED)",
     inputSchema: {

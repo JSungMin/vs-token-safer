@@ -1316,6 +1316,7 @@ const toolsBudgetOk =
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
+  ["replace_symbol_body", "safe_delete", "read_symbol"].every((n) => /INSTEAD OF/.test(TOOL_DEFS.find((t) => t.name === n)?.description || "")) && // 2602.20426 adoption lever: the symbol-edit/read tools front-load the "use INSTEAD OF Read/Edit" selection cue so the model picks them over Read+Edit (the 135k-tok/wk leak)
   toolsTok <= 3500; // ~3226 (14 tools) + find_references direction/depth params. Cap still blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
