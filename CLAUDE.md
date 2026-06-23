@@ -369,7 +369,10 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   ONE release = ONE coherent theme — do NOT lump unrelated fixes into a minor.
   - **Feature flow:** `feature/<slug>` off `dev` → squash-PR into `dev` → accumulate. When a theme is ready,
     one **`dev → main` PR** (`Closes #N`, "Review points") → squash-merge → on `main` bump **minor** (or major)
-    + `git tag -a v<x>` → push tag (release.yml publishes) → resync `dev` to `main`.
+    + `git tag -a v<x>` → push tag (release.yml publishes) → resync `dev` to `main`. **Release-note rollup:** for a
+    **minor/major** release, curate the GitHub release notes (`gh release edit v<x> --notes-file -`) to ROLL UP the
+    preceding patch line — a brief, theme-grouped summary of every `x.y.z` since the prior minor, then this release's
+    own changes on top (see v0.35.0). A patch release's notes can stay terse (its own change).
   - **Hotfix flow (urgent prod fix — keeps minors clean):** `hotfix/<slug>` off **`main`** → PR into `main` →
     bump **patch** + tag IMMEDIATELY (do NOT wait for / bundle into the next minor) → merge `main` back into
     `dev`. A standalone non-urgent fix is still its OWN `fix:` patch PR, not a passenger on a feature minor.
