@@ -21,7 +21,7 @@ import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
-import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms } from "./concept.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
 
@@ -2070,11 +2070,16 @@ export async function runTool(name, a = {}) {
       const fileBase = new Map();
       for (const r of based) if ((fileBase.get(r.s.file) || 0) < r.base) fileBase.set(r.s.file, r.base);
       const nf = Number(process.env.VTS_CONCEPT_IMPORT_FACTOR ?? 0.3);
+      // LARGER confidence gate (arXiv:2605.16352): expand the import-graph neighbourhood ONLY from high-confidence
+      // anchors — a neighbour file lifts a symbol only if its own base clears a fraction of the strongest intrinsic
+      // match. Stops a weak/cross-cutting neighbour from dragging its imports up. VTS_CONCEPT_ANCHOR_MIN=0 = old.
+      const topBase = based.reduce((m, r) => (r.base > m ? r.base : m), 0);
+      const anchorRatio = Number(process.env.VTS_CONCEPT_ANCHOR_MIN ?? 0.5);
       const scoredAll = based
         .map((r) => {
           let nb = 0;
           const ns = nf && neighbors && neighbors.get(r.s.file);
-          if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (fb > nb) nb = fb; }
+          if (ns) for (const g of ns) { const fb = fileBase.get(g) || 0; if (anchorConfident(fb, topBase, anchorRatio) && fb > nb) nb = fb; }
           return { s: r.s, sc: r.base + nb * nf, base: r.base };
         })
         .sort((a2, b2) => b2.sc - a2.sc);
