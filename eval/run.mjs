@@ -2003,7 +2003,7 @@ const roslynOsPathOk =
 // 83) FUZZY concept retrieval (approach B): concept.js pure functions + the concept_search tool. The local
 // concept dictionary (identifier+comment co-occurrence) answers a concept query with no embeddings. Pure-fn
 // checks always run; the tool integration self-skips if the tree-sitter deps are absent.
-const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore, parseSynonyms: cParseSyn } = await import("../server/concept.js");
+const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore, parseSynonyms: cParseSyn, anchorConfident: cAnchor } = await import("../server/concept.js");
 const splitOk = JSON.stringify(cSplit("authenticateUser")) === JSON.stringify(["authenticate", "user"]) && cMatch("auth", "authenticate") === 0.7 && cTok("How does the auth flow?").includes("auth");
 // co-occurrence: auth co-occurs with login twice (>= minCooc) → expansion surfaces it; ui never co-occurs.
 const cModel = cBuild([["auth", "login", "session"], ["auth", "login", "token"], ["render", "button", "ui"]]);
@@ -2033,6 +2033,11 @@ const dfGateOff = cExpand(dfModel, ["core"]);                       // no cap �
 const dfGateOn = cExpand(dfModel, ["core"], { maxDfRatio: 0.25 }); // core too generic → not expanded through
 const dfGateOk = dfGateOff.has("flush") && !dfGateOn.has("flush") && dfGateOn.get("core") === 1 &&
   cExpand(dfModel, ["core"], { maxDfRatio: 0 }).has("flush"); // 0 ratio = gate off (back-compat)
+// LARGER confidence gate (#c, migrated arXiv:2605.16352): an import-graph neighbour expands a symbol only if its
+// own base clears `ratio` of the strongest intrinsic match — a strong anchor (0.8/1.0) qualifies at ratio 0.5, a
+// weak one (0.2) does not; ratio 0 disables the gate (any positive neighbour qualifies, pre-migration behaviour).
+const anchorGateOk = cAnchor(0.8, 1.0, 0.5) === true && cAnchor(0.2, 1.0, 0.5) === false &&
+  cAnchor(0.5, 1.0, 0.5) === true && cAnchor(0.2, 1.0, 0) === true && cAnchor(0, 1.0, 0) === false;
 let conceptToolOk = true;
 if (tsAvailable()) {
   const cdir = path.join(os.tmpdir(), `vts-eval-${process.pid}-concept`);
@@ -2063,7 +2068,7 @@ if (tsAvailable()) {
     /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
-const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && conceptToolOk;
+const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && anchorGateOk && conceptToolOk;
 
 // 85) PREVIEW-ONLY DCE (dce.js): topological dead-code analysis over an INJECTED call-graph query — pure +
 // deterministic with a mock graph. DEAD cascades to a fixpoint (a callee dies only once ALL its callers are

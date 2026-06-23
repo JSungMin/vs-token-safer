@@ -265,6 +265,16 @@ export function expandQuery(model, qTokens, { k = 6, minAssoc = 1.5, minCooc = 2
   return weights;
 }
 
+// LARGER-style confidence gate (migrated from "Lexically Anchored Repository Graph Exploration and Retrieval",
+// arXiv:2605.16352): the import-graph (structural) neighbourhood should be expanded only from HIGH-CONFIDENCE
+// lexical anchors — a weak base match must not drag its import-neighbours up the ranking. A neighbour file's
+// base score qualifies as an anchor iff it clears `ratio` of the strongest intrinsic match in the result set.
+// ratio<=0 disables the gate (any matched neighbour expands, the pre-migration behaviour). Pure + deterministic.
+export function anchorConfident(neighbourBase, topBase, ratio = 0.5) {
+  if (!(ratio > 0)) return neighbourBase > 0;
+  return neighbourBase >= topBase * ratio;
+}
+
 // Score one symbol against the expanded query across three channels, strongest first: the symbol NAME, the
 // file PATH it lives in, and its attached comment/docstring. Related code clusters by directory and filename
 // (an auth helper lives under `auth/` in a `session.ts`), so a query token that matches the path is real,
