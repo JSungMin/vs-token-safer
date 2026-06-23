@@ -108,10 +108,17 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   attached leading comment (gap≤3, skip header blocks ≥4 lines, cap 200ch) feeds the concept units. NO embeddings,
   nothing transmitted, output token-capped file:line. Eval guard 83; **follow-up paper** `paper/fuzzy-concept-
   dictionary.tex` (companion to the Token-Safer paper, motivated by the CCE correspondence). Env: `VTS_CONCEPT_*`.
-  SCORING = 3 deterministic channels (name > **path** > comment; `scoreSymbol`) + a 2nd-pass **import-graph
-  proximity** boost (`importSpecifiers` → within-repo basename adjacency; a symbol whose file imports/imported-by
-  a strongly-matching file is lifted by `VTS_CONCEPT_IMPORT_FACTOR` 0.3 × the neighbour's score — reranks the
-  matched set, never invents a match). A **click-feedback loop was CRITIC-REJECTED** (self-confirming via
+  SCORING = 3 deterministic channels (name > **path** > comment; `scoreSymbol`) + 2nd-pass **structural-proximity**
+  boosts off TWO neighbour graphs (same LARGER anchor gate, reranks the matched set, never invents a match):
+  (a) **import-graph** (`importSpecifiers` → within-repo basename adjacency; lifted by `VTS_CONCEPT_IMPORT_FACTOR`
+  0.3 × the neighbour's score) and (b) **git CO-CHANGE** (`server/cochange.js` `cochangeNeighbors` — files
+  committed together in the last `VTS_COCHANGE_MAX_COMMITS` 500 commits are coupled; mega-commits >
+  `VTS_COCHANGE_MAX_FILES_PER_COMMIT` 30 skipped as merge/format noise; ≥ `VTS_COCHANGE_MIN_WEIGHT` 2 co-commits
+  to count; lifted by `VTS_CONCEPT_COCHANGE_FACTOR` 0.25, BELOW imports — a softer signal). Co-change is the M1
+  migration toward the Cursor/Augment "what clusters semantically" axis, embedding-free: the repo's own history is
+  the cluster signal. PURE `parseCoChange` (git-log text → pair weights, both directions) + thin `git log` read,
+  cached in `conceptIndexFor`; absent git → empty map (boost no-ops). `VTS_CONCEPT_COCHANGE=0` off. Eval guard 89;
+  live-verified on the vts repo (core.js → 49 co-change neighbours: eval/run.mjs, policy.js, …). A **click-feedback loop was CRITIC-REJECTED** (self-confirming via
   position bias, non-deterministic, unmeasurable, erodes inspectability); the charter-pure adaptation paths are
   these code-mined structural signals + a **committable synonym file** (DONE): a team-curated, git-committable
   `<root>/.vts-index/concept-synonyms.json` (`{ "term": ["syn", …] }`) — `concept.js parseSynonyms` (tokenises
