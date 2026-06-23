@@ -240,7 +240,7 @@ fs.mkdirSync(logDir, { recursive: true });
 const lsRes = await runTool("search_text", { q: "anything", projectPath: logDir }); // log target → LOG_STEER
 const ffRes = await runTool("find_files", { q: "no_such_file_xyz", projectPath: os.tmpdir() }); // empty, non-log
 const logSteerOk =
-  !lsRes.isError && /This looks like a LOG target/.test(lsRes.text) && // path-based steer (LOG_STEER)
+  !lsRes.isError && /Looks like a LOG/.test(lsRes.text) && // path-based steer (LOG_STEER)
   !ffRes.isError && /gamedev-log/.test(ffRes.text);                    // path-less empty hint (LOG_EMPTY_HINT)
 try { fs.rmSync(logRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 
@@ -1317,7 +1317,7 @@ const toolsBudgetOk =
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
   ["replace_symbol_body", "safe_delete", "read_symbol"].every((n) => /INSTEAD OF/.test(TOOL_DEFS.find((t) => t.name === n)?.description || "")) && // 2602.20426 adoption lever: the symbol-edit/read tools front-load the "use INSTEAD OF Read/Edit" selection cue so the model picks them over Read+Edit (the 135k-tok/wk leak)
-  toolsTok <= 3500; // ~3226 (14 tools) + find_references direction/depth params. Cap still blocks prose creep.
+  toolsTok <= 2900; // ~2723 (15 tools) after the v0.37.2 schema slim (common-param descriptions stripped). Cap blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -2294,7 +2294,7 @@ const rows = [
   ["edit-warn control-flow exclusion (if/for block ≠ a whole decl)", ctrlFlowExclusionOk, "true", ctrlFlowExclusionOk],
   ["outline-hunt Grep steer (decl-keyword alt → document_symbols; FP-safe)", outlineSteerOk, "true", outlineSteerOk],
   ["common-prefix factoring: find_files + search_text (toggle)", prefixFactoringOk, "true", prefixFactoringOk],
-  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 3500 tok", toolsBudgetOk, "true", toolsBudgetOk],
+  ["tool-def budget + vts_admin fold: hot tools named, cold folded, ≤ 2900 tok", toolsBudgetOk, "true", toolsBudgetOk],
   ["LSP glue: diagnostics tool + goto kinds (typeDef/impl/decl)", lspGlueOk, "true", lspGlueOk],
   ["star nudge: value-tied, threshold-gated, pure (no network), toggle", starNudgeOk, "true", starNudgeOk],
   ["symbol-edit P4 auto-checkout: read-only → p4 edit, writable skips, toggle", p4EditOk, "true", p4EditOk],
