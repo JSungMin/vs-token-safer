@@ -522,6 +522,74 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   return out;
 }
 
+// cAST-inspired structural chunking (migrated from "cAST: Structural Chunking via AST", arXiv:2506.15655):
+// when a declaration body exceeds a line budget, cut at a STRUCTURAL boundary (the end of a complete child
+// node — a member/statement) instead of mid-statement, so read_symbol returns syntactically whole output
+// rather than a body truncated in the middle of an expression. Greedy: keep whole children from the decl's
+// start until the next one would exceed `maxLines`, end at the last child that fits.
+//   Returns { endRow (0-based, inclusive), omitted } — the structural cut row + how many trailing children
+//   were dropped. Returns null (caller falls back to the plain line-cap) when tree-sitter is unavailable, the
+//   file is unsupported/too big, parsing fails, no covering node is found, or there's nothing to gain (a single
+//   over-budget child, or every child already fits). Charter-pure: official parser, local, no transmission.
+export async function tsChunkEnd(absPath, startRow, endRow, maxLines) {
+  const ext = extOf(absPath);
+  const entry = EXT_MAP[ext];
+  if (!entry) return null;
+  const [wasmBase] = entry;
+  let src;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.size > 2_000_000) return null;
+    src = fs.readFileSync(absPath, "utf8");
+  } catch {
+    return null;
+  }
+  const lang = await loadLanguage(wasmBase);
+  if (!lang) return null;
+  const TS = _TS;
+  let parser, tree;
+  try {
+    parser = new TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return null;
+  }
+  try {
+    // Locate the declaration node: the smallest named node at the start position, climbed up to the largest
+    // node that still begins at startRow and ends within the decl span (the function/class/etc. itself).
+    let node = tree.rootNode.namedDescendantForPosition({ row: startRow, column: 0 });
+    while (node && node.parent && node.parent.startPosition.row >= startRow && node.parent.endPosition.row <= endRow) node = node.parent;
+    if (!node) return null;
+    // Prefer the BODY container (block/suite/...) — its children are the members/statements to chunk over. If
+    // none is found (a flat decl), chunk the decl's own named children.
+    let body = null;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const ch = node.namedChild(i);
+      if (ch.endPosition.row > ch.startPosition.row && /block|body|suite|declaration_list|statement_block|compound_statement|class_body|object/.test(ch.type)) { body = ch; break; }
+    }
+    const container = body || node;
+    let cut = startRow, kept = 0, total = 0;
+    for (let i = 0; i < container.namedChildCount; i++) {
+      const k = container.namedChild(i);
+      total++;
+      if (k.endPosition.row - startRow + 1 > maxLines) continue; // this child overflows the budget — skip, try smaller siblings
+      if (k.endPosition.row > cut) { cut = k.endPosition.row; kept++; }
+    }
+    if (kept === 0 || kept === total) return null; // single over-budget child, or everything fit → no structural win
+    return { endRow: cut, omitted: total - kept };
+  } catch {
+    return null;
+  } finally {
+    try {
+      tree.delete && tree.delete();
+      parser.delete && parser.delete();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // Match a declaration name against a query. Exact (case-insensitive) on the full name or its last segment
 // wins; otherwise a case-insensitive substring (so "Foo" finds "FooBar" and "ns::FooBar").
 function matches(name, q) {
