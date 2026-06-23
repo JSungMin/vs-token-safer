@@ -75,6 +75,40 @@ and a language server — clangd (C/C++) / Roslyn (C#) you install; JS/TS + Pyth
 
 > Want only the log analyzer? `/plugin install gamedev-log-analyzer@vs-token-safer`.
 
+## How it works
+
+<p align="center">
+  <img src="docs/vts-how-it-works.png" alt="vs-token-safer answers on one precision ladder: EXACT (semantic language server) → SYNTACTIC (tree-sitter, zero setup) → FUZZY (concept dictionary, no embeddings) → SECTION (docs/config by heading); every answer is capped to file:line and labeled with the rung it came from — 87% fewer tokens than grep" width="900">
+</p>
+
+vs-token-safer isn't a search box — it's a **precision ladder**. You ask where something is, what calls it,
+or "how does the auth flow work?" when the name escapes you, and it answers at the highest precision it can
+reach, then tells you which rung the answer came from:
+
+- **EXACT** — you know the name and the project builds → the official language server (clangd / Roslyn /
+  tsserver / pyright), the semantic ground truth.
+- **SYNTACTIC** — no toolchain set up → a tree-sitter parse (36 languages, bundled, no native build) still
+  returns real *declarations*, not a grep.
+- **FUZZY** — you only remember what the code *does* → a concept dictionary mined from the repo's own
+  identifiers + comments (no AI model, nothing uploaded).
+- **SECTION** — it's a doc or config, not code → Markdown / TOML / YAML / CSS / HTML addressed by heading.
+
+Every answer comes back capped to `file:line` (never source bodies) and carries a one-line **completeness
+certificate** naming the rung — so the model always knows whether it got the semantic truth or a fallback.
+On a 3-language, 150-file benchmark that's **87% fewer tokens than grep** (~138× on a real Unreal Engine 5
+tree). Underneath, four mechanisms make Claude actually *use* the ladder instead of reaching for grep:
+
+| Layer | Effect |
+| --- | --- |
+| **Rewrite/enforcement hook** | Covers four surfaces. **Bash** grep/rg/`find -name` over source → **rewritten to the equivalent `vts` query in place** (identifier → `search_symbol`, literal → `search_text`, `find <dir> -name` → `find_files` rooted at `<dir>`); ambiguous cases (pipeline, multi-`-name`) block. **Grep tool** symbol hunt (bare identifier, `::`/`(`/`void·class` regex, or a `FooBar\|BazQux` CamelCase alternation) → **blocked** with a ready-to-use call; freeform/keyword alternations stay a warn. **Glob tool** concrete code file (`*.cpp`, `Foo.h`) → **blocked** toward `find_files`. **Edit/MultiEdit** that replaces or adds a **whole declaration** → a model-visible nudge toward the symbol-edit tools (`replace_symbol_body`/`insert_symbol`), escalating to a block on a safe insert after repeated ignores (`VTS_EDIT_WARN`, `VTS_EDIT_BLOCK_AFTER`); a sub-declaration tweak stays silent. Messages are agent-directed and i18n'd (EN/KO). Logs/`.md`/config pass through. Knobs: `VTS_REWRITE=0`, `VTS_GREP_BLOCK=0`, `VTS_ENFORCE=0`. |
+| **Token-capping core** | Turns LSP results into `kind name @ file:line`, caps, appends `… N more`. A refs-heavy result collapses to one row per file (`Foo.cpp:42,88,120`) with a shared dir prefix factored out once (`VTS_COMPACT_RESULTS=0` restores per-line). A truncated `find_files`/`search_text` tees the full set to a recovery file. |
+| **Symbol-level editing** | `replace_symbol_body`/`insert_*`/`safe_delete` resolve a declaration by name via the outline and splice text at its exact span — preview by default, `apply=true` writes, `safe_delete` refuses while referenced. No whole-file Read into context. |
+| **Headless LSP client** | A fully-owned LSP client spawns the official engine over stdio. The project root is resolved **per call** (explicit `projectPath` → the file's enclosing project → the MCP workspace root), so one global server answers for **every repo a session touches**. Live backends are pooled and bounded (`VTS_MAX_BACKENDS` + idle reaper). |
+| **Savings + discover** | A local ledger records every search's tokens-saved (`vts savings`, with a 30-day graph). `vts discover` scans recent sessions for searches that *bypassed* the index — so you see the catch-rate, not just the wins. |
+
+> **Engine = official, glue = ours.** clangd (LLVM) and Roslyn (Microsoft) do the analysis; this repo
+> only writes the LSP↔MCP glue. No third-party MCP server runs over your source. Local-only, nothing uploaded.
+
 ## Tools
 
 All search/edit goes through an official language-server index — **clangd** (C/C++), **Roslyn** (C#/.NET),
@@ -156,22 +190,6 @@ func createSessionCookie  @ app/src/http/cookies.ts:31
 
 ✓ Saved ~4,200 tokens here (96.8% / 31× smaller than the raw index response).
 ```
-
-## How it works
-
-clangd and Roslyn already do the semantic analysis. What this plugin adds is **enforcement, a token cap,
-and a headless spawn + warm-up**, so Claude actually uses the index instead of grep:
-
-| Layer | Effect |
-| --- | --- |
-| **Rewrite/enforcement hook** | Covers four surfaces. **Bash** grep/rg/`find -name` over source → **rewritten to the equivalent `vts` query in place** (identifier → `search_symbol`, literal → `search_text`, `find <dir> -name` → `find_files` rooted at `<dir>`); ambiguous cases (pipeline, multi-`-name`) block. **Grep tool** symbol hunt (bare identifier, `::`/`(`/`void·class` regex, or a `FooBar\|BazQux` CamelCase alternation) → **blocked** with a ready-to-use call; freeform/keyword alternations stay a warn. **Glob tool** concrete code file (`*.cpp`, `Foo.h`) → **blocked** toward `find_files`. **Edit/MultiEdit** that replaces or adds a **whole declaration** → a model-visible nudge toward the symbol-edit tools (`replace_symbol_body`/`insert_symbol`), escalating to a block on a safe insert after repeated ignores (`VTS_EDIT_WARN`, `VTS_EDIT_BLOCK_AFTER`); a sub-declaration tweak stays silent. Messages are agent-directed and i18n'd (EN/KO). Logs/`.md`/config pass through. Knobs: `VTS_REWRITE=0`, `VTS_GREP_BLOCK=0`, `VTS_ENFORCE=0`. |
-| **Token-capping core** | Turns LSP results into `kind name @ file:line`, caps, appends `… N more`. A refs-heavy result collapses to one row per file (`Foo.cpp:42,88,120`) with a shared dir prefix factored out once (`VTS_COMPACT_RESULTS=0` restores per-line). A truncated `find_files`/`search_text` tees the full set to a recovery file. |
-| **Symbol-level editing** | `replace_symbol_body`/`insert_*`/`safe_delete` resolve a declaration by name via the outline and splice text at its exact span — preview by default, `apply=true` writes, `safe_delete` refuses while referenced. No whole-file Read into context. |
-| **Headless LSP client** | A fully-owned LSP client spawns the official engine over stdio. The project root is resolved **per call** (explicit `projectPath` → the file's enclosing project → the MCP workspace root), so one global server answers for **every repo a session touches**. Live backends are pooled and bounded (`VTS_MAX_BACKENDS` + idle reaper). |
-| **Savings + discover** | A local ledger records every search's tokens-saved (`vts savings`, with a 30-day graph). `vts discover` scans recent sessions for searches that *bypassed* the index — so you see the catch-rate, not just the wins. |
-
-> **Engine = official, glue = ours.** clangd (LLVM) and Roslyn (Microsoft) do the analysis; this repo
-> only writes the LSP↔MCP glue. No third-party MCP server runs over your source. Local-only, nothing uploaded.
 
 ## The two plugins
 
