@@ -117,7 +117,15 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `<root>/.vts-index/concept-synonyms.json` (`{ "term": ["syn", …] }`) — `concept.js parseSynonyms` (tokenises
   keys+values) feeds `expandQuery({synonyms})`, injecting a curated bridge at weight 0.95 (below an exact 1.0,
   above a mined neighbour); additive (absent/malformed → mined model alone), inspectable, deterministic, no
-  drift. Eval guard 83. PRECISION-LADDER NAV
+  drift. Eval guard 83. TWO PAPER MIGRATIONS (charter-pure, no embeddings): (1) LARGER confidence-gate
+  (`concept.js anchorConfident` / `VTS_CONCEPT_ANCHOR_MIN` 0.5) — the import-graph proximity boost fires ONLY
+  from high-confidence anchors (a neighbour lifts a symbol only if its own base clears `ratio`×topBase), so a
+  weak/cross-cutting neighbour can't drag its imports up (live-verified: cross-repo gamedev/`uiLang` noise
+  dropped); (2) RM3 PRF (`concept.js prfTerms` / `VTS_CONCEPT_PRF*`) — a 2nd-pass mines feedback terms from the
+  TOP-k pass-1 results' OWN vocabulary (name+comment subtokens, ≥2-doc consensus, idf-ranked, capped) and
+  re-scores, bridging a synonym the query missed ("warm"→`warming/dominant`, "reachable"→`fixpoint/cascades`);
+  the climb SEED stays the PRE-PRF intrinsic exact match (`base0`) so PRF widens recall without drifting the
+  seed. Eval guard 83 (#c anchor, #d prf). PRECISION-LADDER NAV
   (`VTS_CONCEPT_STEER`): search_symbol(exact)+multi-word-miss → steers DOWN to concept_search; concept_search →
   points UP to find_references/goto. See [[identity-and-roadmap]].
 - `server/textstruct.js` — STRUCTURE tier for prose/config files (the naming-umbrella extension: token-safer

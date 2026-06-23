@@ -275,6 +275,33 @@ export function anchorConfident(neighbourBase, topBase, ratio = 0.5) {
   return neighbourBase >= topBase * ratio;
 }
 
+// RM3-style pseudo-relevance feedback (Lavrenko & Croft 2001; re-validated for the LLM era in arXiv:2603.11008):
+// the embedding-free way to bridge a synonym the query can't reach lexically. Run a first retrieval, then mine
+// expansion terms from the VOCABULARY of the top-ranked results THEMSELVES — "login" retrieves the auth module,
+// whose declarations contain "authenticate", which is then folded back so a second pass surfaces it.
+//   topBags: the token bags (name + comment subtokens) of the top-k pass-1 declarations. Returns [[term, weight]]
+//   for terms present in >= minDocs of those decls (consensus drift-guard), excluding the original query tokens,
+//   ranked by feedback-frequency x idf (so a ubiquitous token can't hijack the feedback), capped to `terms`.
+//   Pure, deterministic, no embeddings, no transmission — it only reweights tokens already mined from the repo.
+export function prfTerms(model, topBags, queryTokens, { terms = 5, minDocs = 2, weight = 0.5 } = {}) {
+  const q = new Set(queryTokens);
+  const df = new Map();
+  for (const bag of topBags) {
+    const seen = new Set();
+    for (const t of bag) {
+      if (!t || q.has(t) || seen.has(t)) continue;
+      seen.add(t);
+      df.set(t, (df.get(t) || 0) + 1);
+    }
+  }
+  return [...df.entries()]
+    .filter(([, d]) => d >= minDocs)
+    .map(([t, d]) => [t, d * idf(model, t)])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, terms)
+    .map(([t]) => [t, weight]);
+}
+
 // Score one symbol against the expanded query across three channels, strongest first: the symbol NAME, the
 // file PATH it lives in, and its attached comment/docstring. Related code clusters by directory and filename
 // (an auth helper lives under `auth/` in a `session.ts`), so a query token that matches the path is real,
