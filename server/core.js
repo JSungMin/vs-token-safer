@@ -148,15 +148,13 @@ function looksLogTarget(a) {
   return [a.path, a.projectPath, a.paths].flat().filter((v) => typeof v === "string").some((v) => LOG_PATHISH.test(v));
 }
 const LOG_STEER =
-  "\n\n↪ This looks like a LOG target. The language-server index only covers source code, not logs — use " +
-  "the gamedev-log tools (/gamedev-log-analyzer:logs, or the gamedev-log CLI: summary / search / locate / " +
-  "fields / diff) for log analysis instead.";
+  "\n\n↪ Looks like a LOG. The index covers source, not logs — use gamedev-log " +
+  "(/gamedev-log-analyzer:logs, or CLI: summary/search/locate/fields/diff).";
 // Appended to an empty symbol result (mirrors rider's honest empty-result hint): an empty answer can be a
 // stale index, a definitions-only match, or a string that only lives in a log (excluded from the index).
 const EMPTY_HINT =
-  " If you JUST edited the target, the index may lag the save — retry, or use search_text for a literal " +
-  "match. search_symbol matches DEFINITIONS, not every reference. Looking for something in a LOG? Logs " +
-  "aren't indexed — use gamedev-log.";
+  " Empty can mean: JUST-edited (index lags the save — retry or search_text), a DEFINITIONS-only match " +
+  "(not every reference), or a LOG (not indexed — use gamedev-log).";
 const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
 // search_text → symbol steer (dogfood-found): a TEXT query that is really a SYMBOL/CLASS usage hunt — a
 // template arg `Foo<Bar>`, a `::` scope, or a dominant CamelCase/snake identifier — is answered better by
@@ -1111,35 +1109,34 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
   // SECTION rung — the structure tier (docs/config) addressed by heading/selector/rule. Exact text spans, but
   // document structure, not semantic code analysis.
   if (section) {
-    return `\n[completeness: SECTION rung — the structure tier returned ${shown} section(s) addressed by heading/selector/rule (exact text spans, no language server); this is document structure, not semantic code.]`;
+    return `\n[completeness: SECTION rung — ${shown} section(s) by heading/selector (exact text spans, not semantic code).]`;
   }
   // FUZZY rung — the concept dictionary mined from the repo's own naming (no embeddings). Related, not exact.
   if (fuzzy && truncated !== "cap" && !(total != null && shown < total)) {
-    return `\n[completeness: FUZZY rung — a concept dictionary mined from the repo's own naming matched ${shown} declaration(s) by co-occurrence (no embeddings); related, not exact. Climb to find_references/goto_definition on a hit for ground truth.]`;
+    return `\n[completeness: FUZZY rung — ${shown} decl(s) by naming co-occurrence (no embeddings); climb to find_references/goto_definition for ground truth.]`;
   }
   // SYNTACTIC rung — tree-sitter / committed index finds DECLARATIONS without a toolchain, but does not resolve
-  // references, overloads, or types — so even a "complete" syntactic answer is not the semantic certainty the
-  // LSP gives. Label it as such so the agent knows a language server would tighten it.
+  // references, overloads, or types — so even a "complete" syntactic answer is not the semantic certainty the LSP gives.
   if (syntactic && truncated !== "cap" && !(total != null && shown < total)) {
-    return `\n[completeness: SYNTACTIC rung — tree-sitter found ${shown} declaration(s) with zero project setup; this tier locates decls but does NOT resolve references/overloads/types. Install a language server (or generate compile_commands.json) for semantic certainty.]`;
+    return `\n[completeness: SYNTACTIC rung — ${shown} decl(s), zero setup; locates decls, not refs/overloads/types. Install a language server (or compile_commands.json) for semantic certainty.]`;
   }
   // When an indexing scope is active, a semantic COMPLETE (or authoritative 0) is complete WITHIN THE SCOPE,
   // not across the whole project — qualify it so the agent doesn't read it as project-wide coverage.
-  const within = scoped ? " within the configured indexing scope (not the whole project — widen or unset the scope for full coverage)" : "";
+  const within = scoped ? " within the configured indexing scope (widen/unset for full coverage)" : "";
   // INCONCLUSIVE walks are where AUTO-SCOPE pays off: a bounded scan on a big tree is exactly the case a scoped
   // index fixes, so the advisory is actionable (the concrete `vts setup --scope` + `vts preindex` commands).
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
-    return `\n[completeness: INCONCLUSIVE — a bounded ${how} walk did not cover the whole tree, so this result (a 0 included) may be incomplete. Narrow the indexing scope (vts setup --scope <module>, then vts preindex) or use a semantic tool (search_symbol/find_references) to certify.]`;
+    return `\n[completeness: INCONCLUSIVE — bounded ${how} walk didn't cover the tree (a 0 may be incomplete); scope it (vts setup --scope <module>; vts preindex) or certify with search_symbol/find_references.]`;
   }
   if (truncated === "index") {
-    return `\n[completeness: INCONCLUSIVE — this backend answers from open/indexed files only, so a symbol whose file isn't indexed yet can be missed; this is not an authoritative 0. A big tree indexes far faster scoped (vts setup --scope <module>, then vts preindex).]`;
+    return `\n[completeness: INCONCLUSIVE — indexed/open files only, so a not-yet-indexed file can be missed (not an authoritative 0); scope a big tree (vts setup --scope <module>; vts preindex).]`;
   }
   if (truncated === "cap" || (total != null && shown < total)) {
     const more = total != null ? `${shown} of ${total}` : `the top ${shown}`;
-    return `\n[completeness: PARTIAL — showing ${more}; the remainder is known and recoverable (raise the cap or read the tee file).]`;
+    return `\n[completeness: PARTIAL — showing ${more}; remainder known + recoverable (raise the cap or read the tee file).]`;
   }
-  return `\n[completeness: ${semantic ? "EXACT rung, COMPLETE" : "COMPLETE"} — ${semantic ? "the language-server index" : "the bounded scan"} returned every match${within} (${shown}).]`;
+  return `\n[completeness: ${semantic ? "EXACT rung, COMPLETE" : "COMPLETE"} — ${semantic ? "language-server index" : "bounded scan"}, every match${within} (${shown}).]`;
 }
 export { completenessCert };
 function fmtLocations(locs, max, label) {

@@ -222,6 +222,12 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   `vts_admin{op,params}` MCP tool (index.js maps `vts_admin`→`runTool("vts_"+op,params)`; hot search/nav/edit
   tools stay first-class so the model still reaches for them). core.js runTool + the CLI keep the individual
   `vts_*` names UNCHANGED (the grep-block hook still reroutes git/p4 to the CLI, not this tool); eval guard 62.
+  FOOTPRINT SLIM (v0.37.2 — vts's OWN MCP usage measured at ~24%, mostly the per-request tool schema): the
+  self-evident common params (`projectPath`/`backend`/`maxResults`) carry NO description (shared `ROOT`/
+  `BACKEND`/`CAP` consts in `tools.js`), tool descriptions trimmed (adoption "USE INSTEAD OF" + routing cues
+  KEPT) → tool-list schema 3455→2723 tok (−21%, recurring every API call); guard 62 cap 3500→2900. Also the
+  per-RESULT `completenessCert` rung lines + `EMPTY_HINT`/`LOG_STEER` and the SessionStart `routingDigest`
+  (policy.js) are trimmed ~40-50% (rung keywords + the one actionable command kept; guards 76/16/digest green).
   The folded ops: `vts_warmup`, `vts_setup`,
   `vts_config`, `vts_savings` (RTK-gain-style: `graph`/`daily`/`history` + est. USD over timestamped day
   buckets; ALSO FOLDS IN the bundled gamedev-log-analyzer's ledger [`~/.gamedev-log-analyzer/savings.json`,
