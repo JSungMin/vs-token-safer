@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="660" viewBox="0 0 1040 660" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowP" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <rect width="1040" height="660" fill="url(#bg)"/>
+
+  <!-- Title -->
+  <text x="40" y="50" fill="#f8fafc" font-size="27" font-weight="700">vs-token-safer — how it answers</text>
+  <text x="40" y="78" fill="#94a3b8" font-size="15">One precision ladder. It answers as exactly as it can, falls back when it can't, and caps the reply to <tspan fill="#a78bfa" font-weight="600">file:line</tspan>.</text>
+
+  <!-- ===== Column 1: the question ===== -->
+  <text x="40" y="128" fill="#e2e8f0" font-size="14" font-weight="700" letter-spacing="1">YOUR AGENT ASKS</text>
+
+  <g>
+    <rect x="40" y="146" width="244" height="58" rx="10" fill="#1e293b" stroke="#334155"/>
+    <text x="56" y="172" fill="#cbd5e1" font-size="13">knows the name</text>
+    <text x="56" y="192" fill="#f1f5f9" font-size="13.5" font-family="monospace">where is createSession?</text>
+  </g>
+  <g>
+    <rect x="40" y="296" width="244" height="58" rx="10" fill="#1e293b" stroke="#334155"/>
+    <text x="56" y="322" fill="#cbd5e1" font-size="13">knows only the intent</text>
+    <text x="56" y="342" fill="#f1f5f9" font-size="13.5" font-family="monospace">how does auth work?</text>
+  </g>
+  <g>
+    <rect x="40" y="446" width="244" height="58" rx="10" fill="#1e293b" stroke="#334155"/>
+    <text x="56" y="472" fill="#cbd5e1" font-size="13">it's a doc / config file</text>
+    <text x="56" y="492" fill="#f1f5f9" font-size="13.5" font-family="monospace">outline this CLAUDE.md</text>
+  </g>
+
+  <!-- arrows q -> ladder -->
+  <path d="M288,175 L356,175" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M288,325 L356,360" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M288,475 L356,470" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ===== Column 2: the ladder ===== -->
+  <text x="362" y="128" fill="#e2e8f0" font-size="14" font-weight="700" letter-spacing="1">PRECISION LADDER</text>
+
+  <!-- EXACT -->
+  <g>
+    <rect x="362" y="146" width="318" height="74" rx="11" fill="url(#purple)"/>
+    <text x="380" y="172" fill="#ffffff" font-size="16" font-weight="700">EXACT — semantic index</text>
+    <text x="380" y="194" fill="#ede9fe" font-size="12.5">official language server, ground truth</text>
+    <text x="380" y="211" fill="#ddd6fe" font-size="12" font-family="monospace">clangd · Roslyn · tsserver · pyright</text>
+  </g>
+  <!-- fallback arrow EXACT -> SYNTACTIC -->
+  <path d="M408,220 L408,250" stroke="#a78bfa" stroke-width="2" fill="none" marker-end="url(#arrowP)"/>
+  <text x="420" y="240" fill="#a78bfa" font-size="11.5">no toolchain? fall back ↓</text>
+
+  <!-- SYNTACTIC -->
+  <g>
+    <rect x="362" y="252" width="318" height="62" rx="11" fill="#1e293b" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="380" y="277" fill="#f1f5f9" font-size="15" font-weight="700">SYNTACTIC — tree-sitter</text>
+    <text x="380" y="298" fill="#cbd5e1" font-size="12.5">zero setup · 36 languages · real declarations</text>
+  </g>
+
+  <!-- FUZZY -->
+  <g>
+    <rect x="362" y="332" width="318" height="62" rx="11" fill="#1e293b" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="380" y="357" fill="#f1f5f9" font-size="15" font-weight="700">FUZZY — concept dictionary</text>
+    <text x="380" y="378" fill="#cbd5e1" font-size="12.5">mined from the repo's own words · no embeddings</text>
+  </g>
+
+  <!-- SECTION -->
+  <g>
+    <rect x="362" y="446" width="318" height="62" rx="11" fill="#1e293b" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="380" y="471" fill="#f1f5f9" font-size="15" font-weight="700">SECTION — docs &amp; config</text>
+    <text x="380" y="492" fill="#cbd5e1" font-size="12.5">Markdown · TOML · YAML · CSS · HTML, by heading</text>
+  </g>
+
+  <!-- arrows ladder -> output -->
+  <path d="M680,183 L760,250" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M680,283 L760,270" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M680,363 L760,290" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M680,477 L760,310" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ===== Column 3: the answer ===== -->
+  <text x="762" y="128" fill="#e2e8f0" font-size="14" font-weight="700" letter-spacing="1">THE ANSWER</text>
+
+  <g>
+    <rect x="762" y="146" width="238" height="118" rx="11" fill="#0b1220" stroke="#334155"/>
+    <text x="778" y="172" fill="#64748b" font-size="11.5">token-capped · no source bodies</text>
+    <text x="778" y="196" fill="#a5f3fc" font-size="12" font-family="monospace">createSession</text>
+    <text x="778" y="214" fill="#cbd5e1" font-size="11.5" font-family="monospace">@ auth/session.ts:142</text>
+    <rect x="778" y="228" width="150" height="22" rx="6" fill="#3b1d6e"/>
+    <text x="788" y="243" fill="#ddd6fe" font-size="11" font-weight="600">cert: EXACT rung ✓</text>
+  </g>
+
+  <!-- savings -->
+  <text x="762" y="300" fill="#e2e8f0" font-size="14" font-weight="700" letter-spacing="1">TOKENS SAVED</text>
+
+  <text x="762" y="330" fill="#94a3b8" font-size="12.5">grep dumps everything</text>
+  <rect x="762" y="338" width="238" height="26" rx="6" fill="#7f1d1d"/>
+  <text x="772" y="356" fill="#fecaca" font-size="13" font-weight="700" font-family="monospace">47,547 tok</text>
+
+  <text x="762" y="392" fill="#94a3b8" font-size="12.5">vts returns file:line</text>
+  <rect x="762" y="400" width="31" height="26" rx="6" fill="#14532d"/>
+  <text x="772" y="418" fill="#bbf7d0" font-size="13" font-weight="700" font-family="monospace">6,195</text>
+
+  <rect x="762" y="446" width="238" height="62" rx="11" fill="url(#purple)"/>
+  <text x="881" y="480" fill="#ffffff" font-size="30" font-weight="800" text-anchor="middle">87% fewer</text>
+  <text x="881" y="500" fill="#ede9fe" font-size="12" text-anchor="middle">3 languages · 150-file benchmark</text>
+
+  <!-- footer -->
+  <rect x="40" y="556" width="960" height="64" rx="12" fill="#111a30" stroke="#1e293b"/>
+  <text x="520" y="582" fill="#f1f5f9" font-size="15" font-weight="700" text-anchor="middle">Local-only · official engines do the analysis · no embeddings · nothing leaves your machine</text>
+  <text x="520" y="604" fill="#94a3b8" font-size="12.5" text-anchor="middle">Claude greps → the hook rewrites it to the indexed query in place, so the flow never breaks.</text>
+</svg>
