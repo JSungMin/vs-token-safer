@@ -21,7 +21,7 @@ import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
-import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident } from "./concept.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms } from "./concept.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
 
@@ -2056,17 +2056,36 @@ export async function runTool(name, a = {}) {
       // VTS_CONCEPT_MAX_DF (default 0.25): suppress expansion through/into a cross-cutting-generic token (one
       // present in > this fraction of decls) — the documented noise source on cross-cutting fuzzy queries.
       const maxDfRatio = Number(process.env.VTS_CONCEPT_MAX_DF ?? 0.25);
-      const enriched = expandQuery(model, qToks, { ...(synonyms ? { synonyms } : {}), maxDfRatio });
+      let enriched = expandQuery(model, qToks, { ...(synonyms ? { synonyms } : {}), maxDfRatio });
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
-      // Pass 1: base score (name + path + comment channels). Pass 2: import-graph proximity — a symbol whose
-      // FILE imports (or is imported by) a strongly-matching file is in the same subsystem, so lift it by a
-      // fraction of that neighbour file's best score. A deterministic structural signal from the code itself
-      // (NOT click-learning); it reranks the matched set, never invents a match. VTS_CONCEPT_IMPORT_FACTOR=0 off.
-      const based = symbols
-        .map((s) => ({ s, base: scoreSymbol(model, enriched, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
+      const scoreAll = (enr) => symbols
+        .map((s) => ({ s, base: scoreSymbol(model, enr, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
         .filter((r) => r.base > 0);
+      // Pass 1: base score (name + path + comment channels).
+      let based = scoreAll(enriched);
+      // Keep the PRE-PRF intrinsic score per symbol: the climb seed must be the strongest ORIGINAL-query match
+      // (an exact name hit), never a symbol that PRF feedback drifted to the top — PRF widens RECALL, not the seed.
+      const base0 = new Map(based.map((r) => [r.s, r.base]));
+      // PRF (RM3, arXiv:2603.11008): mine expansion terms from the VOCABULARY of the top-k pass-1 results and
+      // re-score — the embedding-free synonym bridge ("login" hits the auth module, whose decls contain
+      // "authenticate", folded back so a 2nd pass surfaces it). Drift-guarded: terms must appear in >= 2 of the
+      // top decls, weighted by idf, capped. VTS_CONCEPT_PRF=0 reverts to the single-shot expansion.
+      if ((process.env.VTS_CONCEPT_PRF ?? "1") !== "0" && based.length) {
+        const topK = based.slice().sort((a2, b2) => b2.base - a2.base).slice(0, envInt("VTS_CONCEPT_PRF_K", 5));
+        const bags = topK.map((r) => [...(r.s.nt || []), ...(r.s.dt || [])]);
+        const fb = prfTerms(model, bags, qToks, { terms: envInt("VTS_CONCEPT_PRF_TERMS", 5), minDocs: 2, weight: Number(process.env.VTS_CONCEPT_PRF_WEIGHT ?? 0.5) });
+        if (fb.length) {
+          const enr2 = new Map(enriched);
+          for (const [t, w] of fb) if ((enr2.get(t) || 0) < w) enr2.set(t, w);
+          enriched = enr2;          // so the cert / "concept-expanded with" line reflects the PRF terms too
+          based = scoreAll(enriched); // Pass 1b: re-score with the feedback-augmented query
+        }
+      }
+      // Pass 2: import-graph proximity — a symbol whose FILE imports (or is imported by) a strongly-matching file
+      // is in the same subsystem, so lift it by a fraction of that neighbour file's best score. Deterministic
+      // structural signal from the code itself; reranks the matched set, never invents a match. FACTOR=0 off.
       const fileBase = new Map();
       for (const r of based) if ((fileBase.get(r.s.file) || 0) < r.base) fileBase.set(r.s.file, r.base);
       const nf = Number(process.env.VTS_CONCEPT_IMPORT_FACTOR ?? 0.3);
@@ -2094,7 +2113,8 @@ export async function runTool(name, a = {}) {
       // proximity-boosted total `sc`. The seed is handed to find_references/goto_definition for ground truth,
       // so it must be the most confident exact-name candidate — an import-graph neighbour can lift a weak-base
       // symbol to the top of the shown list, but it should never become the thing we tell the model to climb on.
-      const seed = ranked.reduce((best, r) => (r.base > best.base ? r : best), ranked[0]);
+      const b0 = (r) => base0.get(r.s) ?? r.base; // pre-PRF intrinsic — climb the original-query match, not a PRF drift
+      const seed = ranked.reduce((best, r) => (b0(r) > b0(best) ? r : best), ranked[0]);
       const expTerms = [...enriched].filter(([t]) => !qToks.includes(t)).slice(0, 8).map(([t]) => t);
       const rows = ranked.map((r) => `${r.s.file}:${r.s.line}: ${r.s.kind} ${r.s.name}`);
       const expLine = expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "";
