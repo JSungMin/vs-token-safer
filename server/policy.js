@@ -30,11 +30,11 @@ export function routingDigest(o = readEditLedger()) {
   const pct = adoptionPct(o);
   const total = (o.builtin || 0) + (o.symbol || 0);
   const lines = [
-    "[vs-token-safer] Tool routing — vts and Claude Code's native tools are COMPLEMENTARY; use the cheapest tool that fits:",
-    "  • a symbol / its references / a rename, on INDEXED code → vts search_symbol / find_references / rename (semantic, token-capped) — not grep",
-    "  • ADD or REPLACE a whole declaration → vts replace_symbol_body / insert_symbol (edits by name, skips reading the file)",
-    "  • a doc or log, a quick literal peek, a JUST-edited or unindexed file, a sub-declaration tweak → CC-native Read / Grep / Edit is right; vts stays out of the way",
-    "  • a big tree with a slow first query → vts setup --scope <module> then vts preindex (index a subtree, not the whole monorepo)",
+    "[vs-token-safer] Tool routing — vts + CC-native are COMPLEMENTARY; cheapest tool that fits:",
+    "  • symbol / refs / rename on INDEXED code → vts search_symbol / find_references / rename (not grep)",
+    "  • ADD/REPLACE a whole decl → vts replace_symbol_body / insert_symbol (by name, skips the Read)",
+    "  • doc/log, quick literal peek, JUST-edited or unindexed file, sub-decl tweak → CC-native Read/Grep/Edit",
+    "  • big tree, slow first query → vts setup --scope <module>; vts preindex",
   ];
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
