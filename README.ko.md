@@ -27,7 +27,8 @@
 > 덩치 큰 에디터·빌드 로그는 형제 플러그인이 같은 방식으로 처리합니다. **무엇도 이 기기를 벗어나지 않습니다.**
 
 <p align="center">
-  <img src="docs/vts-demo.gif" alt="vs-token-safer 데모 — grep은 소스를 컨텍스트에 쏟아붓지만, 언어 서버 인덱스는 토큰 상한이 걸린 file:line만 돌려줍니다" width="760">
+  <img src="docs/vts-dashboard.gif" alt="vs-token-safer 로컬 대시보드 — 인덱싱한 저장소를 살아 움직이는 3D 그래프로 (Three.js, 127.0.0.1)" width="640"><br>
+  <sub>내장 대시보드(<code>vts serve</code>) — 인덱싱한 저장소를 살아 있는 3D 그래프로, 전부 127.0.0.1에서.</sub>
 </p>
 
 ```text
