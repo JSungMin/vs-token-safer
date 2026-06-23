@@ -78,7 +78,7 @@ and a language server — clangd (C/C++) / Roslyn (C#) you install; JS/TS + Pyth
 ## How it works
 
 <p align="center">
-  <img src="docs/vts-how-it-works.png" alt="vs-token-safer answers on one precision ladder: EXACT (semantic language server) → SYNTACTIC (tree-sitter, zero setup) → FUZZY (concept dictionary, no embeddings) → SECTION (docs/config by heading); every answer is capped to file:line and labeled with the rung it came from — 87% fewer tokens than grep" width="900">
+  <img src="docs/vts-how-it-works.png" alt="vs-token-safer answers on one precision ladder: EXACT (semantic language server) → SYNTACTIC (tree-sitter, zero setup) → FUZZY (concept dictionary, no embeddings) → SECTION (docs/config by heading), and switches rungs as it learns — a fuzzy concept_search surfaces a real name, then climbs to EXACT to confirm it; every answer is capped to file:line and labeled with the rung it came from — 87% fewer tokens than grep" width="900">
 </p>
 
 vs-token-safer isn't a search box — it's a **precision ladder**. You ask where something is, what calls it,
@@ -92,6 +92,12 @@ reach, then tells you which rung the answer came from:
 - **FUZZY** — you only remember what the code *does* → a concept dictionary mined from the repo's own
   identifiers + comments (no AI model, nothing uploaded).
 - **SECTION** — it's a doc or config, not code → Markdown / TOML / YAML / CSS / HTML addressed by heading.
+
+The rungs aren't a one-time pick — they connect, and vts **switches between them as it learns more**. Start
+on FUZZY when you only know the intent; the moment `concept_search` surfaces a real name, vts climbs to
+EXACT to confirm it against the semantic index (and an exact search that misses drops back down to FUZZY).
+The hooks steer that hand-off in both directions, so "I don't know the name" turns into a precise,
+semantically-verified `file:line` instead of a dead end.
 
 Every answer comes back capped to `file:line` (never source bodies) and carries a one-line **completeness
 certificate** naming the rung — so the model always knows whether it got the semantic truth or a fallback.
