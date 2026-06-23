@@ -513,13 +513,13 @@ Key references:
 - **Codebase-Memory: Tree-Sitter Knowledge Graphs for LLM Code Exploration via MCP** — [arXiv:2603.27277](https://arxiv.org/abs/2603.27277). The closest sibling. _Our difference:_ official-LSP ground truth + capped `file:line`, no persistent semantic DB, nothing transmitted.
 - **Dead-code lineage** — Rapid Type Analysis (Bacon & Sweeney, OOPSLA'96) and demand-driven reachability (the Go `deadcode` model) underpin `vts dce`'s preview-only call-graph reachability.
 
-**Related & subsequent work (2024–2026)**
+**Related & subsequent work (2024–2026)** — two of these are now **migrated into vs-token-safer** (marked _Migrated_).
 
-- **LARGER: Lexically Anchored Repository Graph Exploration and Retrieval** — Hu et al., [arXiv:2605.16352](https://arxiv.org/abs/2605.16352). Formalizes "lexical anchor → structural expansion" — the academic shape of our fuzzy→climb-to-exact ladder, also without embeddings.
+- **LARGER: Lexically Anchored Repository Graph Exploration and Retrieval** — Hu et al., [arXiv:2605.16352](https://arxiv.org/abs/2605.16352). Formalizes "lexical anchor → structural expansion" — the academic shape of our fuzzy→climb-to-exact ladder, also without embeddings. _Migrated_ → `concept_search` now expands the import-graph neighbourhood **only from high-confidence lexical anchors** (a neighbour lifts a symbol only if its own match clears a fraction of the strongest one; `VTS_CONCEPT_ANCHOR_MIN`), so a weak/cross-cutting neighbour can't drag its imports up the ranking.
 - **Rethinking Agentic Search with Pi-Serini: Is Lexical Retrieval Sufficient?** — Hsu, Yang & Lin, [arXiv:2605.10848](https://arxiv.org/abs/2605.10848). Empirical case that lexical retrieval suffices inside the agent loop — backing for our no-embeddings charter.
 - **One Tool Is Enough: RL for Repository-Level LLM Agents (RepoNavigator)** — Zhang et al., [arXiv:2512.20957](https://arxiv.org/abs/2512.20957). A single jump-to-definition tool, RL-trained, beats large multi-tool agents — a strong recent endorsement of LSP navigation over grep.
 - **DCE-LLM: Dead Code Elimination with Large Language Models** — [arXiv:2506.11076](https://arxiv.org/abs/2506.11076). LLM-judged dead code. _Our difference:_ `vts dce` stays preview-only static reachability — deterministic, no model judgment, with `safe_delete` as the disposal backstop.
-- **cAST: Structural Chunking via Abstract Syntax Tree** — Zhang et al., [arXiv:2506.15655](https://arxiv.org/abs/2506.15655). Tree-sitter chunking for code RAG — the neighbor of our SYNTACTIC tier.
+- **cAST: Structural Chunking via Abstract Syntax Tree** — Zhang et al., [arXiv:2506.15655](https://arxiv.org/abs/2506.15655). Tree-sitter chunking for code RAG — the neighbor of our SYNTACTIC tier. _Migrated_ → `read_symbol` now cuts an over-budget body at a **whole-child AST boundary** (the end of a complete member/statement), **never mid-statement**, so the returned source stays syntactically whole (falls back to the plain line cap when tree-sitter is absent).
 - **RepoGraph** ([arXiv:2410.14684](https://arxiv.org/abs/2410.14684)) and **LocAgent** ([arXiv:2503.09089](https://arxiv.org/abs/2503.09089)) — repository code-graph localization; we reach the same call/dependency structure via live LSP call-hierarchy, with no prebuilt graph and no embeddings.
 
 ## License
