@@ -7,18 +7,22 @@
   "repository": "https://github.com/JSungMin/vs-token-safer",
   "license": "MIT",
   "keywords": [
-    "clangd",
-    "roslyn",
     "lsp",
-    "visual-studio",
-    "unreal",
-    "unreal-engine",
-    "cpp",
-    "dotnet",
-    "csharp",
     "code-search",
     "token-efficiency",
-    "claude-code"
+    "claude-code",
+    "typescript",
+    "javascript",
+    "python",
+    "csharp",
+    "cpp",
+    "dotnet",
+    "clangd",
+    "roslyn",
+    "pyright",
+    "tree-sitter",
+    "unreal",
+    "visual-studio"
   ],
   "dependencies": ["gamedev-log-analyzer"]
 }

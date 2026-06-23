@@ -1,6 +1,9 @@
-# vs-token-safer · gamedev-log-analyzer
+# vs-token-safer
 
 **English** · [한국어](README.ko.md)
+
+> A token-saving code layer for Claude Code on **any** codebase — TypeScript, JavaScript, Python, C#, C++, Go, and
+> more. (Battle-tested down to a 26k-translation-unit Unreal Engine monorepo; bundles a game/build-log analyzer too.)
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED)](https://code.claude.com/docs/en/plugins)
 [![MCP](https://img.shields.io/badge/MCP-server-1f6feb)](https://modelcontextprotocol.io)
@@ -10,35 +13,44 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/JSungMin/vs-token-safer/pulls)
 [![Stars](https://img.shields.io/github/stars/JSungMin/vs-token-safer?style=social)](https://github.com/JSungMin/vs-token-safer/stargazers)
 
-> Your coding agent has a small context window and your repo is large. **vs-token-safer sits in between.**
-> Ask where something is, what calls it, or even "how does the auth flow work" when you don't know the name,
-> and it hands back a short `file:line` list instead of dumping source into the chat. It's exact when it can
-> be — a real language server (clangd / Roslyn / tsserver / pyright) — still useful when it can't (tree-sitter
-> with no setup, or a fuzzy search built from your repo's own naming, no embeddings), and it works the same way
-> on your Markdown and config: read or edit a section by its heading without opening the whole file. A sibling
-> plugin reads tens-of-MB editor logs without pasting them into the conversation. **Everything stays on your
-> machine.**
+> Your coding agent has a small context window. Your repo is large. **vs-token-safer sits in between.**
+>
+> Ask where something is, what calls it, or even "how does the auth flow work?" when the name escapes you — and
+> instead of pasting a wall of source into the chat, it replies with a short `file:line` list.
+>
+> When your project builds normally, the answers are exact: it reads the same code index your editor relies on.
+> When it doesn't, it still locates your functions and classes with nothing to set up. And when you've forgotten
+> the name and only remember what the code does, it finds it from the vocabulary your own code already uses — no
+> AI model, nothing uploaded. Markdown and config files work the same way: jump straight to one section by its
+> heading instead of opening the whole file.
+>
+> A companion plugin does the same for giant editor and build logs. **None of it leaves your machine.**
 
 <p align="center">
-  <img src="docs/vts-demo.gif" alt="vs-token-safer demo — grep dumps source into context; the language-server index returns a token-capped file:line list" width="760">
+  <img src="docs/vts-savings.png" alt="87% fewer tokens than grep — a deterministic 3-language, 150-file benchmark (47,547 grep tokens vs 6,195); ~99% on the zero-setup tree-sitter tier; ~138x on a real Unreal Engine 5 tree" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/vts-dashboard.gif" alt="The vs-token-safer local dashboard — the indexed repo as a live, rotating 3D graph (Three.js, served on 127.0.0.1)" width="640"><br>
+  <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1.</sub>
 </p>
 
 ```text
 # Claude tries to grep code → the hook REWRITES it to the indexed query, in place:
-$ grep -rn "SpawnActor" Source/**/*.cpp
-↻ [vs-token-safer] Rerouted → search_symbol "SpawnActor"      # semantic, not a text match
-  func SpawnActor (in AGameMode)   @ Source/GameMode.cpp:142   (+2 more)
+$ grep -rn "createSession" src/
+↻ [vs-token-safer] Rerouted → search_symbol "createSession"   # semantic, not a text match
+  func createSession (in AuthService)  @ src/auth/session.ts:142   (+2 more)
   → ~120 tokens   (grep would have dumped thousands of lines)
 
 # Editing that symbol? Name it — no Read-the-whole-file, no line counting:
-$ replace_symbol_body symbol="SpawnActor" body="…"           # preview; apply=true writes
-  replace_symbol_body "SpawnActor" — PREVIEW at Source/GameMode.cpp:142-160
+$ replace_symbol_body symbol="createSession" body="…"        # preview; apply=true writes
+  replace_symbol_body "createSession" — PREVIEW at src/auth/session.ts:142-160
 ```
-<sub>Illustrative output with public Unreal Engine symbols. `VTS_REWRITE=0` blocks instead of rewriting.</sub>
+<sub>Same flow on TypeScript, Python, C#, C++, Go and more (clangd · Roslyn · tsserver · pyright · tree-sitter). `VTS_REWRITE=0` blocks instead of rewriting.</sub>
 
 ## Why
 
-- `grep` on a giant Unreal C++ / .NET repo floods the context. The clangd/Roslyn index stays token-capped — ~97–99% smaller ([benchmarks](#performance)).
+- `grep` on a large repo — a TypeScript/Python monorepo, a C#/.NET solution, even a 26k-TU Unreal C++ tree — floods the context. The language-server index stays token-capped — ~97–99% smaller ([benchmarks](#performance)).
 - Claude keeps reaching for `grep`. The hook doesn't just block it — it **rewrites the command to the indexed query in place**, so the search still runs and the flow never breaks.
 - **Edit by symbol, not by line.** Replace/insert-around/delete a declaration by *naming* it — the index supplies the span, so you skip reading the whole file into context.
 - You can't tell how much grep still slips through. `vts discover` reads your recent sessions and reports exactly which searches bypassed the index and what they cost.
@@ -136,11 +148,11 @@ web-framework dependency), and it runs **only when you invoke it** — the MCP s
 steady-state package stays a thin stdio client. The 3D graph caps at `VTS_VIZ_MAX_NODES` (200) for smoothness.
 
 ```
-$ vts symbol --q SpawnActor --projectPath ./MyGame
-3 symbol(s) matching "SpawnActor" (backend: clangd, root: ./MyGame):
-func SpawnActor (in AGameMode)  @ MyGame/Source/GameMode.cpp:142
-method SpawnActorDeferred (in UWorld)  @ MyGame/Source/World.cpp:88
-func SpawnActorFromClass  @ MyGame/Source/SpawnLib.cpp:31
+$ vts symbol --q createSession --projectPath ./app
+3 symbol(s) matching "createSession" (backend: typescript, root: ./app):
+func createSession (in AuthService)  @ app/src/auth/session.ts:142
+method createSessionToken (in TokenStore)  @ app/src/auth/token.ts:88
+func createSessionCookie  @ app/src/http/cookies.ts:31
 
 ✓ Saved ~4,200 tokens here (96.8% / 31× smaller than the raw index response).
 ```
