@@ -18,12 +18,12 @@
 > Ask it where something is, what calls it, or even "how does the auth flow work?" when you can't remember the
 > name. It answers with a short `file:line` list — not a wall of source pasted into the chat.
 >
-> It's exact when it can be: a real language server (clangd, Roslyn, tsserver, pyright). It's still useful when it
-> can't be: tree-sitter with zero setup, or a fuzzy search built from your repo's own words — no embeddings.
-> Markdown and config files work the same way — read or edit one section by its heading, without opening the whole
-> file. A sibling plugin even reads tens-of-MB editor logs without pasting them into the chat.
+> - **Know the name?** You get precise answers, because it reads the same code index your IDE does *(clangd, Roslyn, tsserver, pyright)*.
+> - **No compiler or project set up yet?** It still finds your functions and classes instantly, with zero configuration.
+> - **Only remember what the code *does*, not what it's called?** It finds it from the words your own code already uses — no AI model, nothing sent to a server.
+> - **Markdown or config, not code?** Read or edit a single section by its heading, without opening the whole file.
 >
-> **Everything stays on your machine.**
+> A sibling plugin even reads tens-of-MB editor/build logs without pasting them into the chat. **Everything stays on your machine.**
 
 <p align="center">
   <img src="docs/vts-demo.gif" alt="vs-token-safer demo — grep dumps source into context; the language-server index returns a token-capped file:line list" width="760">
