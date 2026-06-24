@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled, clangdIndexModeAdvisory } from "./backends/index.js";
 import { scopeStats, inScope } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
@@ -970,11 +970,15 @@ export function ensureDbIgnored(root, patterns = DB_IGNORES) {
   return notes;
 }
 let _dbAdvisoryShown = false;
+let _idxModeShown = false;
 function backendAdvisory(backendName, root) {
   if (backendName !== "clangd") return "";
   let s = "";
   if (!_advisoryShown) { const a = clangdAdvisory(BACKENDS.clangd.cmd); if (a) { _advisoryShown = true; s += a + "\n\n"; } }
   if (!_dbAdvisoryShown && root) { const d = compileDbAdvisory(root); if (d) { _dbAdvisoryShown = true; s += d + "\n\n"; } }
+  // Background-index tier advisory (huge tree → throttled/off to protect RAM). One-time per process so it
+  // doesn't repeat on every clangd result, but loud enough that a degraded search isn't mistaken for a miss.
+  if (!_idxModeShown && root) { const m = clangdIndexModeAdvisory(root); if (m) { _idxModeShown = true; s += m + "\n\n"; } }
   return s;
 }
 
