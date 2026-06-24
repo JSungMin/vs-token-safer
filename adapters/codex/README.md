@@ -33,9 +33,13 @@ Verify it's wired:
 codex mcp list      # vs-search should appear
 ```
 
-## 2. Add the routing guidance
+## 2. (Optional) routing guidance
 
-Append the block from [`AGENTS.md`](./AGENTS.md) to your project's `AGENTS.md`. Regenerate it any time so it
+Step 1 is enough — the tools are live. This step only improves *adoption*: paste the block from
+[`AGENTS.md`](./AGENTS.md) into your project's `AGENTS.md` so the agent prefers the vts tools by habit (no
+PreToolUse hook here to auto-rewrite a stray grep).
+
+If you have the `vts` CLI on PATH (see step 3), you can regenerate the block instead of copy-pasting, so it
 stays in sync with the engine:
 
 ```bash
