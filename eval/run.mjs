@@ -1192,7 +1192,8 @@ const adaptersOk =
   /Codex read_file \/ shell/.test(rbCodex) &&                                   // per-harness native label injected
   /vts \+ CC-native are COMPLEMENTARY/.test(rdCC) && /→ CC-native Read\/Grep\/Edit/.test(rdCC) && // CC digest UNCHANGED by the refactor
   /\[mcp_servers\.vs-search\]/.test(codexToml) && /command\s*=/.test(codexToml) && /args\s*=/.test(codexToml) && // valid Codex MCP table
-  fs.existsSync(adapterFile("codex/AGENTS.md")) && fs.existsSync(adapterFile("codex/README.md")) && fs.existsSync(adapterFile("README.md"));
+  fs.existsSync(adapterFile("codex/AGENTS.md")) && fs.existsSync(adapterFile("codex/README.md")) &&
+  fs.existsSync(adapterFile("codex/README.ko.md")) && fs.existsSync(adapterFile("README.md")); // EN + KO usage docs
 
 // 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
 // doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs
