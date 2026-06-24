@@ -33,10 +33,13 @@ codex mcp add vs-search -- npx -y vs-token-safer
 codex mcp list      # vs-search 가 보여야 함
 ```
 
-## 2. 라우팅 지침 추가
+## 2. (선택) 라우팅 지침
 
-이 디렉터리의 [`AGENTS.md`](./AGENTS.md) 블록을 프로젝트의 `AGENTS.md`에 덧붙입니다. 엔진과 동기를 유지하도록
-언제든 다시 생성할 수 있습니다:
+1단계만으로 도구는 이미 동작합니다 — 이 단계는 *채택률*만 높입니다: 이 디렉터리의 [`AGENTS.md`](./AGENTS.md)
+블록을 프로젝트 `AGENTS.md`에 복붙하면 에이전트가 vts 도구를 습관적으로 우선 씁니다(여기엔 떠도는 grep을
+자동으로 다시 쓰는 PreToolUse 훅이 없음).
+
+`vts` CLI가 PATH에 있으면(3단계 참고) 복붙 대신 블록을 다시 생성해 엔진과 동기를 유지할 수 있습니다:
 
 ```bash
 vts routing --native "Codex의 read_file / shell(grep, sed) / apply_patch" >> AGENTS.md
