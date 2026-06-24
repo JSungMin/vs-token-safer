@@ -249,6 +249,63 @@ function nodeLspBackend(binJs, cmdOverride, globalName, argsEnv, rest) {
 const TS_BIN = resolveBinJs("typescript-language-server", "typescript-language-server");
 const PY_BIN = resolveBinJs("pyright", "pyright-langserver");
 
+// Count TUs in the EFFECTIVE (post-scope) compile DB — exactly what clangd would background-index. No DB
+// (uproject-only) → 0 (clangd has nothing to crawl). Cheap: one JSON read of the file clangd already reads.
+export function effectiveTuCount(root) {
+  const dir = effectiveCdbDir(root);
+  if (!dir) return 0;
+  try {
+    const e = JSON.parse(fs.readFileSync(path.join(dir, "compile_commands.json"), "utf8"));
+    return Array.isArray(e) ? e.length : 0;
+  } catch { return 0; }
+}
+
+// TIERED, resource-aware clangd background-index policy. Live OOM incident: a ~26k-TU UNSCOPED Unreal tree,
+// indexed at `normal` priority across all cores (our latency tuning), ate 18GB+ RAM and starved every core on
+// a single read_symbol. The latency defaults are correct on a BOUNDED tree but catastrophic on a huge unscoped
+// one. So scale indexing aggression to the EFFECTIVE (post-scope) TU count — scoping a big tree drops it below
+// the threshold and restores full speed automatically:
+//   • ≤ soft (4000)         → FULL: --background-index, priority=normal, -j=cores-1 (unchanged fast path)
+//   • soft..hard (4k..15k)  → SAFE: --background-index, priority=background (idle-CPU-only), -j=2 (slow, low peak)
+//   • > hard (15000)        → OFF:  no --background-index — open-file parsing only (read_symbol/hover/outline stay
+//                             cheap), search_symbol/find_references fall to the syntactic tier; advise scoping.
+// A prebuilt static --index-file still loads in OFF mode (memory-mapped, no crawl) → full semantic search with
+// zero RAM blowup once `vts preindex --static` has run. Env escape hatches: VTS_CLANGD_BG_INDEX=0/1 forces
+// off/full; VTS_CLANGD_INDEX_PRIORITY / VTS_CLANGD_JOBS still override the per-tier defaults. `tusArg` injectable
+// for the eval. The warm-up open-set is clamped in SAFE/OFF too (opening many UE TUs is itself a parse spike).
+export function clangdIndexFlags(root, tusArg) {
+  const cores = Math.max(2, (os.cpus()?.length || 4) - 1);
+  const tus = Number.isFinite(tusArg) ? tusArg : effectiveTuCount(root);
+  const soft = envInt("VTS_CLANGD_BG_INDEX_SOFT_TUS", 4000);
+  const hard = envInt("VTS_CLANGD_BG_INDEX_HARD_TUS", 15000);
+  let mode = tus > hard ? "off" : tus > soft ? "safe" : "full";
+  const force = env("VTS_CLANGD_BG_INDEX");
+  if (force != null && /^(0|false|off|no)$/i.test(String(force))) mode = "off";
+  else if (force != null && /^(1|true|on|yes)$/i.test(String(force))) mode = "full";
+  const prioOv = env("VTS_CLANGD_INDEX_PRIORITY");
+  const jobsOv = parseInt(env("VTS_CLANGD_JOBS"), 10);
+  const priority = prioOv || (mode === "full" ? "normal" : "background");
+  const jobs = Number.isFinite(jobsOv) && jobsOv > 0 ? jobsOv : (mode === "full" ? cores : Math.min(2, cores));
+  const warmCapMax = mode === "full" ? Infinity : envInt("VTS_CLANGD_HUGE_WARM_CAP", 8);
+  return { mode, backgroundIndex: mode !== "off", priority, jobs, warmCapMax, tus };
+}
+
+// One-line advisory surfaced in clangd results when the tree is large enough that background indexing was
+// throttled (SAFE) or disabled (OFF) — names the bounded fix so the model/user knows search degraded ON PURPOSE.
+export function clangdIndexModeAdvisory(root) {
+  let ix; try { ix = clangdIndexFlags(root); } catch { return ""; }
+  if (ix.mode === "safe") {
+    return `⚠ clangd: ${ix.tus} TUs (unscoped/large) — background index THROTTLED (idle CPU, -j=${ix.jobs}) to protect RAM/CPU. ` +
+      `For full-speed semantic search, scope it: \`vts setup --scope <module>\` then \`vts preindex\`.`;
+  }
+  if (ix.mode === "off") {
+    return `⚠ clangd: ${ix.tus} TUs (unscoped/very large) — project background index is OFF to protect RAM (a single open would otherwise crawl every TU). ` +
+      `Single-file ops (read_symbol/hover/outline) still work; project-wide search_symbol/find_references fall back to the syntactic tier. ` +
+      `Enable bounded semantic search: \`vts setup --scope <module>\` then \`vts preindex\` (or \`vts preindex --static\` for a project-wide index with no live crawl).`;
+  }
+  return "";
+}
+
 export const BACKENDS = {
   // C/C++ via clangd (LLVM). Needs compile_commands.json (Unreal: generate via UBT
   // `-mode=GenerateClangDatabase`, or CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`). LIVE-TARGET.
@@ -257,18 +314,22 @@ export const BACKENDS = {
     args: (root) => {
       const ov = splitArgs(env("VTS_CLANGD_ARGS"));
       if (ov) return ov;
+      // TIERED background-index policy (see clangdIndexFlags): FULL on a bounded/scoped tree (the latency-
+      // optimised default), THROTTLED or OFF on a huge unscoped one so a single query can't crawl 26k TUs at
+      // full power and OOM the box. priority/jobs scale with the effective TU count; env still overrides.
+      const ix = clangdIndexFlags(root);
       const a = [
         // --compile-commands-dir only tells clangd where to FIND compile_commands.json (out-of-tree home
         // or in-tree); it does NOT relocate the index. clangd has no index-dir flag — it persists its
         // background index in `<project>/.cache/clangd` (in-tree), reused across spawns for warm speed.
         `--compile-commands-dir=${effectiveCdbDir(root) || root}`,
-        "--background-index",
-        // Default priority is `background` = MINIMUM, idle-CPU-only — so a fresh index crawls (a big reason
-        // the first query felt far slower than a warm IDE like Rider). We want it built NOW; `normal` lets
-        // it use real CPU. Override with VTS_CLANGD_INDEX_PRIORITY (e.g. `background` to be a good citizen).
-        `--background-index-priority=${env("VTS_CLANGD_INDEX_PRIORITY", "normal")}`,
-        // More async workers → faster background indexing (default is conservative). Cap at the box's cores.
-        `-j=${Math.max(2, parseInt(env("VTS_CLANGD_JOBS", String(Math.max(2, (os.cpus()?.length || 4) - 1))), 10) || 4)}`,
+        // FULL/SAFE keep --background-index (SAFE just at idle priority + few jobs); OFF disables the
+        // whole-tree crawl entirely — open-file parsing still works, and a static --index-file still loads.
+        ...(ix.backgroundIndex
+          ? ["--background-index", `--background-index-priority=${ix.priority}`]
+          : ["--background-index=false"]),
+        // Async workers: cores-1 on FULL (fast), 2 on SAFE/OFF (low peak parse RAM). Caps at the box's cores.
+        `-j=${ix.jobs}`,
         "--header-insertion=never",
       ];
       // Prebuilt STATIC index (clangd-indexer output): load it directly via --index-file — a local file, no
@@ -302,7 +363,11 @@ export const BACKENDS = {
       // Open just a small nudge set so clangd starts loading; the full project is already in the index.
       // (A cold project with NO index still opens the full cap to force the first dynamic index.)
       const persisted = hasPersistedIndex(root);
-      const cap = persisted ? Math.min(warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100), envInt("VTS_CLANGD_WARM_CAP_PERSISTED", 8)) : warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100);
+      // Clamp the warm-up open-set to the tier cap: in SAFE/OFF mode, opening many UE TUs (each a full parse)
+      // is itself a RAM spike — even with background indexing throttled/off. FULL mode → Infinity (no clamp).
+      const tierCap = clangdIndexFlags(root).warmCapMax;
+      const baseCap = persisted ? Math.min(warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100), envInt("VTS_CLANGD_WARM_CAP_PERSISTED", 8)) : warmCap(root, "clangd", "VTS_CLANGD_OPEN_CAP", 100);
+      const cap = Math.min(baseCap, tierCap);
       // Order the open-set by likely-query-first (query-history > git-recency > mtime), then cap — this
       // steers clangd's IndexBoostedFile priority so the warm window covers what the dev actually queries.
       const open = orderForWarm(root, [...new Set([...files, ...extra])], cap);
