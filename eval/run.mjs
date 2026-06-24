@@ -1176,6 +1176,46 @@ const censusFallbackOk =
   JSON.stringify(_cf("clangd", { clangd: 100, pyright: 5, typescript: 20 }, { VTS_CENSUS_FALLBACK_MIN: "10" })) === JSON.stringify(["typescript"]) && // min raised → pyright:5 dropped
   _cf("clangd", { clangd: 100, pyright: 5 }, { VTS_CENSUS_FALLBACK: "0" }).length === 0; // kill switch
 
+// 92) TIERED clangd background-index policy (RAM/CPU OOM guard): a huge UNSCOPED tree must NOT be indexed at
+// `normal` priority across all cores (live incident: 26k-TU UE tree → 18GB+ on a single read_symbol). Scale to
+// the effective (post-scope) TU count: FULL ≤ soft (4000), SAFE soft..hard (idle priority + -j=2), OFF > hard
+// (15000; no whole-tree crawl — single-file ops still work, project search falls to the syntactic tier). Env
+// VTS_CLANGD_BG_INDEX=0/1 forces; VTS_CLANGD_INDEX_PRIORITY / VTS_CLANGD_JOBS override. Pure (tus injectable).
+const { clangdIndexFlags, clangdIndexModeAdvisory } = await import("../server/backends/index.js");
+const cif = (tus, env = {}) => {
+  const saved = {}; for (const k in env) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+  try { return clangdIndexFlags("/r", tus); }
+  finally { for (const k in env) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
+};
+const ixFull = cif(100), ixSafe = cif(8000), ixOff = cif(20000);
+const idxTierOk =
+  ixFull.mode === "full" && ixFull.backgroundIndex === true && ixFull.priority === "normal" && ixFull.warmCapMax === Infinity && ixFull.jobs >= 2 &&
+  ixSafe.mode === "safe" && ixSafe.backgroundIndex === true && ixSafe.priority === "background" && ixSafe.jobs === 2 && Number.isFinite(ixSafe.warmCapMax) &&
+  ixOff.mode === "off" && ixOff.backgroundIndex === false && ixOff.jobs === 2 &&                       // > hard → whole-tree crawl disabled
+  cif(20000, { VTS_CLANGD_BG_INDEX: "1" }).mode === "full" &&                                          // force ON
+  cif(100, { VTS_CLANGD_BG_INDEX: "0" }).mode === "off" &&                                             // force OFF
+  cif(100, { VTS_CLANGD_INDEX_PRIORITY: "low" }).priority === "low" &&                                 // priority override wins
+  cif(20000, { VTS_CLANGD_JOBS: "3" }).jobs === 3 &&                                                   // jobs override wins
+  cif(8000, { VTS_CLANGD_BG_INDEX_SOFT_TUS: "9000" }).mode === "full" &&                               // raise soft → back to full
+  cif(8000, { VTS_CLANGD_BG_INDEX_HARD_TUS: "5000" }).mode === "off";                                  // lower hard → off
+// advisory text: force off/safe on a tiny tmp compile DB by lowering the thresholds, assert the bounded-fix steer.
+let idxAdvisoryOk;
+{
+  const idir = path.join(os.tmpdir(), `vts-eval-${process.pid}-idxmode`);
+  fs.mkdirSync(idir, { recursive: true });
+  fs.writeFileSync(path.join(idir, "compile_commands.json"), JSON.stringify(Array.from({ length: 50 }, (_, i) => ({ file: `a${i}.cpp`, directory: idir, command: "clang a.cpp" }))));
+  process.env.VTS_CLANGD_BG_INDEX_SOFT_TUS = "10"; process.env.VTS_CLANGD_BG_INDEX_HARD_TUS = "40"; // 50 TUs → off
+  const advOff = clangdIndexModeAdvisory(idir);
+  process.env.VTS_CLANGD_BG_INDEX_HARD_TUS = "100"; // 50 TUs now in 10..100 → safe
+  const advSafe = clangdIndexModeAdvisory(idir);
+  delete process.env.VTS_CLANGD_BG_INDEX_SOFT_TUS; delete process.env.VTS_CLANGD_BG_INDEX_HARD_TUS;
+  const advFull = clangdIndexModeAdvisory(idir); // default thresholds, 50 TUs → full → no advisory
+  idxAdvisoryOk = /index is OFF/.test(advOff) && /vts setup --scope/.test(advOff) && /syntactic tier/.test(advOff) &&
+    /THROTTLED/.test(advSafe) && /vts setup --scope/.test(advSafe) && advFull === "";
+  try { fs.rmSync(idir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+const idxPolicyOk = idxTierOk && idxAdvisoryOk;
+
 // 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
 // doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs
 // nothing), "apply" = run UBT. Wiring test: the section appears with the GenerateClangDatabase command and
@@ -2328,6 +2368,7 @@ const rows = [
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["census fallback: path-less search_symbol retries OTHER backends present in the mixed repo (census-desc, gated)", censusFallbackOk, "true", censusFallbackOk],
+  ["clangd bg-index OOM guard: tiered full/safe/off by effective TU count + env overrides + scope advisory", idxPolicyOk, "true", idxPolicyOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
   ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
