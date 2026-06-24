@@ -1,0 +1,21 @@
+# vs-token-safer — Codex CLI MCP server snippet
+# Merge this table into ~/.codex/config.toml (or a project-scoped .codex/config.toml in a trusted project).
+# The server is the SAME engine the Claude Code plugin and the `vts` CLI use (server/index.js → runTool).
+# Local-only: it spawns a language server over YOUR source and returns a token-capped file:line list.
+# Nothing is transmitted.
+
+# --- Option A: a local clone (always works, no npm publish required) -------------------------------
+# Replace the path with the absolute path to THIS repo's server/index.js on your machine.
+[mcp_servers.vs-search]
+command = "node"
+args = ["/ABSOLUTE/PATH/TO/vs-token-safer/server/index.js"]
+# Pin the repo a session should index (optional — vts also honors the MCP workspace root / a per-call path):
+# [mcp_servers.vs-search.env]
+# PROJECT_PATH = "/abs/path/to/your/project"
+# VTS_SCOPE = "TSGame,Plugins"        # index a SUBTREE on a big monorepo (cold-latency cut)
+# VTS_CLANGD_CMD = "/path/to/clangd"  # clangd >= 22 (VS-bundled 19.1.x deadlocks on Unreal TUs)
+
+# --- Option B: published npm package (if/when vs-token-safer is on npm) -----------------------------
+# [mcp_servers.vs-search]
+# command = "npx"
+# args = ["-y", "vs-token-safer"]

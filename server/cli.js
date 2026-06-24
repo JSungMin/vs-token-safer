@@ -75,6 +75,8 @@ Commands:
                  mix, per-tool savings, and the include-graph fan-in as an interactive 3D force graph (Three.js,
                  vendored locally — no CDN). [--port N (default 8731) --projectPath <dir> --open (launch browser)]
                  Stop it with 'vts serve --stop' (or Ctrl-C). Easiest: the /vs-token-safer:viz / :viz-stop commands.
+  routing        Print the harness-neutral tool-routing block for an adapter's AGENTS.md / rules file (so a
+                 Codex / generic-MCP host gets the same when-to-use-what guidance). [--native "<tool label>"]
   config         Show effective settings.
   savings        How many tokens you've saved vs forwarding raw index responses.
                  [--graph (30-day ASCII) --daily --history]
@@ -120,7 +122,12 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { co
 
 // `vts serve` — the local dashboard. Long-running (NOT a runTool dispatch): start the 127.0.0.1 server and
 // stay alive until Ctrl-C. Special-cased here so it doesn't fall through to the one-shot runTool path below.
-if (rawCmd === "serve") {
+if (rawCmd === "routing") {
+  const a = parseArgs(rest);
+  const { routingBlock } = await import("./policy.js");
+  process.stdout.write(routingBlock(a.native ? { native: a.native } : {}) + "\n");
+  process.exit(0);
+} else if (rawCmd === "serve") {
   const a = parseArgs(rest);
   const { startServer, writePid, clearPid, stopServer, openBrowser } = await import("./serve.js");
   // --stop: signal a running dashboard via its pidfile and exit (the /vs-token-safer:viz-stop command).
