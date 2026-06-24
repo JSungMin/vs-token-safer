@@ -75,15 +75,16 @@ and a language server — clangd (C/C++) / Roslyn (C#) you install; JS/TS + Pyth
 
 > Want only the log analyzer? `/plugin install gamedev-log-analyzer@vs-token-safer`.
 
-**On Codex CLI** (MCP — same engine, no Claude Code needed):
+**On Codex CLI** (MCP — same engine, no Claude Code needed). One command registers the server; its tools are
+then available (local-only, no auth/login):
 
 ```bash
 codex mcp add vs-search -- node /ABSOLUTE/PATH/TO/vs-token-safer/server/index.js
-vts routing --native "Codex's native read_file / shell (grep, sed) / apply_patch" >> AGENTS.md
 ```
 
-Full guide: **[adapters/codex/README.md](adapters/codex/README.md)** ([한국어](adapters/codex/README.ko.md)).
-Other MCP hosts → [adapters/README.md](adapters/README.md).
+Optional: paste [adapters/codex/AGENTS.md](adapters/codex/AGENTS.md) into your project's `AGENTS.md` to nudge
+the agent toward the vts tools. Full guide: **[adapters/codex/README.md](adapters/codex/README.md)**
+([한국어](adapters/codex/README.ko.md)). Other MCP hosts → [adapters/README.md](adapters/README.md).
 
 ## How it works
 
@@ -387,14 +388,14 @@ cd vs-token-safer/server && npm install && npm link   # provides `vts`
 <details>
 <summary><b>Other agents — Codex CLI (MCP)</b></summary>
 
-Codex speaks MCP, so the tools port for free — same token-capped `file:line` answers, all local. Register the
-server and add a routing block to `AGENTS.md`:
+Codex speaks MCP, so the tools port for free — same token-capped `file:line` answers, all local. One command
+registers the server (local-only, no auth):
 
 ```bash
 codex mcp add vs-search -- node /ABSOLUTE/PATH/TO/vs-token-safer/server/index.js
-vts routing --native "Codex's native read_file / shell (grep, sed) / apply_patch" >> AGENTS.md
 ```
 
+Optional: paste [adapters/codex/AGENTS.md](adapters/codex/AGENTS.md) into `AGENTS.md` to nudge tool choice.
 Full guide: **[adapters/codex/README.md](adapters/codex/README.md)** ([한국어](adapters/codex/README.ko.md)).
 The adapter strategy and the enforcement ladder for any MCP host: [adapters/README.md](adapters/README.md).
 </details>
