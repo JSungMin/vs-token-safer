@@ -1,5 +1,7 @@
 # vs-token-safer × Codex CLI
 
+English · **[한국어](./README.ko.md)**
+
 Run vs-token-safer under OpenAI's [Codex CLI](https://developers.openai.com/codex/). Codex speaks MCP, so
 the **tools port for free** — `search_symbol`, `find_references`, `goto_definition`, `concept_search`, the
 symbol-edit set, `search_text`/`find_files`, the git/p4 compactors — all answer with the same token-capped
