@@ -176,6 +176,12 @@ forced backend (one global server serves every repo, so a `backend:"clangd"` pin
 sent this repo's `.js`/`.cs`/`.py` → clangd answers `-32001 invalid AST`; live-found dogfooding goto on the vts
 repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `backend` > `backendForPath(a.path)` >
 `pickBackend(root)`. A path-less query (search_symbol by name) keeps the forced backend. Eval guard 55.
+  CENSUS FALLBACK (core.js `censusFallbackBackends`): a path-less query keeping the forced/root backend is the
+  mixed-repo hole — clangd (root) answers 0 for a Python symbol and the model abandons vts. So when the primary
+  backend's `search_symbol` comes back EMPTY on a path-less, non-explicit query, retry against the OTHER backends
+  the `languageCensus` shows have files (most-code-first) BEFORE the syntactic/literal fallback — still the EXACT
+  rung, just from the right LSP. Gated: `!a.path && !a.backend`, count ≥ `VTS_CENSUS_FALLBACK_MIN` (1),
+  `VTS_CENSUS_FALLBACK=0` off; no cost on a single-language repo (census returns no other candidate). Eval guard 90.
   Override via `VTS_CLANGD_CMD/ARGS`,
   `VTS_ROSLYN_CMD/ARGS`, `VTS_TS_CMD/ARGS`, `VTS_PY_CMD/ARGS`. `winShell` flag spawns the npm `.cmd`
   shims (ts/pyright) through a shell on Windows. `langIdForPath` (lsp.js) maps file ext → LSP languageId.

@@ -1158,6 +1158,24 @@ const backendPathOk =
   preferBackend("", "typescript", "") === "typescript" &&      // no forced backend → the file's backend
   preferBackend("", null, "") === "";                          // nothing resolvable → "" (caller does pickBackend(root))
 
+// 90) CENSUS-BASED multi-backend fallback for a PATH-LESS search_symbol: the bug is that preferBackend keeps the
+// forced/root backend (clangd in a UE tree) for a name-only query, so a Python tooling dir in the SAME repo is
+// invisible (clangd answers 0, model gives up). censusFallbackBackends consults the language census and returns
+// the OTHER backends with files, most-code-first, so the empty-result branch can retry against the right LSP.
+// Pure with an injected census (no fs). Gated to count ≥ VTS_CENSUS_FALLBACK_MIN; VTS_CENSUS_FALLBACK=0 disables.
+const { censusFallbackBackends } = await import("../server/core.js");
+const _cf = (primary, census, env = {}) => {
+  const saved = {}; for (const k in env) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+  try { return censusFallbackBackends("/r", primary, census); }
+  finally { for (const k in env) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
+};
+const censusFallbackOk =
+  JSON.stringify(_cf("clangd", { clangd: 100, pyright: 5, typescript: 0, roslyn: 0 })) === JSON.stringify(["pyright"]) && // 0-count excluded, primary excluded
+  JSON.stringify(_cf("clangd", { clangd: 100, pyright: 5, typescript: 20, roslyn: 0 })) === JSON.stringify(["typescript", "pyright"]) && // census-desc order
+  _cf("pyright", { clangd: 0, pyright: 100, typescript: 0, roslyn: 0 }).length === 0 && // no OTHER language present → no fallback
+  JSON.stringify(_cf("clangd", { clangd: 100, pyright: 5, typescript: 20 }, { VTS_CENSUS_FALLBACK_MIN: "10" })) === JSON.stringify(["typescript"]) && // min raised → pyright:5 dropped
+  _cf("clangd", { clangd: 100, pyright: 5 }, { VTS_CENSUS_FALLBACK: "0" }).length === 0; // kill switch
+
 // 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
 // doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs
 // nothing), "apply" = run UBT. Wiring test: the section appears with the GenerateClangDatabase command and
@@ -2309,6 +2327,7 @@ const rows = [
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
+  ["census fallback: path-less search_symbol retries OTHER backends present in the mixed repo (census-desc, gated)", censusFallbackOk, "true", censusFallbackOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
   ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
