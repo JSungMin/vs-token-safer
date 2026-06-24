@@ -106,6 +106,23 @@ export function preferBackend(aBackend, byPath, forced) {
   return aBackend || (byPath && forced && byPath !== forced ? byPath : forced) || byPath || "";
 }
 
+// Census-based multi-backend fallback for a PATH-LESS search_symbol. A name-only query has no `path` to drive
+// backendForPath, so preferBackend keeps the forced/root backend (clangd in a UE tree). A DIFFERENT language
+// in the SAME repo — a Python tooling dir, a JS side-project — is then structurally invisible: the query is
+// sent to clangd, finds nothing, and the model gives up on vts. So when the primary backend misses, consult
+// the language census and retry against the OTHER backends that actually have files here, most-code-first.
+// Returns the candidate backend names (excluding `primary`, count ≥ VTS_CENSUS_FALLBACK_MIN), census-desc.
+// `census` is injectable for the eval. VTS_CENSUS_FALLBACK=0 disables; only fired on a path-less, non-explicit
+// query (a deliberate `path=`/`backend=` choice is never second-guessed).
+export function censusFallbackBackends(root, primary, census) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_CENSUS_FALLBACK ?? "1"))) return [];
+  const min = envInt("VTS_CENSUS_FALLBACK_MIN", 1);
+  const c = census || languageCensus(root);
+  return ["clangd", "roslyn", "typescript", "pyright"]
+    .filter((b) => b !== primary && (c[b] || 0) >= min)
+    .sort((x, y) => (c[y] || 0) - (c[x] || 0));
+}
+
 // Perforce auto-checkout for a symbol-edit / rename APPLY. A symbol edit writes via `fs` directly (it bypasses
 // the built-in Edit/Write tool, so a p4-checkout PreToolUse hook never fires for it). In a P4 workspace an
 // unopened file is READ-ONLY, so before writing a read-only file we run `p4 edit` to open it for edit. Gated ON
@@ -2416,6 +2433,23 @@ export async function runTool(name, a = {}) {
 
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
+      // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
+      // mixed-repo fallback result gets the SAME focus/tee/steer/cert treatment as a primary hit.
+      const renderFoundSymbols = (syms, bname, advB, note = "") => {
+        const focusN = focusCap(String(a.q), syms, max);
+        const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
+        const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
+        // Found the declaration(s); the other natural next step is "where is it USED?" — point at find_references
+        // by NAME (semantic call sites) so the model doesn't fall back to a grep for usages. Focused result only.
+        const symUses = usesSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10)
+          ? `\n↪ Where is "${a.q}" USED? find_references symbol="${a.q}" (all call sites, semantic) — add direction=callers for the caller tree.`
+          : "";
+        const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
+        const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
+        const symBody = advB + `${syms.length} symbol(s) matching "${a.q}" (backend: ${bname}, root: ${root})${note}${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symUses + symCert;
+        maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
+        return finishOut(syms, symBody);
+      };
       const c = await getClient(root, backendName);
       const persisted = backendName === "clangd" && hasPersistedIndex(root);
       const syms0 = await symbolReady(c, String(a.q), persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
@@ -2426,6 +2460,25 @@ export async function runTool(name, a = {}) {
       const syms = histMap ? rankSymbols(String(a.q), syms0, histMap) : syms0;
       const adv = backendAdvisory(backendName, root);
       if (!syms.length) {
+        // CENSUS-BASED MULTI-BACKEND FALLBACK (path-less, non-explicit query only): the primary backend (the
+        // forced/root one) missed, but a DIFFERENT language present in this MIXED repo would never be tried —
+        // preferBackend keeps the forced backend with no `path` to override it, so a Python tooling dir under a
+        // UE C++ tree is structurally invisible. Retry against the OTHER backends the census shows have files,
+        // most-code-first, and return the FIRST semantic hit — still the EXACT rung, just from the right
+        // language server. A query carrying a `path` or an explicit `backend=` is a deliberate choice → kept.
+        if (!a.path && !a.backend) {
+          for (const fb of censusFallbackBackends(root, backendName)) {
+            try {
+              const cfb = await getClient(root, fb);
+              const persistedFb = fb === "clangd" && hasPersistedIndex(root);
+              const symsFb0 = await symbolReady(cfb, String(a.q), persistedFb, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
+              if (!symsFb0.length) continue;
+              try { recordQueryResults(root, symsFb0.map((s) => fromUri(s.location.uri))); } catch { /* best-effort */ }
+              const symsFb = histMap ? rankSymbols(String(a.q), symsFb0, histMap) : symsFb0;
+              return renderFoundSymbols(symsFb, fb, backendAdvisory(fb, root), ` — mixed-repo fallback, ${backendName} had no match`);
+            } catch { /* this backend failed to spawn/answer — try the next census candidate */ }
+          }
+        }
         // tsserver / pyright answer workspace/symbol from the files they have OPEN/indexed, so a symbol
         // whose file the warm-up didn't open (or a non-exported local) can come back empty even though it
         // exists. Fall back to a bounded literal text search so it's still locatable (clangd/roslyn index
@@ -2455,20 +2508,8 @@ export async function runTool(name, a = {}) {
           : "";
         return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert + intentSteer);
       }
-      // confidence-adaptive focus: an exact-name match in a big set → show it + a few, not the whole tail.
-      const focusN = focusCap(String(a.q), syms, max);
-      const symTee = teeOverflow("search_symbol", a.q, syms.map((s) => `${s.name} @ ${locLine(s.location.uri, s.location.range)}`), focusN);
-      const symEdit = editSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10) ? EDIT_STEER : ""; // focused lookup → likely an edit precursor
-      // Found the declaration(s); the other natural next step is "where is it USED?" — point at find_references
-      // by NAME (semantic call sites) so the model doesn't fall back to a grep for usages. Focused result only.
-      const symUses = usesSteerOn() && syms.length <= envInt("VTS_EDIT_STEER_MAX", 10)
-        ? `\n↪ Where is "${a.q}" USED? find_references symbol="${a.q}" (all call sites, semantic) — add direction=callers for the caller tree.`
-        : "";
-      const focusNote = focusN < max && focusN < syms.length ? ` — showing the ${focusN} best for an exact-name hit (raise maxResults or VTS_FOCUS=0 for all ${syms.length})` : "";
-      const symCert = completenessCert({ shown: Math.min(focusN, syms.length), total: syms.length, truncated: focusN < syms.length ? "cap" : null, semantic: true, scoped: scopeDirsFor(root).length > 0 });
-      const symBody = adv + `${syms.length} symbol(s) matching "${a.q}" (backend: ${backendName}, root: ${root})${focusNote}${symTee}:\n` + fmtSymbols(syms, focusN) + symEdit + symUses + symCert;
-      maybeCounterfactual("search_symbol", String(a.q), root, syms.map((s) => s.location), symBody);
-      return finishOut(syms, symBody);
+      // confidence-adaptive focus + steers + cert (shared with the census fallback above).
+      return renderFoundSymbols(syms, backendName, adv);
     }
     if (name === "find_references") {
       const c = await getClient(root, backendName);
