@@ -75,6 +75,16 @@ and a language server — clangd (C/C++) / Roslyn (C#) you install; JS/TS + Pyth
 
 > Want only the log analyzer? `/plugin install gamedev-log-analyzer@vs-token-safer`.
 
+**On Codex CLI** (MCP — same engine, no Claude Code needed):
+
+```bash
+codex mcp add vs-search -- node /ABSOLUTE/PATH/TO/vs-token-safer/server/index.js
+vts routing --native "Codex's native read_file / shell (grep, sed) / apply_patch" >> AGENTS.md
+```
+
+Full guide: **[adapters/codex/README.md](adapters/codex/README.md)** ([한국어](adapters/codex/README.ko.md)).
+Other MCP hosts → [adapters/README.md](adapters/README.md).
+
 ## How it works
 
 <p align="center">
