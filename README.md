@@ -374,6 +374,21 @@ cd vs-token-safer/server && npm install && npm link   # provides `vts`
 ```
 </details>
 
+<details>
+<summary><b>Other agents — Codex CLI (MCP)</b></summary>
+
+Codex speaks MCP, so the tools port for free — same token-capped `file:line` answers, all local. Register the
+server and add a routing block to `AGENTS.md`:
+
+```bash
+codex mcp add vs-search -- node /ABSOLUTE/PATH/TO/vs-token-safer/server/index.js
+vts routing --native "Codex's native read_file / shell (grep, sed) / apply_patch" >> AGENTS.md
+```
+
+Full guide: **[adapters/codex/README.md](adapters/codex/README.md)** ([한국어](adapters/codex/README.ko.md)).
+The adapter strategy and the enforcement ladder for any MCP host: [adapters/README.md](adapters/README.md).
+</details>
+
 ## Configuration
 
 <details>

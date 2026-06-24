@@ -370,6 +370,21 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 ```
 </details>
 
+<details>
+<summary><b>다른 에이전트 — Codex CLI (MCP)</b></summary>
+
+Codex는 MCP를 지원하므로 도구가 그대로 이식됩니다 — 동일한 토큰캡 `file:line` 답변, 전부 로컬. 서버를
+등록하고 `AGENTS.md`에 라우팅 블록을 추가하세요:
+
+```bash
+codex mcp add vs-search -- node /ABSOLUTE/PATH/TO/vs-token-safer/server/index.js
+vts routing --native "Codex의 read_file / shell(grep, sed) / apply_patch" >> AGENTS.md
+```
+
+전체 가이드: **[adapters/codex/README.ko.md](adapters/codex/README.ko.md)** ([English](adapters/codex/README.md)).
+모든 MCP 호스트를 위한 어댑터 전략과 강제(enforcement) 사다리: [adapters/README.md](adapters/README.md).
+</details>
+
 ## 설정
 
 <details>
