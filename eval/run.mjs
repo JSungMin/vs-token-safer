@@ -1176,6 +1176,25 @@ const censusFallbackOk =
   JSON.stringify(_cf("clangd", { clangd: 100, pyright: 5, typescript: 20 }, { VTS_CENSUS_FALLBACK_MIN: "10" })) === JSON.stringify(["typescript"]) && // min raised → pyright:5 dropped
   _cf("clangd", { clangd: 100, pyright: 5 }, { VTS_CENSUS_FALLBACK: "0" }).length === 0; // kill switch
 
+// 91) MULTI-HARNESS ADAPTERS: vts ports to other agents via the SAME engine over MCP/CLI; only enforcement
+// degrades (Claude Code hook → AGENTS.md instruction). `routingBlock` emits the harness-neutral routing tree
+// for an adapter's AGENTS.md/rules file, and the refactor must NOT change the Claude-Code `routingDigest`
+// output (the tuned SessionStart digest). The Codex adapter ships a config.toml MCP snippet + AGENTS.md block.
+const { routingBlock: rBlock, routingDigest: rDigest } = await import("../server/policy.js");
+const rbNeutral = rBlock();
+const rbCodex = rBlock({ native: "Codex read_file / shell" });
+const rdCC = rDigest({ builtin: 0, symbol: 0 }); // no posture (total < 3) → just the tree
+const adapterFile = (rel) => new URL(`../adapters/${rel}`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+const codexToml = fs.existsSync(adapterFile("codex/config.toml")) ? fs.readFileSync(adapterFile("codex/config.toml"), "utf8") : "";
+const adaptersOk =
+  /search_symbol/.test(rbNeutral) && /the agent's native tools/.test(rbNeutral) && !/CC-native/.test(rbNeutral) && // neutral wording, no Claude-Code label
+  /no PreToolUse hook here/.test(rbNeutral) &&                                  // the "instructed, not intercepted" note
+  /Codex read_file \/ shell/.test(rbCodex) &&                                   // per-harness native label injected
+  /vts \+ CC-native are COMPLEMENTARY/.test(rdCC) && /→ CC-native Read\/Grep\/Edit/.test(rdCC) && // CC digest UNCHANGED by the refactor
+  /\[mcp_servers\.vs-search\]/.test(codexToml) && /command\s*=/.test(codexToml) && /args\s*=/.test(codexToml) && // valid Codex MCP table
+  fs.existsSync(adapterFile("codex/AGENTS.md")) && fs.existsSync(adapterFile("codex/README.md")) &&
+  fs.existsSync(adapterFile("codex/README.ko.md")) && fs.existsSync(adapterFile("README.md")); // EN + KO usage docs
+
 // 56) vts_setup genCompileDb — setup can kick off the compile-DB generation in the same step (so the user
 // doesn't have to find the separate vts_gen_compile_db tool): `true` = DRY-RUN (prints the UBT command, runs
 // nothing), "apply" = run UBT. Wiring test: the section appears with the GenerateClangDatabase command and
@@ -2328,6 +2347,7 @@ const rows = [
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["census fallback: path-less search_symbol retries OTHER backends present in the mixed repo (census-desc, gated)", censusFallbackOk, "true", censusFallbackOk],
+  ["multi-harness adapters: routingBlock (neutral) + CC digest unchanged + Codex config.toml/AGENTS.md snippet", adaptersOk, "true", adaptersOk],
   ["vts_setup genCompileDb: generates the compile DB in the setup step (dry)", setupGenOk, "true", setupGenOk],
   ["vts_setup clangdCmd: persists the clangd-binary path to config", setupClangdOk, "true", setupClangdOk],
   ["search_text → symbol steer (find_references on a `<Type>`/symbol hunt)", textSteerOk, "true", textSteerOk],
