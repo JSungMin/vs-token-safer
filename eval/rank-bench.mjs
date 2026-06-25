@@ -1,82 +1,98 @@
 #!/usr/bin/env node
 // KNOWN-ANSWER RANKING HARNESS — measures the RANKING QUALITY of the fuzzy (concept_search) and syntactic
-// (search_symbol) rungs against a curated, hand-labelled gold set over vts's OWN server/*.js (real code,
-// symbols whose location we know). It is the embedding-free, local, deterministic analogue of SWE-Explore's
-// line-level ranking eval (arXiv:2606.07297): for each intent query we know which declaration(s) embody it,
-// so we can score Recall@K and MRR and a K-budget curve (Recall vs the shown-result budget K — the budget
-// dimension being our token cap). NO network, NO toolchain beyond the tree-sitter grammars the plugin already
-// bundles; no LSP backend is required (search_symbol falls to the syntactic tier on a backend-less .js tree).
+// (tree-sitter) rungs against a curated gold set over a FROZEN synthetic corpus (eval/fixtures/rank-corpus).
+// It is the embedding-free, local, deterministic analogue of SWE-Explore's line-level ranking eval
+// (arXiv:2606.07297): for each intent query we know which declaration(s) embody it, so we score Recall@K, MRR,
+// and answer-set COVERAGE under a result budget (K = the shown-result budget — our token cap).
 //
 //   node eval/rank-bench.mjs                 # report
 //   node eval/rank-bench.mjs --json          # also write results/rank-latest.json
-//   node eval/rank-bench.mjs --min-mrr 0.55  # CI regression gate: exit 1 if overall fuzzy MRR < 0.55
+//   node eval/rank-bench.mjs --min-mrr 0.55  # CI regression gate: exit 1 if fuzzy MRR < 0.55
 //
-// This is a METRICS REPORT, not a pass/fail guard (eval/run.mjs owns correctness guards). Run it before and
-// after a ranking change (negation, PRF, co-change, a future BM25 layer) to PROVE the change helped — and it
-// is the measurement substrate the adoption-steer work (Theme B) must be gated on, given the prior SkillOpt
-// negative result that wording alone has no headroom.
+// WHY A FROZEN CORPUS (the SWE-Explore methodology migration): the earlier version rooted on vts's own live
+// server/*.js, so editing the code shifted the corpus and the MRR drifted (a ranking change couldn't be told
+// apart from a source edit). A committed synthetic corpus makes every metric attributable to a RANKING change
+// alone. Synthetic names only (charter: no real paths/symbols).
+//
+// Backend-free by construction: the fuzzy rung (concept_search) never uses an LSP; the syntactic rung is tested
+// by calling tsSearchSymbols DIRECTLY (not search_symbol -> the LSP backend, which would intercept a multi-word
+// query before the syntactic fallback and confound the metric — that path is guarded deterministically in
+// eval/run.mjs guard 81 instead).
+//
+// This is a METRICS REPORT, not a pass/fail guard (eval/run.mjs owns correctness). Run it before/after a
+// ranking change (negation, PRF, co-change, token coverage) to PROVE the change helped.
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.join(HERE, "..", "server"); // vts's own source — real decls at known locations
+const ROOT = path.join(HERE, "fixtures", "rank-corpus");
 const args = process.argv.slice(2);
 const wantJson = args.includes("--json");
 const minMrrIdx = args.indexOf("--min-mrr");
 const minMrr = minMrrIdx >= 0 ? Number(args[minMrrIdx + 1]) : null;
 
 const { runTool, disposeClients } = await import("../server/core.js");
-const { tsAvailable } = await import("../server/treesitter.js");
+const { tsAvailable, tsSearchSymbols } = await import("../server/treesitter.js");
 
 if (!tsAvailable()) {
   console.log("rank-bench: tree-sitter grammars unavailable (web-tree-sitter + tree-sitter-wasms) — skipping.");
   process.exit(0);
 }
+process.env.VTS_CONCEPT_COCHANGE = process.env.VTS_CONCEPT_COCHANGE ?? "0"; // a CI tmp checkout could mine noise
 
-// GOLD SET — each item: a query, the rung it exercises, and the symbol NAME(s) that genuinely answer it. The
-// fuzzy items are the real measurement (intent → embodying decl, no name overlap guaranteed); the syntactic
-// items are a sanity floor (an exact name must rank itself first). Keep answers to symbols that demonstrably
-// live in server/*.js so the gold set stays self-checking as the code evolves.
+// GOLD SET over the frozen corpus. fuzzy = intent -> the declaration(s) that embody it (no guaranteed name
+// overlap — that is the point); syntactic = a name (or multi-word phrase) -> the decl it should resolve to.
 const GOLD = [
-  // --- fuzzy rung: "I know the intent, not the name" ---
-  { q: "prewarm warm-up ordering by hit rate", rung: "fuzzy", answers: ["orderForWarm", "prewarmBackends"] },
-  { q: "exclude a concept boolean negation", rung: "fuzzy", answers: ["parseConceptQuery", "scoreSymbol"] },
-  { q: "files committed together git co-change neighbours", rung: "fuzzy", answers: ["cochangeNeighbors", "parseCoChange"] },
-  { q: "dead code reachability mark sweep from roots", rung: "fuzzy", answers: ["reachabilityDeadCode", "analyzeDeadCode"] },
-  { q: "generate compile database advisory missing", rung: "fuzzy", answers: ["compileDbAdvisory", "hasCompileDb", "genCompileDbPlan"] },
-  { q: "pick the language server backend for a repo", rung: "fuzzy", answers: ["pickBackend", "preferBackend", "backendForPath"] },
-  { q: "steer a text scan toward the semantic symbol search", rung: "fuzzy", answers: ["symbolHuntInText", "textSymbolSteer", "altSymbols"] },
-  { q: "record and report token savings ledger", rung: "fuzzy", answers: ["recordSavings", "savingsLine", "savingsReport"] },
-  // --- syntactic rung: exact name must rank itself first (sanity floor) ---
-  // NOTE: multi-word token-coverage (LocAgent) is the syntactic TIER's capability; it is asserted
-  // deterministically in eval/run.mjs guard 81 (direct tsSearchSymbols/searchSymIndex). It is NOT measured
-  // here because rank-bench routes through search_symbol -> the language-server backend, which intercepts a
-  // multi-word query before the syntactic fallback runs (backend routing would confound the metric).
-  { q: "orderForWarm", rung: "syntactic", answers: ["orderForWarm"] },
-  { q: "buildCallGraph", rung: "syntactic", answers: ["buildCallGraph"] },
-  { q: "cochangeNeighbors", rung: "syntactic", answers: ["cochangeNeighbors"] },
+  // --- fuzzy rung (concept_search): "I know the intent, not the name" — a MIX of direct and paraphrased
+  // (synonym-gap) intents over a corpus seeded with token-sharing DISTRACTORS, so ranking matters and the
+  // honest embedding-residual (a pure synonym with no lexical bridge) shows up as a low rank / miss. ---
+  { q: "how does the user log in", rung: "fuzzy", answers: ["authenticateUser", "validateSession"] },
+  { q: "check that a password is correct", rung: "fuzzy", answers: ["verifyPassword"] }, // check~verify; distractor resetPassword
+  { q: "take money from the customer card", rung: "fuzzy", answers: ["chargePayment"] }, // synonym gap; distractors listPayments/customerAddress
+  { q: "give the money back to the buyer", rung: "fuzzy", answers: ["refundPayment"] }, // give-back~refund, buyer~customer
+  { q: "extend the subscription another cycle", rung: "fuzzy", answers: ["renewSubscription"] }, // extend~renew
+  { q: "send a bill to the client", rung: "fuzzy", answers: ["sendInvoice", "createInvoice"] }, // bill in comment, client~customer
+  { q: "preload hot keys at startup", rung: "fuzzy", answers: ["prewarmKeys", "warmCache"] }, // startup~boot
+  { q: "remove old items from the cache", rung: "fuzzy", answers: ["evictEntry"] }, // remove~evict, old~stale; distractors clearCache/resizeCache
+  { q: "log the user out", rung: "fuzzy", answers: ["logoutUser"] }, // direct
+  { q: "renew an expired access token", rung: "fuzzy", answers: ["refreshToken"] }, // renew/expired~refresh
+  // --- syntactic rung (tsSearchSymbols direct): exact + MULTI-WORD token coverage (the LocAgent capability) ---
+  { q: "validateSession", rung: "syntactic", answers: ["validateSession"] },
+  { q: "charge payment", rung: "syntactic", answers: ["chargePayment"] },
+  { q: "verify password", rung: "syntactic", answers: ["verifyPassword"] },
+  { q: "warm cache", rung: "syntactic", answers: ["warmCache"] },
 ];
 
 const KS = [1, 3, 5, 10];
-process.env.VTS_CONCEPT_COCHANGE = process.env.VTS_CONCEPT_COCHANGE ?? "0"; // pin off: a CI tmp checkout could mine noise
+const SKIP = new Set(["node_modules", ".git"]);
 
-// Rank of the first gold answer in an ordered result text. Result rows of both rungs carry `…file:line: kind
-// name` — we keep only result-looking lines (a file:line prefix) in order, then find the first whose text
-// matches a gold answer on a word boundary. Returns the 1-based rank, or Infinity on a miss.
-function firstHitRank(text, answers) {
-  const lines = String(text).split("\n").filter((l) => /[\w./\\-]+:\d+/.test(l) && !/^\s*\[/.test(l));
-  const res = answers.map((a) => new RegExp(`\\b${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
-  for (let i = 0; i < lines.length; i++) if (res.some((r) => r.test(lines[i]))) return i + 1;
-  return Infinity;
+// Ordered list of result symbol NAMES for a gold query, per rung.
+async function resultNames(g) {
+  if (g.rung === "fuzzy") {
+    const r = await runTool("concept_search", { q: g.q, projectPath: ROOT, maxResults: 20 });
+    if (!r || r.isError) return [];
+    return String(r.text)
+      .split("\n")
+      .map((l) => {
+        const m = l.match(/[\w./\\-]+:\d+:\s+\S+\s+(\S+)\s*$/); // "file:line: kind name"
+        return m ? m[1] : null;
+      })
+      .filter(Boolean);
+  }
+  const hits = await tsSearchSymbols(ROOT, g.q, { skipDir: (n) => SKIP.has(n) });
+  return (hits || []).map((h) => h.name);
 }
 
 const rows = [];
 for (const g of GOLD) {
-  const tool = g.rung === "fuzzy" ? "concept_search" : "search_symbol";
-  const r = await runTool(tool, { q: g.q, projectPath: ROOT, maxResults: 20 });
-  const rank = r && !r.isError ? firstHitRank(r.text, g.answers) : Infinity;
-  rows.push({ ...g, tool, rank });
+  const names = await resultNames(g);
+  const rank = (() => {
+    for (let i = 0; i < names.length; i++) if (g.answers.includes(names[i])) return i + 1;
+    return Infinity;
+  })();
+  const covered = g.answers.filter((a) => names.includes(a)).length;
+  rows.push({ ...g, rank, coverage: covered / g.answers.length });
 }
 await disposeClients();
 
@@ -84,24 +100,34 @@ function agg(items) {
   const n = items.length || 1;
   const recall = Object.fromEntries(KS.map((k) => [k, items.filter((it) => it.rank <= k).length / n]));
   const mrr = items.reduce((s, it) => s + (isFinite(it.rank) ? 1 / it.rank : 0), 0) / n;
-  return { n: items.length, recall, mrr };
+  const coverage = items.reduce((s, it) => s + it.coverage, 0) / n;
+  return { n: items.length, recall, mrr, coverage };
 }
-const byRung = { fuzzy: agg(rows.filter((r) => r.rung === "fuzzy")), syntactic: agg(rows.filter((r) => r.rung === "syntactic")), all: agg(rows) };
+const byRung = {
+  fuzzy: agg(rows.filter((r) => r.rung === "fuzzy")),
+  syntactic: agg(rows.filter((r) => r.rung === "syntactic")),
+  all: agg(rows),
+};
 
 const pct = (x) => (x * 100).toFixed(0).padStart(3) + "%";
-console.log(`\nrank-bench — known-answer ranking over ${path.relative(path.join(HERE, ".."), ROOT)} (${rows.length} queries)\n`);
-console.log("rung        n   R@1   R@3   R@5  R@10   MRR");
+console.log(`\nrank-bench — frozen corpus eval/fixtures/rank-corpus (${rows.length} queries)\n`);
+console.log("rung        n   R@1   R@3   R@5  R@10   MRR   Cov");
 for (const k of ["fuzzy", "syntactic", "all"]) {
   const a = byRung[k];
-  console.log(`${k.padEnd(10)} ${String(a.n).padStart(2)}  ${pct(a.recall[1])}  ${pct(a.recall[3])}  ${pct(a.recall[5])}  ${pct(a.recall[10])}  ${a.mrr.toFixed(3)}`);
+  console.log(`${k.padEnd(10)} ${String(a.n).padStart(2)}  ${pct(a.recall[1])}  ${pct(a.recall[3])}  ${pct(a.recall[5])}  ${pct(a.recall[10])}  ${a.mrr.toFixed(3)}  ${pct(a.coverage)}`);
 }
-console.log("\nper-query (rank of first gold hit; ∞ = miss):");
-for (const r of rows) console.log(`  ${r.rank === Infinity ? "  ∞" : String(r.rank).padStart(3)}  [${r.rung}] ${r.q}`);
+console.log("\nK-budget (fuzzy Recall@K — K = shown-result budget / token-cap proxy):");
+console.log("  " + KS.map((k) => `R@${k}=${pct(byRung.fuzzy.recall[k])}`).join("  "));
+console.log("\nper-query (rank of first gold hit; ∞ = miss; cov = answer-set coverage):");
+for (const r of rows) console.log(`  ${r.rank === Infinity ? "  ∞" : String(r.rank).padStart(3)}  cov ${pct(r.coverage)}  [${r.rung}] ${r.q}`);
 
 if (wantJson) {
   const outDir = path.join(HERE, "..", "results");
   try { fs.mkdirSync(outDir, { recursive: true }); } catch { /* exists */ }
-  fs.writeFileSync(path.join(outDir, "rank-latest.json"), JSON.stringify({ root: "server", queries: rows.map(({ q, rung, rank }) => ({ q, rung, rank: isFinite(rank) ? rank : null })), summary: byRung }, null, 2));
+  fs.writeFileSync(
+    path.join(outDir, "rank-latest.json"),
+    JSON.stringify({ corpus: "eval/fixtures/rank-corpus", queries: rows.map(({ q, rung, rank, coverage }) => ({ q, rung, rank: isFinite(rank) ? rank : null, coverage })), summary: byRung }, null, 2),
+  );
   console.log("\nwrote results/rank-latest.json");
 }
 

@@ -1,92 +1,124 @@
 {
-  "root": "server",
+  "corpus": "eval/fixtures/rank-corpus",
   "queries": [
     {
-      "q": "prewarm warm-up ordering by hit rate",
+      "q": "how does the user log in",
       "rung": "fuzzy",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "exclude a concept boolean negation",
+      "q": "check that a password is correct",
       "rung": "fuzzy",
-      "rank": 6
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "files committed together git co-change neighbours",
+      "q": "take money from the customer card",
       "rung": "fuzzy",
-      "rank": 2
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "dead code reachability mark sweep from roots",
+      "q": "give the money back to the buyer",
       "rung": "fuzzy",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "generate compile database advisory missing",
+      "q": "extend the subscription another cycle",
       "rung": "fuzzy",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "pick the language server backend for a repo",
+      "q": "send a bill to the client",
       "rung": "fuzzy",
-      "rank": 2
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "steer a text scan toward the semantic symbol search",
+      "q": "preload hot keys at startup",
       "rung": "fuzzy",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "record and report token savings ledger",
+      "q": "remove old items from the cache",
       "rung": "fuzzy",
-      "rank": 3
+      "rank": 7,
+      "coverage": 1
     },
     {
-      "q": "orderForWarm",
+      "q": "log the user out",
+      "rung": "fuzzy",
+      "rank": 3,
+      "coverage": 1
+    },
+    {
+      "q": "renew an expired access token",
+      "rung": "fuzzy",
+      "rank": 1,
+      "coverage": 1
+    },
+    {
+      "q": "validateSession",
       "rung": "syntactic",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "buildCallGraph",
+      "q": "charge payment",
       "rung": "syntactic",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
     },
     {
-      "q": "cochangeNeighbors",
+      "q": "verify password",
       "rung": "syntactic",
-      "rank": 1
+      "rank": 1,
+      "coverage": 1
+    },
+    {
+      "q": "warm cache",
+      "rung": "syntactic",
+      "rank": 1,
+      "coverage": 1
     }
   ],
   "summary": {
     "fuzzy": {
-      "n": 8,
+      "n": 10,
       "recall": {
-        "1": 0.5,
-        "3": 0.875,
-        "5": 0.875,
+        "1": 0.8,
+        "3": 0.9,
+        "5": 0.9,
         "10": 1
       },
-      "mrr": 0.6875
+      "mrr": 0.8476190476190476,
+      "coverage": 1
     },
     "syntactic": {
-      "n": 3,
+      "n": 4,
       "recall": {
         "1": 1,
         "3": 1,
         "5": 1,
         "10": 1
       },
-      "mrr": 1
+      "mrr": 1,
+      "coverage": 1
     },
     "all": {
-      "n": 11,
+      "n": 14,
       "recall": {
-        "1": 0.6363636363636364,
-        "3": 0.9090909090909091,
-        "5": 0.9090909090909091,
+        "1": 0.8571428571428571,
+        "3": 0.9285714285714286,
+        "5": 0.9285714285714286,
         "10": 1
       },
-      "mrr": 0.7727272727272727
+      "mrr": 0.891156462585034,
+      "coverage": 1
     }
   }
 }
