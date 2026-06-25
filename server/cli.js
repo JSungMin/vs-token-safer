@@ -97,7 +97,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set(["seeds", "entry", "roots"]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability", "detail"]);
 
 function parseArgs(argv) {
   const a = {};

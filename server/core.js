@@ -527,6 +527,7 @@ function scanBypasses(a = {}) {
   // Edit-habit measurement (A): count whole-declaration Edits on code files, and attribute the tokens of a
   // PRIOR Read of that same file — that read is what a symbol-edit (edit-by-name) would have skipped.
   let editCount = 0, editReadTok = 0, editUnreached = 0; // editUnreached: whole-decl edits with NO prior vts
+  const editDetails = []; // per-edit records (file, kind, readTok, priorSearch) — for the local detail dump (token-free counterfactual input)
   // search on that file → the EDIT_STEER (which only rides a search_symbol/goto result) could never have
   // reached them. A high fraction is the case for a harder lever (a warn on the Edit itself).
   const reads = new Map();      // normalized file → tokens of its most recent Read result (per transcript)
@@ -552,7 +553,7 @@ function scanBypasses(a = {}) {
           const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
           if (b.name === "Read" && b.input && b.input.file_path) readUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
           else if (/(?:search_symbol|goto_definition|find_references)$/.test(String(b.name || ""))) searchUse.set(b.id, true);
-          else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; if (reads.has(ce.file)) { editReadTok += reads.get(ce.file); reads.delete(ce.file); } if (!searchedBn.has(path.basename(ce.file))) editUnreached++; } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
+          else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; let rtk = 0; if (reads.has(ce.file)) { rtk = reads.get(ce.file); editReadTok += rtk; reads.delete(ce.file); } const prior = searchedBn.has(path.basename(ce.file)); if (!prior) editUnreached++; editDetails.push({ file: ce.file, kind: ce.replaceDecl ? "replace" : "insert", readTok: rtk, priorSearch: prior }); } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
         }
         else if (b && b.type === "tool_result" && readUse.has(b.tool_use_id)) {
           const f = readUse.get(b.tool_use_id); readUse.delete(b.tool_use_id);
@@ -586,7 +587,7 @@ function scanBypasses(a = {}) {
       }
     }
   }
-  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached };
+  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached, editDetails };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -603,7 +604,7 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached } = r;
+  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached, editDetails } = r;
   // A: surface the edit habit alongside the search bypasses — whole-declaration Edits that could edit by name.
   // editUnreached = those with no prior vts search on the file → the EDIT_STEER (search-result-only) can't
   // reach them; a high fraction is the evidence for a harder lever (a warn on the Edit itself).
@@ -633,7 +634,22 @@ function discoverReport(a = {}) {
   const trueRate = caught + trueLeak > 0 ? (100 * caught / (caught + trueLeak)).toFixed(1) : "—";
   const trueLine = editReadTok ? `\n  true coverage (incl. edit-pre-reads): ~${caught.toLocaleString()} caught vs ~${trueLeak.toLocaleString()} leaking (search ${rawTokTotal.toLocaleString()} + edit-read ${editReadTok.toLocaleString()}) → ${trueRate}% — symbol-edit adoption is the real gap.` : "";
   const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine;
-  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + learnLine;
+  // Optional LOCAL detail dump (token-free): on `detail`/`out`, write the full per-bypass + per-edit records to
+  // a local JSONL the model NEVER sees — it feeds an OFFLINE counterfactual (e.g. how much of the edit-pre-read
+  // tokens a symbol-edit / read_symbol would actually have recovered). The report still surfaces only the summary.
+  let detailLine = "";
+  if (a.detail === true || a.detail === "true" || a.out) {
+    const outPath = typeof a.out === "string" && a.out ? a.out : path.join(os.homedir(), ".vs-token-safer", "discover-detail.jsonl");
+    try {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      const recs = [JSON.stringify({ t: "meta", scope, transcripts: fc, editCount, editReadTok, editUnreached })]
+        .concat(missed.map((m) => JSON.stringify({ t: "search", tool: m.tool, q: m.q, rawTok: m.rawTok })))
+        .concat((editDetails || []).map((d) => JSON.stringify({ t: "edit", ...d })));
+      fs.writeFileSync(outPath, recs.join("\n") + "\n");
+      detailLine = `\n  ✓ wrote ${missed.length + (editDetails ? editDetails.length : 0)} detailed record(s) to ${outPath} (LOCAL only — not sent to the model; for offline counterfactual analysis).`;
+    } catch { /* best-effort */ }
+  }
+  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + learnLine + detailLine;
   const byTool = {};
   for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
   const toolLine = Object.entries(byTool).sort((x, y) => y[1] - x[1]).map(([t, n]) => `${t}×${n}`).join(", ");
@@ -643,7 +659,7 @@ function discoverReport(a = {}) {
     `  ${missed.length} code search(es) bypassed vts (${toolLine})\n` +
     `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}\n` +
     `  biggest:\n${top}\n` +
-    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${learnLine}`;
+    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${learnLine}${detailLine}`;
 }
 
 // ---- LSP client pool (one per root+backend; reused across calls in a process) ----
