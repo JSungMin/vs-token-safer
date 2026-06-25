@@ -9,7 +9,7 @@
     {
       "q": "exclude a concept boolean negation",
       "rung": "fuzzy",
-      "rank": 12
+      "rank": 6
     },
     {
       "q": "files committed together git co-change neighbours",
@@ -39,7 +39,7 @@
     {
       "q": "record and report token savings ledger",
       "rung": "fuzzy",
-      "rank": 2
+      "rank": 3
     },
     {
       "q": "orderForWarm",
@@ -64,9 +64,9 @@
         "1": 0.5,
         "3": 0.875,
         "5": 0.875,
-        "10": 0.875
+        "10": 1
       },
-      "mrr": 0.6979166666666666
+      "mrr": 0.6875
     },
     "syntactic": {
       "n": 3,
@@ -84,9 +84,9 @@
         "1": 0.6363636363636364,
         "3": 0.9090909090909091,
         "5": 0.9090909090909091,
-        "10": 0.9090909090909091
+        "10": 1
       },
-      "mrr": 0.7803030303030302
+      "mrr": 0.7727272727272727
     }
   }
 }

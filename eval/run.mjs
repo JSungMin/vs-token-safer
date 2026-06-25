@@ -1967,6 +1967,16 @@ if (tsAvailable()) {
   const idxLoadOk = !!loaded && loaded.meta.v === 1 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4;
   const idxHits = searchSymIndex(tsDir, "buildWidgetTree");
   const idxSearchOk = !!idxHits && idxHits.fromIndex && idxHits.length === 1 && /b\.ts$/.test(idxHits[0].file) && idxHits[0].line === 2;
+  // (c2) MULTI-WORD token coverage (LocAgent migration, arXiv:2503.09089): a spaced query finds the decl by
+  // covering ALL its tokens — "build widget tree" -> buildWidgetTree (the old literal-substring matcher returned
+  // 0). AND semantics: it must NOT surface BuildWidget (which lacks the "tree" token). A single CamelCase
+  // identifier ("buildWidgetTree") stays on the precise substring path (asserted by idxSearchOk above). Tested
+  // on BOTH syntactic paths (live tree-sitter + committed index) since they share the scorer.
+  const mwTs = await tsSearchSymbols(tsDir, "build widget tree", { skipDir: (n) => SKIP.has(n) });
+  const mwIdx = searchSymIndex(tsDir, "build widget tree");
+  const multiWordOk =
+    mwTs.some((h) => h.name === "buildWidgetTree") && !mwTs.some((h) => h.name === "BuildWidget") &&
+    !!mwIdx && mwIdx.some((h) => h.name === "buildWidgetTree") && !mwIdx.some((h) => h.name === "BuildWidget");
   // (d) tree-sitter REFERENCES (tags-query call-site capture): the syntactic find_references fallback. A
   // caller in Python + a caller in TS — both call sites captured, the decl line itself is NOT a reference.
   fs.writeFileSync(path.join(tsDir, "sub", "d.py"), "from a import x\ndef caller():\n    return build_widget(3)\n");
@@ -2038,7 +2048,7 @@ if (tsAvailable()) {
   const chunkOk = !!ck && ck.endRow > 0 && ck.endRow < 13 && ck.omitted > 0 &&
     /;\s*$/.test(chunkSrc.split("\n")[ck.endRow]) &&                      // the cut row ends a WHOLE statement
     ckBad === null;
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");

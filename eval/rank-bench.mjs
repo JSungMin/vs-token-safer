@@ -49,6 +49,10 @@ const GOLD = [
   { q: "steer a text scan toward the semantic symbol search", rung: "fuzzy", answers: ["symbolHuntInText", "textSymbolSteer", "altSymbols"] },
   { q: "record and report token savings ledger", rung: "fuzzy", answers: ["recordSavings", "savingsLine", "savingsReport"] },
   // --- syntactic rung: exact name must rank itself first (sanity floor) ---
+  // NOTE: multi-word token-coverage (LocAgent) is the syntactic TIER's capability; it is asserted
+  // deterministically in eval/run.mjs guard 81 (direct tsSearchSymbols/searchSymIndex). It is NOT measured
+  // here because rank-bench routes through search_symbol -> the language-server backend, which intercepts a
+  // multi-word query before the syntactic fallback runs (backend routing would confound the metric).
   { q: "orderForWarm", rung: "syntactic", answers: ["orderForWarm"] },
   { q: "buildCallGraph", rung: "syntactic", answers: ["buildCallGraph"] },
   { q: "cochangeNeighbors", rung: "syntactic", answers: ["cochangeNeighbors"] },

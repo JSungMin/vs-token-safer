@@ -156,6 +156,53 @@ export function tokMatch(a, b) {
   return 0;
 }
 
+// Last segment of a qualified name ("ns::Foo::bar" / "a.b.c" / "a/b" -> the tail). Local helper for the
+// symbol-name matcher below.
+function tailSeg(name) {
+  const m = String(name).split(/::|\.|\//);
+  return m[m.length - 1] || String(name);
+}
+
+// SYMBOL-NAME match score (the LocAgent migration, arXiv:2503.09089 — sparse token matching instead of a flat
+// literal substring). The syntactic tiers (committed symindex + live tree-sitter) used to score a name by
+// `name.includes(q)`, so a MULTI-WORD query ("warm cap") matched NOTHING because the literal string never
+// appears in `warmCap`. This scores by TOKEN COVERAGE: split both the name and the query into sub-tokens and
+// sum the best per-query-token match (exact 1.0 / prefix 0.7 via tokMatch) — so "warm cap" now finds warmCap,
+// ranked above a name that covers only one of the two words. Charter-pure (token coverage = the BM25 numerator;
+// idf weighting is a deferred refinement), deterministic, no embeddings.
+//   - exact full-name or tail-segment match (case-insensitive) wins outright (3).
+//   - else token coverage in (1, 2]: 1 + (covered query weight / #query tokens) — full coverage -> 2.
+//   - else a single-token literal substring still matches at 0.5 (back-compat: "ooBa" finds "FooBar").
+// `qTokens` is the query pre-split (splitIdent), passed once per search; `qRaw` is the raw query for the exact
+// and substring checks.
+export function symbolMatchScore(name, qTokens, qRaw) {
+  const ln = String(name).toLowerCase();
+  const raw = String(qRaw == null ? qTokens.join("") : qRaw);
+  const lq = raw.toLowerCase();
+  if (ln === lq || tailSeg(name).toLowerCase() === lq) return 3; // exact full / tail name
+  // TOKEN COVERAGE only for a genuine MULTI-WORD query (whitespace) — a single CamelCase identifier
+  // ("buildWidgetTree") must NOT explode into every token-neighbour, so it keeps the precise substring path.
+  // Multi-word uses AND semantics: ALL query tokens must be covered (so "warm cap" finds warmCap but not a
+  // name that shares only "warm"), ranked by coverage strength.
+  if (qTokens.length >= 2 && /\s/.test(raw)) {
+    const nt = splitIdent(name);
+    let cov = 0,
+      matched = 0;
+    for (const qt of qTokens) {
+      let best = 0;
+      for (const t of nt) {
+        const m = tokMatch(qt, t);
+        if (m > best) best = m;
+      }
+      if (best > 0) matched++;
+      cov += best;
+    }
+    return matched === qTokens.length ? 1 + cov / qTokens.length : 0;
+  }
+  if (lq && ln.includes(lq)) return 1; // single-word substring ("Foo" finds "FooBar", "ns::FooBar")
+  return 0;
+}
+
 // Build the concept model from UNITS. Each unit is a token bag for one declaration: its name sub-tokens plus
 // the sub-tokens of the comment/docstring attached to it. Co-occurrence is computed WITHIN a unit (a tight,
 // bounded scope — a decl + its own doc), which is exactly the "these words name the same thing" signal and
