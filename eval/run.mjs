@@ -2159,8 +2159,26 @@ if (tsAvailable()) {
   const cn = await runTool("concept_search", { q: "load config -beta", projectPath: cdir });
   const negToolOk = !cn.isError && /excluding: beta/.test(cn.text) && /loadConfigA/.test(cn.text) &&
     /loadConfigBeta/.test(cn.text) && cn.text.indexOf("loadConfigA") < cn.text.indexOf("loadConfigBeta");
+  // EXPAND-INTO-NEGATIVE (edge case, separate dir — cdir's model is already cached): query expansion can
+  // REINTRODUCE an excluded concept, so a decl matching ONLY that concept must be dropped DETERMINISTICALLY
+  // (not merely penalised — that resurfaces at a low negFactor). auth+login co-occur enough (df-gate off) that
+  // expandQuery(auth) pulls in "login"; "auth -login" must still drop loginOnly even at a weak negFactor.
+  const cdir2 = path.join(os.tmpdir(), `vts-eval-${process.pid}-neg`);
+  fs.mkdirSync(cdir2, { recursive: true });
+  for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(cdir2, `al${i}.ts`), `export function authLogin${i}(){ return ${i}; }\n`);
+  fs.writeFileSync(path.join(cdir2, "loginonly.ts"), "export function loginOnly(){ return 9; }\n");
+  fs.writeFileSync(path.join(cdir2, "authcore.ts"), "export function authCore(){ return 8; }\n");
+  for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(cdir2, `pad${i}.ts`), `export function padWidget${i}(){ return ${i}; }\n`);
+  const savedMaxDf = process.env.VTS_CONCEPT_MAX_DF, savedNegF = process.env.VTS_CONCEPT_NEG_FACTOR;
+  process.env.VTS_CONCEPT_MAX_DF = "0"; process.env.VTS_CONCEPT_NEG_FACTOR = "0.2"; // weak penalty: only the enriched-drop can remove loginOnly
+  const cb = await runTool("concept_search", { q: "auth", projectPath: cdir2 });          // expansion reaches loginOnly
+  const cneg = await runTool("concept_search", { q: "auth -login", projectPath: cdir2 });  // … and excluding login drops it
+  const expandNegOk = !cb.isError && /loginOnly/.test(cb.text) && !cneg.isError && !/loginOnly/.test(cneg.text) && /authCore/.test(cneg.text);
+  if (savedMaxDf === undefined) delete process.env.VTS_CONCEPT_MAX_DF; else process.env.VTS_CONCEPT_MAX_DF = savedMaxDf;
+  if (savedNegF === undefined) delete process.env.VTS_CONCEPT_NEG_FACTOR; else process.env.VTS_CONCEPT_NEG_FACTOR = savedNegF;
+  try { fs.rmSync(cdir2, { recursive: true, force: true }); } catch { /* ignore */ }
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
-    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk && negToolOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed + boolean negation
+    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk && negToolOk && expandNegOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed + boolean negation (tie-break + expand-into-negative)
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
   delete process.env.VTS_CONCEPT_COCHANGE;
 }

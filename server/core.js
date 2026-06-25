@@ -2096,6 +2096,12 @@ export async function runTool(name, a = {}) {
       // present in > this fraction of decls) — the documented noise source on cross-cutting fuzzy queries.
       const maxDfRatio = Number(process.env.VTS_CONCEPT_MAX_DF ?? 0.25);
       let enriched = expandQuery(model, qToks, { ...(synonyms ? { synonyms } : {}), maxDfRatio });
+      // An EXCLUDED concept must never be a POSITIVE reason to surface a decl: expansion (or a synonym) can
+      // reintroduce a negated term, so drop the negatives from the enriched set. scoreSymbol's penalty still
+      // demotes a decl that matches the positive query AND mentions an excluded term — but a decl matching ONLY
+      // the excluded concept now scores 0 deterministically, independent of negFactor/floor tuning.
+      const dropNeg = (enr) => { for (const nt of negToks) enr.delete(nt); return enr; };
+      if (negToks.length) dropNeg(enriched);
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
@@ -2118,6 +2124,7 @@ export async function runTool(name, a = {}) {
         if (fb.length) {
           const enr2 = new Map(enriched);
           for (const [t, w] of fb) if ((enr2.get(t) || 0) < w) enr2.set(t, w);
+          if (negToks.length) dropNeg(enr2); // PRF feedback can also re-introduce an excluded concept — drop it again
           enriched = enr2;          // so the cert / "concept-expanded with" line reflects the PRF terms too
           based = scoreAll(enriched); // Pass 1b: re-score with the feedback-augmented query
         }
