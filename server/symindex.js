@@ -187,12 +187,19 @@ export function searchSymIndex(root, q, { max = 40 } = {}) {
   const idx = loadSymIndex(root);
   if (!idx) return null;
   const qTokens = splitIdent(q); // token-aware (LocAgent): multi-word "warm cap" now scores warmCap by coverage
-  const hits = [];
-  for (const e of idx.entries) {
-    const r = symbolMatchScore(e.n, qTokens, q);
-    if (r)
-      hits.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, rank: r });
-  }
+  const scan = (coverMin) => {
+    const h = [];
+    for (const e of idx.entries) {
+      const r = symbolMatchScore(e.n, qTokens, q, coverMin);
+      if (r) h.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, rank: r });
+    }
+    return h;
+  };
+  let hits = scan(1); // strict AND pass (precise)
+  // PARTIAL fallback (only when the precise pass found nothing on a multi-word query) — admits a name covering
+  // >= VTS_SYM_COVER_MIN of the query tokens, so "warm cache boot" still surfaces warmCache. No precision cost:
+  // a non-empty AND result is never diluted with partials.
+  if (!hits.length && qTokens.length >= 2 && /\s/.test(q)) hits = scan(Number(process.env.VTS_SYM_COVER_MIN ?? 0.6));
   hits.sort((a, b) => b.rank - a.rank || a.name.length - b.name.length);
   const sliced = hits.slice(0, max);
   if (hits.length > max) sliced.truncated = "cap";

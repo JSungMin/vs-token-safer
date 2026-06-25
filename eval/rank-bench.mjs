@@ -62,6 +62,7 @@ const GOLD = [
   { q: "charge payment", rung: "syntactic", answers: ["chargePayment"] },
   { q: "verify password", rung: "syntactic", answers: ["verifyPassword"] },
   { q: "warm cache", rung: "syntactic", answers: ["warmCache"] },
+  { q: "warm the cache at boot", rung: "syntactic", answers: ["warmCache"] }, // AND-empty (no "boot" decl) -> partial fallback surfaces warmCache
 ];
 
 const KS = [1, 3, 5, 10];
