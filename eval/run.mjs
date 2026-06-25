@@ -1921,7 +1921,7 @@ const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk 
 // 80) unified tool-routing policy — vts COMPLEMENTS Claude Code's native tools. shouldSuppressSteer stays
 // silent on generated/build-output paths (CC-native is fine there); routingDigest is the single
 // when-to-use-what decision tree + live adoption posture re-injected at SessionStart.
-const { shouldSuppressSteer, routingDigest, suppressOn } = await import("../server/policy.js");
+const { shouldSuppressSteer, routingDigest, suppressOn, readSteerDecision } = await import("../server/policy.js");
 const supGen = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === true;   // build output → suppress
 const supDotGen = shouldSuppressSteer("/p/Source/Foo.generated.h") === true;        // generated header → suppress
 const supNodeMod = shouldSuppressSteer("/p/node_modules/x/y.js") === true;          // vendored dep → suppress
@@ -1936,7 +1936,19 @@ const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/
 // vs all-time 2/10=20% — the live signal the steer loop can actually move.
 const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
 const digRecentOk = /adoption 20% \(2\/10\), recent 80%/.test(dig2);
-const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk && digRecentOk;
+// READ-SIDE steer (H1): a LARGE code-file whole-read nudges toward read_symbol / symbol-edit; tight-gated so it
+// never nags a small file, a non-code file, a generated path, or an already-sliced (offset/limit) read.
+const rsBig = readSteerDecision("/p/Source/Big.cpp", 20000);                        // large code file → steer
+const rsReadOk = !!rsBig && /read_symbol/.test(rsBig) &&
+  readSteerDecision("/p/Source/Small.cpp", 1000) === null &&                        // small → null
+  readSteerDecision("/p/README.md", 20000) === null &&                              // non-code → null
+  readSteerDecision("/p/Source/Foo.generated.h", 20000) === null &&                 // generated → null
+  readSteerDecision("/p/Intermediate/Build/Big.cpp", 20000) === null &&             // build output → null
+  readSteerDecision("/p/Source/Big.cpp", 20000, { sliced: true }) === null;         // already a slice → null
+const rsTogglePrev = process.env.VTS_READ_STEER; process.env.VTS_READ_STEER = "0";
+const rsOff = readSteerDecision("/p/Source/Big.cpp", 20000) === null;               // toggle off
+if (rsTogglePrev === undefined) delete process.env.VTS_READ_STEER; else process.env.VTS_READ_STEER = rsTogglePrev;
+const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk && digRecentOk && rsReadOk && rsOff;
 
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
