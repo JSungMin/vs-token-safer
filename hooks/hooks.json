@@ -20,7 +20,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep|Glob|Edit|MultiEdit",
+        "matcher": "Bash|Grep|Glob|Edit|MultiEdit|Read",
         "hooks": [
           {
             "type": "command",

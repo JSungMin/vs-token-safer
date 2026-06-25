@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -644,6 +644,20 @@ process.stdin.on("end", () => {
       process.exit(2); // block — route the concrete code-file glob to find_files
     }
     else if (isCodeGlobTool(ti)) emitWarn(globNudgeFor(ti) + setup);
+    process.exit(0);
+  }
+
+  // Read — read-side steer (H1, warn-ONLY, never blocks): a whole-file Read of a LARGE code file is the dominant
+  // pre-edit token leak. Point it at read_symbol / the symbol-edit tools. Tight-gated in policy.readSteerDecision
+  // (code ext, not generated, not an already-sliced read, size ≥ threshold). VTS_READ_STEER=0 / matcher-removal off.
+  if (toolName === "Read") {
+    const fp = ti && ti.file_path;
+    if (fp) {
+      let sz = 0; try { sz = fs.statSync(fp).size; } catch { /* unreadable → leave 0 (no steer) */ }
+      const minB = Number(process.env.VTS_READ_STEER_MIN ?? 6000);
+      const s = sz ? readSteerDecision(fp, sz, { sliced: !!(ti.offset || ti.limit), minBytes: minB, ko: KO }) : null;
+      if (s) emitWarn(s + setup);
+    }
     process.exit(0);
   }
 
