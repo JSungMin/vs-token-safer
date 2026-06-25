@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { tsFileSymbols, tsSupports } from "./treesitter.js";
 import { fnv1a } from "./warmset.js";
+import { splitIdent, symbolMatchScore } from "./concept.js";
 
 const DIR = ".vts-index";
 const FILE = "symbols.jsonl";
@@ -179,27 +180,16 @@ export function loadSymIndex(root) {
   return { meta, entries };
 }
 
-function tailName(name) {
-  const m = String(name).split(/::|\.|\//);
-  return m[m.length - 1] || name;
-}
-function matchRank(name, q) {
-  const ln = name.toLowerCase(),
-    lq = q.toLowerCase();
-  if (ln === lq || tailName(name).toLowerCase() === lq) return 2;
-  if (ln.includes(lq)) return 1;
-  return 0;
-}
-
 // Query the committed index for symbols matching `q`. Returns hits shaped like tsSearchSymbols
 // ({ name, kind, file (ABSOLUTE), line }) so core.js formats both tiers identically. `.fromIndex` marks the
 // source; `.truncated="cap"` when more than `max` matched.
 export function searchSymIndex(root, q, { max = 40 } = {}) {
   const idx = loadSymIndex(root);
   if (!idx) return null;
+  const qTokens = splitIdent(q); // token-aware (LocAgent): multi-word "warm cap" now scores warmCap by coverage
   const hits = [];
   for (const e of idx.entries) {
-    const r = matchRank(e.n, q);
+    const r = symbolMatchScore(e.n, qTokens, q);
     if (r)
       hits.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, rank: r });
   }

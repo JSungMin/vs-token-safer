@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { splitIdent, symbolMatchScore } from "./concept.js";
 
 const TAG = "vs-token-safer";
 
@@ -379,12 +380,6 @@ function nameOf(node) {
   return null;
 }
 
-// Last segment of a qualified name (FooBar::DoThing → DoThing, a.b.c → c) for matching against a bare query.
-function tailName(name) {
-  const m = String(name).split(/::|\.|\//);
-  return m[m.length - 1] || name;
-}
-
 // ── TAGS-QUERY tier (the canonical, file-driven extractor for languages without a hand-tuned node config).
 // A `server/tags/<grammar>.scm` written in tree-sitter's own query DSL captures `@definition.<kind>` on each
 // declaration node and `@name` on its identifier; we read those out of the query matches. The file ships
@@ -590,16 +585,6 @@ export async function tsChunkEnd(absPath, startRow, endRow, maxLines) {
   }
 }
 
-// Match a declaration name against a query. Exact (case-insensitive) on the full name or its last segment
-// wins; otherwise a case-insensitive substring (so "Foo" finds "FooBar" and "ns::FooBar").
-function matches(name, q) {
-  const ln = name.toLowerCase(),
-    lq = q.toLowerCase();
-  if (ln === lq || tailName(name).toLowerCase() === lq) return 2; // exact
-  if (ln.includes(lq)) return 1; // substring
-  return 0;
-}
-
 // Walk a directory subtree, parse supported files, return declarations whose name matches `q`, ranked
 // exact-before-substring. Bounded by a time box and a file cap so a huge tree can't hang. skipDir decides
 // which directories to descend (shared with scanTextUnder's SKIP_DIRS via the injected predicate).
@@ -609,6 +594,7 @@ export async function tsSearchSymbols(
   q,
   { max = 40, skipDir, timeBudgetMs = 6000, fileCap = 4000 } = {},
 ) {
+  const qToks0 = splitIdent(q); // token-aware (LocAgent): a multi-word query scores by coverage, not literal substring
   await ensureTS();
   if (!_TS) {
     const e = [];
@@ -657,7 +643,7 @@ export async function tsSearchSymbols(
         continue;
       }
       for (const s of syms) {
-        const r = matches(s.name, q);
+        const r = symbolMatchScore(s.name, qToks0, q);
         if (r) hits.push({ ...s, file: p.replace(/\\/g, "/"), rank: r });
       }
     }

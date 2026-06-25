@@ -1967,6 +1967,16 @@ if (tsAvailable()) {
   const idxLoadOk = !!loaded && loaded.meta.v === 1 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4;
   const idxHits = searchSymIndex(tsDir, "buildWidgetTree");
   const idxSearchOk = !!idxHits && idxHits.fromIndex && idxHits.length === 1 && /b\.ts$/.test(idxHits[0].file) && idxHits[0].line === 2;
+  // (c2) MULTI-WORD token coverage (LocAgent migration, arXiv:2503.09089): a spaced query finds the decl by
+  // covering ALL its tokens — "build widget tree" -> buildWidgetTree (the old literal-substring matcher returned
+  // 0). AND semantics: it must NOT surface BuildWidget (which lacks the "tree" token). A single CamelCase
+  // identifier ("buildWidgetTree") stays on the precise substring path (asserted by idxSearchOk above). Tested
+  // on BOTH syntactic paths (live tree-sitter + committed index) since they share the scorer.
+  const mwTs = await tsSearchSymbols(tsDir, "build widget tree", { skipDir: (n) => SKIP.has(n) });
+  const mwIdx = searchSymIndex(tsDir, "build widget tree");
+  const multiWordOk =
+    mwTs.some((h) => h.name === "buildWidgetTree") && !mwTs.some((h) => h.name === "BuildWidget") &&
+    !!mwIdx && mwIdx.some((h) => h.name === "buildWidgetTree") && !mwIdx.some((h) => h.name === "BuildWidget");
   // (d) tree-sitter REFERENCES (tags-query call-site capture): the syntactic find_references fallback. A
   // caller in Python + a caller in TS — both call sites captured, the decl line itself is NOT a reference.
   fs.writeFileSync(path.join(tsDir, "sub", "d.py"), "from a import x\ndef caller():\n    return build_widget(3)\n");
@@ -2038,7 +2048,7 @@ if (tsAvailable()) {
   const chunkOk = !!ck && ck.endRow > 0 && ck.endRow < 13 && ck.omitted > 0 &&
     /;\s*$/.test(chunkSrc.split("\n")[ck.endRow]) &&                      // the cut row ends a WHOLE statement
     ckBad === null;
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
@@ -2062,7 +2072,7 @@ const roslynOsPathOk =
 // 83) FUZZY concept retrieval (approach B): concept.js pure functions + the concept_search tool. The local
 // concept dictionary (identifier+comment co-occurrence) answers a concept query with no embeddings. Pure-fn
 // checks always run; the tool integration self-skips if the tree-sitter deps are absent.
-const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore, parseSynonyms: cParseSyn, anchorConfident: cAnchor, prfTerms: cPrf } = await import("../server/concept.js");
+const { splitIdent: cSplit, tokenize: cTok, tokMatch: cMatch, buildConceptModel: cBuild, expandQuery: cExpand, scoreSymbol: cScore, parseSynonyms: cParseSyn, anchorConfident: cAnchor, prfTerms: cPrf, parseConceptQuery: cParseQ } = await import("../server/concept.js");
 const splitOk = JSON.stringify(cSplit("authenticateUser")) === JSON.stringify(["authenticate", "user"]) && cMatch("auth", "authenticate") === 0.7 && cTok("How does the auth flow?").includes("auth");
 // co-occurrence: auth co-occurs with login twice (>= minCooc) → expansion surfaces it; ui never co-occurs.
 const cModel = cBuild([["auth", "login", "session"], ["auth", "login", "token"], ["render", "button", "ui"]]);
@@ -2106,6 +2116,21 @@ const prfOk = fbTerms.some(([t, w]) => t === "authenticate" && w === 0.5) &&  //
   !fbTerms.some(([t]) => t === "login") &&                                     // the query token is excluded
   !fbTerms.some(([t]) => t === "x") &&                                         // a single-doc term is below consensus
   cPrf(prfModel, [["a"]], ["q"], { minDocs: 2 }).length === 0;                 // nothing clears consensus → empty
+// LogicalRAG NEGATION (#e, migrated arXiv:2605.27123, charter-pure): "-term"/"-\"phrase\""/"NOT term" EXCLUDES a
+// concept. parseConceptQuery splits positive text from negative tokens (a hyphenated query word is NOT an
+// exclusion — needs a leading boundary); scoreSymbol penalises a decl matching an excluded token (idf x match x
+// negFactor), which can drive its score < 0 so the caller's base>0 filter drops it.
+const pqA = cParseQ('auth -test NOT mock');
+const pqB = cParseQ('auth-flow login');          // hyphenated word preserved, no exclusion
+const negParseOk = pqA.positive === 'auth' && pqA.negatives.includes('test') && pqA.negatives.includes('mock') &&
+  pqB.positive.includes('auth-flow') && pqB.negatives.length === 0 &&
+  JSON.stringify(cParseQ('-"two words" keep').negatives) === JSON.stringify(['two', 'words']);  // quoted-phrase exclusion
+const negEnr = cExpand(cModel, ['auth']);
+const sPlain = cScore(cModel, negEnr, ['auth', 'session'], []);
+const sNeg = cScore(cModel, negEnr, ['auth', 'session'], [], { negatives: ['session'], negFactor: 0.6 });
+const negScoreOk = sNeg < sPlain &&                                                       // excluded name token demotes
+  cScore(cModel, negEnr, ['auth'], [], { negatives: ['auth'], negFactor: 5 }) < 0 &&      // strong exclusion → negative (dropped)
+  cScore(cModel, negEnr, ['auth', 'session'], [], { negatives: ['session'], negFactor: 0 }) === sPlain; // negFactor 0 = off
 let conceptToolOk = true;
 if (tsAvailable()) {
   process.env.VTS_CONCEPT_COCHANGE = "0"; // pin OFF for this fixture: a CI tmpdir nested in a git repo would
@@ -2124,6 +2149,11 @@ if (tsAvailable()) {
   fs.writeFileSync(path.join(cdir, "core.ts"), "export function authenticate(){ return 1; }\n");
   fs.writeFileSync(path.join(cdir, "near.ts"), "import { authenticate } from './core';\nexport function authHelper(){ return 2; }\n");
   fs.writeFileSync(path.join(cdir, "far.ts"), "export function authHelper(){ return 3; }\n");
+  // NEGATION channel: two decls with EQUAL positive base ("load config"), one also carrying the excluded token
+  // ("beta") — the exclusion must demote it strictly below the clean one (deterministic: equal base, penalty only
+  // breaks the tie), and the result must announce the exclusion.
+  fs.writeFileSync(path.join(cdir, "configa.ts"), "export function loadConfigA(){ return 1; }\n");
+  fs.writeFileSync(path.join(cdir, "configbeta.ts"), "export function loadConfigBeta(){ return 2; }\n");
   const cr = await runTool("concept_search", { q: "session token", projectPath: cdir });
   const cp = await runTool("concept_search", { q: "billing", projectPath: cdir });
   const ci = await runTool("concept_search", { q: "authenticate", projectPath: cdir });
@@ -2134,12 +2164,35 @@ if (tsAvailable()) {
   // boosted one. For "authenticate", core.ts `authenticate` is the exact-name hit (base 1.0); near.ts
   // `authHelper` (base 0.7) is only lifted into view by the import boost, so it must NOT be the climb seed.
   const seedOk = !ci.isError && /find_references symbol="authenticate"/.test(ci.text);
+  // NEGATION end-to-end: excluding "beta" demotes loadConfigBeta strictly below loadConfigA (equal positive base)
+  // and the output announces the exclusion.
+  const cn = await runTool("concept_search", { q: "load config -beta", projectPath: cdir });
+  const negToolOk = !cn.isError && /excluding: beta/.test(cn.text) && /loadConfigA/.test(cn.text) &&
+    /loadConfigBeta/.test(cn.text) && cn.text.indexOf("loadConfigA") < cn.text.indexOf("loadConfigBeta");
+  // EXPAND-INTO-NEGATIVE (edge case, separate dir — cdir's model is already cached): query expansion can
+  // REINTRODUCE an excluded concept, so a decl matching ONLY that concept must be dropped DETERMINISTICALLY
+  // (not merely penalised — that resurfaces at a low negFactor). auth+login co-occur enough (df-gate off) that
+  // expandQuery(auth) pulls in "login"; "auth -login" must still drop loginOnly even at a weak negFactor.
+  const cdir2 = path.join(os.tmpdir(), `vts-eval-${process.pid}-neg`);
+  fs.mkdirSync(cdir2, { recursive: true });
+  for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(cdir2, `al${i}.ts`), `export function authLogin${i}(){ return ${i}; }\n`);
+  fs.writeFileSync(path.join(cdir2, "loginonly.ts"), "export function loginOnly(){ return 9; }\n");
+  fs.writeFileSync(path.join(cdir2, "authcore.ts"), "export function authCore(){ return 8; }\n");
+  for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(cdir2, `pad${i}.ts`), `export function padWidget${i}(){ return ${i}; }\n`);
+  const savedMaxDf = process.env.VTS_CONCEPT_MAX_DF, savedNegF = process.env.VTS_CONCEPT_NEG_FACTOR;
+  process.env.VTS_CONCEPT_MAX_DF = "0"; process.env.VTS_CONCEPT_NEG_FACTOR = "0.2"; // weak penalty: only the enriched-drop can remove loginOnly
+  const cb = await runTool("concept_search", { q: "auth", projectPath: cdir2 });          // expansion reaches loginOnly
+  const cneg = await runTool("concept_search", { q: "auth -login", projectPath: cdir2 });  // … and excluding login drops it
+  const expandNegOk = !cb.isError && /loginOnly/.test(cb.text) && !cneg.isError && !/loginOnly/.test(cneg.text) && /authCore/.test(cneg.text);
+  if (savedMaxDf === undefined) delete process.env.VTS_CONCEPT_MAX_DF; else process.env.VTS_CONCEPT_MAX_DF = savedMaxDf;
+  if (savedNegF === undefined) delete process.env.VTS_CONCEPT_NEG_FACTOR; else process.env.VTS_CONCEPT_NEG_FACTOR = savedNegF;
+  try { fs.rmSync(cdir2, { recursive: true, force: true }); } catch { /* ignore */ }
   conceptToolOk = !cr.isError && /validateSession/.test(cr.text) && /refreshToken/.test(cr.text) && !/renderWidget/.test(cr.text) && /no embeddings/.test(cr.text) &&
-    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed
+    /ladder.*[Cc]limb/.test(cr.text) && pathLocalityOk && importBoostOk && seedOk && negToolOk && expandNegOk; // ladder nav + path-locality + import-graph proximity + intrinsic-best climb seed + boolean negation (tie-break + expand-into-negative)
   try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
   delete process.env.VTS_CONCEPT_COCHANGE;
 }
-const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && anchorGateOk && prfOk && conceptToolOk;
+const conceptOk = splitOk && expandOk && synOk && scoreOk && dfGateOk && anchorGateOk && prfOk && negParseOk && negScoreOk && conceptToolOk;
 
 // 89) GIT CO-CHANGE signal (cochange.js) — M1 migration (the Cursor/Augment "what clusters semantically" axis,
 // embedding-free): files committed together feed a 2nd structural neighbour channel into concept_search's pass-2
