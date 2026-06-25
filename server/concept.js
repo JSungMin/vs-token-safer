@@ -174,16 +174,19 @@ function tailSeg(name) {
 //   - else token coverage in (1, 2]: 1 + (covered query weight / #query tokens) — full coverage -> 2.
 //   - else a single-token literal substring still matches at 0.5 (back-compat: "ooBa" finds "FooBar").
 // `qTokens` is the query pre-split (splitIdent), passed once per search; `qRaw` is the raw query for the exact
-// and substring checks.
-export function symbolMatchScore(name, qTokens, qRaw) {
+// and substring checks. `coverMin` (default 1.0 = AND) is the multi-word coverage FRACTION a name must reach:
+// 1.0 = every query token covered (precise — the default); a lower value (e.g. 0.6) admits PARTIAL coverage,
+// used by the caller ONLY as a zero-result fallback (when the strict AND pass found nothing) so recall rises
+// without the precise pass ever surfacing a partial near-miss.
+export function symbolMatchScore(name, qTokens, qRaw, coverMin = 1) {
   const ln = String(name).toLowerCase();
   const raw = String(qRaw == null ? qTokens.join("") : qRaw);
   const lq = raw.toLowerCase();
   if (ln === lq || tailSeg(name).toLowerCase() === lq) return 3; // exact full / tail name
   // TOKEN COVERAGE only for a genuine MULTI-WORD query (whitespace) — a single CamelCase identifier
   // ("buildWidgetTree") must NOT explode into every token-neighbour, so it keeps the precise substring path.
-  // Multi-word uses AND semantics: ALL query tokens must be covered (so "warm cap" finds warmCap but not a
-  // name that shares only "warm"), ranked by coverage strength.
+  // Coverage semantics: a name must cover at least `coverMin` of the query tokens ("warm cap" finds warmCap;
+  // at coverMin 1 a name sharing only "warm" is rejected), ranked by coverage strength.
   if (qTokens.length >= 2 && /\s/.test(raw)) {
     const nt = splitIdent(name);
     let cov = 0,
@@ -197,7 +200,7 @@ export function symbolMatchScore(name, qTokens, qRaw) {
       if (best > 0) matched++;
       cov += best;
     }
-    return matched === qTokens.length ? 1 + cov / qTokens.length : 0;
+    return matched / qTokens.length >= coverMin ? 1 + cov / qTokens.length : 0;
   }
   if (lq && ln.includes(lq)) return 1; // single-word substring ("Foo" finds "FooBar", "ns::FooBar")
   return 0;
