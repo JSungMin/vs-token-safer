@@ -602,6 +602,9 @@ export async function tsSearchSymbols(
     return e;
   }
   const hits = [];
+  const partials = []; // multi-word coverage >= VTS_SYM_COVER_MIN, used ONLY if the strict AND pass is empty
+  const multiWord = qToks0.length >= 2 && /\s/.test(q);
+  const partialMin = Number(process.env.VTS_SYM_COVER_MIN ?? 0.6);
   const stack = [root];
   const t0 = Date.now();
   let filesParsed = 0,
@@ -645,13 +648,20 @@ export async function tsSearchSymbols(
       for (const s of syms) {
         const r = symbolMatchScore(s.name, qToks0, q);
         if (r) hits.push({ ...s, file: p.replace(/\\/g, "/"), rank: r });
+        else if (multiWord) {
+          const rp = symbolMatchScore(s.name, qToks0, q, partialMin); // partial coverage — kept only as a fallback
+          if (rp) partials.push({ ...s, file: p.replace(/\\/g, "/"), rank: rp });
+        }
       }
     }
     if (timedOut || capped) break;
   }
-  hits.sort((a, b) => b.rank - a.rank || a.name.length - b.name.length);
-  const sliced = hits.slice(0, max);
-  if (hits.length > max) sliced.truncated = "cap";
+  // strict AND results win; partials surface ONLY when AND found nothing (recall on an otherwise-empty
+  // multi-word query, no precision cost to a non-empty precise result).
+  const out = hits.length ? hits : partials;
+  out.sort((a, b) => b.rank - a.rank || a.name.length - b.name.length);
+  const sliced = out.slice(0, max);
+  if (out.length > max) sliced.truncated = "cap";
   else if (timedOut) sliced.truncated = "time";
   else if (capped) sliced.truncated = "files";
   sliced.filesParsed = filesParsed;

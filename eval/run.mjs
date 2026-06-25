@@ -1977,6 +1977,13 @@ if (tsAvailable()) {
   const multiWordOk =
     mwTs.some((h) => h.name === "buildWidgetTree") && !mwTs.some((h) => h.name === "BuildWidget") &&
     !!mwIdx && mwIdx.some((h) => h.name === "buildWidgetTree") && !mwIdx.some((h) => h.name === "BuildWidget");
+  // (c3) PARTIAL FALLBACK (C-idf refinement, measured via rank-bench): an AND-empty multi-word query relaxes to
+  // >= VTS_SYM_COVER_MIN coverage so recall survives ("build widget gadget": no decl covers all 3 tokens, but
+  // buildWidgetTree covers 2/3) — WITHOUT polluting a non-empty precise result (multiWordOk above still excludes
+  // BuildWidget for the AND-satisfiable "build widget tree"). Both syntactic paths.
+  const pfTs = await tsSearchSymbols(tsDir, "build widget gadget", { skipDir: (n) => SKIP.has(n) });
+  const pfIdx = searchSymIndex(tsDir, "build widget gadget");
+  const partialFallbackOk = pfTs.some((h) => h.name === "buildWidgetTree") && !!pfIdx && pfIdx.some((h) => h.name === "buildWidgetTree");
   // (d) tree-sitter REFERENCES (tags-query call-site capture): the syntactic find_references fallback. A
   // caller in Python + a caller in TS — both call sites captured, the decl line itself is NOT a reference.
   fs.writeFileSync(path.join(tsDir, "sub", "d.py"), "from a import x\ndef caller():\n    return build_widget(3)\n");
@@ -2048,7 +2055,7 @@ if (tsAvailable()) {
   const chunkOk = !!ck && ck.endRow > 0 && ck.endRow < 13 && ck.omitted > 0 &&
     /;\s*$/.test(chunkSrc.split("\n")[ck.endRow]) &&                      // the cut row ends a WHOLE statement
     ckBad === null;
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && partialFallbackOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
