@@ -308,12 +308,19 @@ export function prfTerms(model, topBags, queryTokens, { terms = 5, minDocs = 2, 
 // free, local evidence — weaker than a name hit, comparable to a comment hit. Each enriched query token
 // contributes its weight x best token-match x idf per channel (path/doc at a discount). idf already damps
 // ubiquitous tokens, so no length normalisation is needed.
+//
+// `negatives` (LogicalRAG-style boolean NEGATION, arXiv:2605.27123 — charter-pure: the exclusion only reranks
+// the repo's OWN mined tokens, transmits nothing, ships no model) PENALISES a symbol that matches an excluded
+// concept: a decl mentioning a `negatives` token (across the same three channels) is demoted by idf x match x
+// negFactor, so "auth -test" pushes the test doubles below the real flow. The penalty can drive a score < 0,
+// which the caller's `base > 0` filter then drops entirely — a hard exclusion for a strong match, a soft demote
+// for a weak one. Deterministic; negFactor<=0 disables.
 export function scoreSymbol(
   model,
   enriched,
   symTokens,
   docTokens = [],
-  { docFactor = 0.5, pathTokens = [], pathFactor = 0.4 } = {},
+  { docFactor = 0.5, pathTokens = [], pathFactor = 0.4, negatives = [], negFactor = 0.6 } = {},
 ) {
   const bestMatch = (qt, toks) => {
     let best = 0;
@@ -337,7 +344,43 @@ export function scoreSymbol(
       if (dh) score += weight * dh * docFactor;
     }
   }
+  if (negFactor > 0 && negatives.length) {
+    for (const nt of negatives) {
+      // an excluded term hits the strongest of the three channels (name full-weight, path/doc discounted to
+      // match the positive scale), penalised by its idf so a rare excluded term bites harder than a generic one.
+      let pen = bestMatch(nt, symTokens);
+      if (pathFactor && pathTokens.length) pen = Math.max(pen, bestMatch(nt, pathTokens) * pathFactor);
+      if (docFactor && docTokens.length) pen = Math.max(pen, bestMatch(nt, docTokens) * docFactor);
+      if (pen) score -= idf(model, nt) * pen * negFactor;
+    }
+  }
   return score;
+}
+
+// Split a concept query into its POSITIVE text and its NEGATIVE (excluded) concept tokens. An exclusion is a
+// `-term`, a `-"quoted phrase"`, or a standalone `NOT term` (case-insensitive, word-boundary) — the LogicalRAG
+// boolean-negation interface (arXiv:2605.27123), kept charter-pure (it only reweights the repo's own mined
+// tokens). A dash WITHOUT a leading boundary is left alone, so a hyphenated query word ("auth-flow") is never
+// mistaken for an exclusion. Returns { positive: string, negatives: string[] } (negatives de-duped, identifier-
+// split + stop-filtered the same way names are). Pure.
+export function parseConceptQuery(q) {
+  const negParts = [];
+  let s = String(q);
+  s = s.replace(/(^|\s)-"([^"]+)"/g, (_, p, ph) => {
+    negParts.push(ph);
+    return p;
+  });
+  s = s.replace(/(^|\s)-([A-Za-z0-9_]+)/g, (_, p, w) => {
+    negParts.push(w);
+    return p;
+  });
+  s = s.replace(/(^|\s)NOT\s+([A-Za-z0-9_]+)/g, (_, p, w) => {
+    negParts.push(w);
+    return p;
+  });
+  const negatives = [];
+  for (const np of negParts) for (const t of splitIdent(np)) negatives.push(t);
+  return { positive: s.trim(), negatives: [...new Set(negatives)] };
 }
 
 // Parse a committable synonym file (JSON `{ "term": ["syn", …], … }`) into a Map<token, string[]> for
