@@ -1,6 +1,6 @@
 {
   "name": "vs-token-safer",
-  "version": "0.39.0",
+  "version": "0.39.1",
   "type": "module",
   "description": "Sits between an LLM coding agent and your repository and answers where/what/how questions with a short file:line list instead of raw source. It uses a real language server when it can (clangd / Roslyn / tsserver / pyright), tree-sitter when there's no toolchain, and a no-embeddings fuzzy search built from the repo's own naming when you don't know the exact name. It section-edits Markdown and config files the same way. Local-only, nothing transmitted. CLI + MCP. No IDE required.",
   "keywords": [
