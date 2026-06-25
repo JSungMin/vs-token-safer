@@ -1,0 +1,92 @@
+{
+  "root": "server",
+  "queries": [
+    {
+      "q": "prewarm warm-up ordering by hit rate",
+      "rung": "fuzzy",
+      "rank": 1
+    },
+    {
+      "q": "exclude a concept boolean negation",
+      "rung": "fuzzy",
+      "rank": 12
+    },
+    {
+      "q": "files committed together git co-change neighbours",
+      "rung": "fuzzy",
+      "rank": 2
+    },
+    {
+      "q": "dead code reachability mark sweep from roots",
+      "rung": "fuzzy",
+      "rank": 1
+    },
+    {
+      "q": "generate compile database advisory missing",
+      "rung": "fuzzy",
+      "rank": 1
+    },
+    {
+      "q": "pick the language server backend for a repo",
+      "rung": "fuzzy",
+      "rank": 2
+    },
+    {
+      "q": "steer a text scan toward the semantic symbol search",
+      "rung": "fuzzy",
+      "rank": 1
+    },
+    {
+      "q": "record and report token savings ledger",
+      "rung": "fuzzy",
+      "rank": 2
+    },
+    {
+      "q": "orderForWarm",
+      "rung": "syntactic",
+      "rank": 1
+    },
+    {
+      "q": "buildCallGraph",
+      "rung": "syntactic",
+      "rank": 1
+    },
+    {
+      "q": "cochangeNeighbors",
+      "rung": "syntactic",
+      "rank": 1
+    }
+  ],
+  "summary": {
+    "fuzzy": {
+      "n": 8,
+      "recall": {
+        "1": 0.5,
+        "3": 0.875,
+        "5": 0.875,
+        "10": 0.875
+      },
+      "mrr": 0.6979166666666666
+    },
+    "syntactic": {
+      "n": 3,
+      "recall": {
+        "1": 1,
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "mrr": 1
+    },
+    "all": {
+      "n": 11,
+      "recall": {
+        "1": 0.6363636363636364,
+        "3": 0.9090909090909091,
+        "5": 0.9090909090909091,
+        "10": 0.9090909090909091
+      },
+      "mrr": 0.7803030303030302
+    }
+  }
+}
