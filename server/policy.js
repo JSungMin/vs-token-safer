@@ -24,6 +24,27 @@ export function shouldSuppressSteer(file) {
 const onOff = (v, d) => !/^(0|false|off|no)$/i.test(String(v ?? d));
 export function suppressOn() { return onOff(process.env.VTS_SUPPRESS, "1"); }
 
+// READ-SIDE steer (H1) — the dominant token leak is a whole-file Read of a LARGE code file BEFORE a one-decl
+// edit (discover, real data: ~66% of edit-pre-read tokens sit in reads ≥ ~1K tok, and ~86% of them had no prior
+// vts search so the search-result steer can't reach them — but a Read always has a target, so a READ-time steer
+// can). When the agent Reads a big code file whole, point it at read_symbol (reads ONE decl, capped) and the
+// symbol-edit tools (edit by name, no read). PURE decision — the hook supplies the byte size; warn-only, never
+// blocks a Read. Gated TIGHT to avoid nagging legitimate whole-file reads: code ext only, not generated/build,
+// not an already-sliced read (offset/limit), and at/above `minBytes`. Returns the nudge text or null.
+const READ_CODE_EXT = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
+export function readSteerOn() { return onOff(process.env.VTS_READ_STEER, "1"); }
+export function readSteerDecision(file, sizeBytes, { sliced = false, minBytes = 6000, ko = false } = {}) {
+  if (!readSteerOn() || !file) return null;
+  if (sliced) return null;                            // a partial read (offset/limit) is already a slice
+  if (!READ_CODE_EXT.test(String(file))) return null; // only code files (the syntactic/semantic tiers cover these)
+  if (shouldSuppressSteer(file)) return null;         // generated/build/vendored path — a symbol-read buys nothing
+  if (!(sizeBytes >= minBytes)) return null;          // small file: cheap to read whole, not worth a nudge
+  const kb = Math.round(sizeBytes / 1024);
+  return ko
+    ? `↪ vs-token-safer: 큰 코드파일(~${kb}KB)을 통째로 읽네요. 한 선언만 필요하면 read_symbol symbol="<name>" 이 그 선언만 반환(토큰캡)하고, 통째 편집이면 replace_symbol_body / insert_symbol 이 읽지 않고 이름으로 편집합니다. 끄기: VTS_READ_STEER=0.`
+    : `↪ vs-token-safer: reading a large code file (~${kb} KB) whole. If you only need ONE declaration, read_symbol symbol="<name>" returns just that decl (token-capped); for a whole-decl edit, replace_symbol_body / insert_symbol edit by name with no read. VTS_READ_STEER=0 to hide.`;
+}
+
 // The single routing digest. Always emits the decision tree (the integrative guidance); appends the live
 // adoption posture + adaptive-controller state when there is enough data.
 export function routingDigest(o = readEditLedger()) {
