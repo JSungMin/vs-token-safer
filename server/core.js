@@ -21,7 +21,7 @@ import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
-import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms } from "./concept.js";
+import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
@@ -2078,8 +2078,15 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       const { model, symbols, neighbors, cochange } = await conceptIndexFor(root);
       if (!symbols.length) return finishOut([], `No indexable declarations under ${root} for concept search (no tree-sitter-supported files in scope?).` + EMPTY_HINT);
-      const qToks = tokenize(String(a.q));
-      if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words). Try concrete nouns: "auth session token".`);
+      // LogicalRAG-style boolean NEGATION (arXiv:2605.27123, charter-pure): "-term" / "-\"phrase\"" / "NOT term"
+      // in the query EXCLUDES that concept — a decl matching it is penalised so it ranks below (or drops under
+      // the floor entirely). Only the POSITIVE remainder seeds expansion. VTS_CONCEPT_NEG=0 treats the whole
+      // query as positive (the pre-negation behaviour).
+      const negOn = (process.env.VTS_CONCEPT_NEG ?? "1") !== "0";
+      const { positive, negatives: negToks } = negOn ? parseConceptQuery(a.q) : { positive: String(a.q), negatives: [] };
+      const qToks = tokenize(positive);
+      if (!qToks.length) return err(`"${a.q}" has no usable concept tokens (too short / all stop-words${negToks.length ? " — the query is all exclusions; add a positive concept" : ""}). Try concrete nouns: "auth session token".`);
+      const negFactor = Number(process.env.VTS_CONCEPT_NEG_FACTOR ?? 0.6);
       // COMMITTABLE synonyms (the critic-approved adaptation): a team-curated, git-committable
       // .vts-index/concept-synonyms.json ({ "term": ["syn", …] }) augments the mined dictionary — inspectable,
       // deterministic, no drift. Purely additive: absent/malformed → the mined model runs alone.
@@ -2089,11 +2096,17 @@ export async function runTool(name, a = {}) {
       // present in > this fraction of decls) — the documented noise source on cross-cutting fuzzy queries.
       const maxDfRatio = Number(process.env.VTS_CONCEPT_MAX_DF ?? 0.25);
       let enriched = expandQuery(model, qToks, { ...(synonyms ? { synonyms } : {}), maxDfRatio });
+      // An EXCLUDED concept must never be a POSITIVE reason to surface a decl: expansion (or a synonym) can
+      // reintroduce a negated term, so drop the negatives from the enriched set. scoreSymbol's penalty still
+      // demotes a decl that matches the positive query AND mentions an excluded term — but a decl matching ONLY
+      // the excluded concept now scores 0 deterministically, independent of negFactor/floor tuning.
+      const dropNeg = (enr) => { for (const nt of negToks) enr.delete(nt); return enr; };
+      if (negToks.length) dropNeg(enriched);
       // Kind weight: a fuzzy "how does X work" wants the function/class/type that EMBODIES the concept, not a
       // throwaway local const/var that merely mentions a word — demote those so the real declarations rank up.
       const kindW = (k) => (/^(const|var|local|decl|field|member)$/.test(k) ? 0.35 : 1);
       const scoreAll = (enr) => symbols
-        .map((s) => ({ s, base: scoreSymbol(model, enr, s.nt, s.dt, { pathTokens: s.pt }) * kindW(s.kind) }))
+        .map((s) => ({ s, base: scoreSymbol(model, enr, s.nt, s.dt, { pathTokens: s.pt, negatives: negToks, negFactor }) * kindW(s.kind) }))
         .filter((r) => r.base > 0);
       // Pass 1: base score (name + path + comment channels).
       let based = scoreAll(enriched);
@@ -2111,6 +2124,7 @@ export async function runTool(name, a = {}) {
         if (fb.length) {
           const enr2 = new Map(enriched);
           for (const [t, w] of fb) if ((enr2.get(t) || 0) < w) enr2.set(t, w);
+          if (negToks.length) dropNeg(enr2); // PRF feedback can also re-introduce an excluded concept — drop it again
           enriched = enr2;          // so the cert / "concept-expanded with" line reflects the PRF terms too
           based = scoreAll(enriched); // Pass 1b: re-score with the feedback-augmented query
         }
@@ -2157,7 +2171,8 @@ export async function runTool(name, a = {}) {
       const seed = ranked.reduce((best, r) => (b0(r) > b0(best) ? r : best), ranked[0]);
       const expTerms = [...enriched].filter(([t]) => !qToks.includes(t)).slice(0, 8).map(([t]) => t);
       const rows = ranked.map((r) => `${r.s.file}:${r.s.line}: ${r.s.kind} ${r.s.name}`);
-      const expLine = expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "";
+      const expLine = (expTerms.length ? `\n  concept-expanded with: ${expTerms.join(", ")} (mined from this repo's own naming, not a model)` : "")
+        + (negToks.length ? `\n  excluding: ${negToks.join(", ")} (decls matching these are demoted/dropped)` : "");
       const cert = completenessCert({ shown: rows.length, total: ranked.length, truncated: null, fuzzy: true });
       let flow = "";
       if (a.flow === true || a.flow === "true") {
