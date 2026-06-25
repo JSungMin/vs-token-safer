@@ -13,6 +13,7 @@
     "eval:skillopt": "node eval/skillopt/selftest.mjs",
     "test": "npm run eval && npm run eval:steer && npm run eval:skillopt",
     "bench": "node benchmarks/run.mjs",
+    "bench:rank": "node eval/rank-bench.mjs",
     "bump": "node scripts/bump.mjs"
   },
   "devDependencies": {
