@@ -500,6 +500,29 @@ const isUnder = (p, root) => {
   const r = path.resolve(String(root)).replace(/\\/g, "/").toLowerCase();
   return a2 === r || a2.startsWith(r + "/");
 };
+// A spawn description that reads like a SINGLE lookup — the case the code-locator spawn-guard says should be a
+// direct vs-search call, not a subagent. Advisory only (heuristic over the redacted description, never blocks).
+const SINGLE_LOOKUP_DESC = /\b(where is|what calls|find (the )?(file|symbol|definition)|locate|definition of|all (uses|usages|references) of)\b/i;
+// FLEET detection: ≥2 spawns of the SAME subagent_type falling inside a `winMs` window — the audit-fleet shape
+// (e.g. 4 code-locators over line-ranges in 90s) the v0.40.1 guard targets. A sliding window over each type's
+// timestamp-sorted spawns; a run of ≥2 within winMs is one fleet. Returns [{type,n,tok}].
+function detectFleets(spawns, winMs) {
+  const byType = {};
+  for (const s of spawns) (byType[s.type] || (byType[s.type] = [])).push(s);
+  const out = [];
+  for (const [type, arr] of Object.entries(byType)) {
+    if (arr.length < 2) continue;
+    arr.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    let i = 0;
+    while (i < arr.length) {
+      let j = i;
+      while (j + 1 < arr.length && (arr[j + 1].ts || 0) - (arr[i].ts || 0) <= winMs) j++;
+      if (j - i + 1 >= 2) { out.push({ type, n: j - i + 1, tok: arr.slice(i, j + 1).reduce((s, x) => s + (x.tok || 0), 0) }); i = j + 1; }
+      else i++;
+    }
+  }
+  return out;
+}
 function scanBypasses(a = {}) {
   const base = process.env.VTS_CLAUDE_PROJECTS || path.join(os.homedir(), ".claude", "projects");
   let dirs;
@@ -524,6 +547,15 @@ function scanBypasses(a = {}) {
   const PATH_RE = /([A-Za-z]:)?[\w./\\-]+\.(?:c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/g;
   const cand = new Map(); // tool_use_id → {tool,q}
   const missed = []; let rawTokTotal = 0; let lines = 0; const MAX_LINES = 300000;
+  // Agent-spawn accounting (the dark surface): a code-locator/Explore fleet can burn far more than any single
+  // search bypass, yet discover never saw it. A spawn is ASYNC — its launch tool_result carries only {agentId,
+  // outputFile, status}, NO tokens. The real cost arrives later in the async COMPLETION notification as
+  // `<task-id>…</task-id> … <subagent_tokens>N</subagent_tokens>` (task-id === the launch agentId). So: capture
+  // the launch (type/desc/agentId), harvest token counts by task-id, and join after the scan.
+  const spawns = [];            // final resolved {type, tok, desc, ts, approx}
+  const spawnUse = new Map();   // Agent/Task tool_use_id → {type,desc,ts} (per-file: tool_use+result share a transcript)
+  const spawnRecs = [];         // launched spawns awaiting reconciliation {type,desc,ts,agentId,inlineTok,summaryTok}
+  const tokenByTask = new Map();// agentId/task-id → subagent_tokens, harvested from the async completion notification
   // Edit-habit measurement (A): count whole-declaration Edits on code files, and attribute the tokens of a
   // PRIOR Read of that same file — that read is what a symbol-edit (edit-by-name) would have skipped.
   let editCount = 0, editReadTok = 0, editUnreached = 0; // editUnreached: whole-decl edits with NO prior vts
@@ -535,12 +567,16 @@ function scanBypasses(a = {}) {
   const searchUse = new Map();  // vts search/goto/refs tool_use id → true (its result carries the file:line)
   const searchedBn = new Set(); // basenames seen in a prior vts search/goto/refs RESULT → steer-reachable
   outer: for (const { p } of files) {
-    cand.clear(); reads.clear(); readUse.clear(); searchUse.clear(); searchedBn.clear(); // tool_use+result share one transcript → bound per file
+    cand.clear(); reads.clear(); readUse.clear(); searchUse.clear(); searchedBn.clear(); spawnUse.clear(); // tool_use+result share one transcript → bound per file
     let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
     for (const line of txt.split(/\r?\n/)) {
       if (!line.trim()) continue;
       if (++lines > MAX_LINES) break outer;
       let e; try { e = JSON.parse(line); } catch { continue; }
+      // Harvest async-spawn completion tokens by task-id (=== agentId). Scanned on the raw line (the notification
+      // text lives inside a JSON string with literal <tags>); cheap-guarded so the regex only runs when present.
+      // Done BEFORE the window/scope filters — agentIds are globally unique, so a stray join can't cross projects.
+      if (line.includes("subagent_tokens")) { let cm; const CR = /<task-id>([a-z0-9-]+)<\/task-id>[\s\S]*?<subagent_tokens>(\d+)<\/subagent_tokens>/gi; while ((cm = CR.exec(line))) tokenByTask.set(cm[1], +cm[2]); }
       // entry-level window: a multi-day session keeps its file mtime fresh — without this, its old
       // misses recount in every "last N days" report (and re-enter every auto-learn harvest).
       if (!all && e && e.timestamp) { const t = Date.parse(e.timestamp); if (Number.isFinite(t) && t < cutoff) continue; }
@@ -551,6 +587,7 @@ function scanBypasses(a = {}) {
       for (const b of content) {
         if (b && b.type === "tool_use") {
           const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
+          if ((b.name === "Agent" || b.name === "Task") && b.input && b.input.subagent_type) spawnUse.set(b.id, { type: String(b.input.subagent_type), desc: String(b.input.description || ""), ts: e.timestamp ? Date.parse(e.timestamp) : 0 }); // an agent spawn (NOT the TaskCreate/Update to-do tools — those carry no subagent_type)
           if (b.name === "Read" && b.input && b.input.file_path) readUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
           else if (/(?:search_symbol|goto_definition|find_references)$/.test(String(b.name || ""))) searchUse.set(b.id, true);
           else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; let rtk = 0; if (reads.has(ce.file)) { rtk = reads.get(ce.file); editReadTok += rtk; reads.delete(ce.file); } const prior = searchedBn.has(path.basename(ce.file)); if (!prior) editUnreached++; editDetails.push({ file: ce.file, kind: ce.replaceDecl ? "replace" : "insert", readTok: rtk, priorSearch: prior }); } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
@@ -564,6 +601,15 @@ function scanBypasses(a = {}) {
           searchUse.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
           let pm; PATH_RE.lastIndex = 0; while ((pm = PATH_RE.exec(o))) searchedBn.add(path.basename(pm[0]).toLowerCase()); // files a prior steer-carrying search surfaced
+        }
+        else if (b && b.type === "tool_result" && spawnUse.has(b.tool_use_id)) {
+          const sp = spawnUse.get(b.tool_use_id); spawnUse.delete(b.tool_use_id);
+          // The launch result carries the agentId (=== the completion's task-id) but NOT the tokens (async). Stash
+          // the agentId for the post-scan join; keep an inline totalTokens (sync spawns, if ever present) and the
+          // returned summary's token count as graceful fallbacks.
+          const tur = e.toolUseResult || {};
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          spawnRecs.push({ type: sp.type, desc: sp.desc, ts: sp.ts, agentId: tur.agentId || null, inlineTok: Number.isFinite(tur.totalTokens) ? tur.totalTokens : null, summaryTok: tok(o) });
         }
         else if (b && b.type === "tool_result" && cand.has(b.tool_use_id)) {
           const meta = cand.get(b.tool_use_id); cand.delete(b.tool_use_id);
@@ -587,7 +633,16 @@ function scanBypasses(a = {}) {
       }
     }
   }
-  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached, editDetails };
+  // Reconcile launched spawns with harvested completion tokens (async) → EXACT; else inline totalTokens (sync);
+  // else the returned-summary token count (approx, flagged). agentId === the completion's task-id.
+  for (const r of spawnRecs) {
+    let t, approx = false;
+    if (r.agentId && tokenByTask.has(r.agentId)) t = tokenByTask.get(r.agentId);
+    else if (Number.isFinite(r.inlineTok)) t = r.inlineTok;
+    else { t = r.summaryTok; approx = true; }
+    spawns.push({ type: r.type, tok: t, desc: r.desc, ts: r.ts, approx });
+  }
+  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached, editDetails, spawns };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -604,7 +659,28 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached, editDetails } = r;
+  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached, editDetails, spawns } = r;
+  // A2: agent-spawn accounting — the largest single token events (a code-locator/Explore fleet) were invisible.
+  // Folded into the report (and `--agents`); VTS_DISCOVER_AGENTS=0 hides. Redacted: type + counts + tokens only,
+  // no prompt/description bodies (same discipline as the search/edit blocks).
+  let agentLine = "";
+  if (process.env.VTS_DISCOVER_AGENTS !== "0" && spawns && spawns.length) {
+    const heavyTok = envInt("VTS_SPAWN_HEAVY_TOK", 50000);
+    const fleetWin = envInt("VTS_SPAWN_FLEET_WINDOW_MS", 120000);
+    const totalSpawnTok = spawns.reduce((s, x) => s + (x.tok || 0), 0);
+    const anyApprox = spawns.some((s) => s.approx);
+    const byType = {};
+    for (const s of spawns) { const t = byType[s.type] || (byType[s.type] = { n: 0, tok: 0 }); t.n++; t.tok += s.tok || 0; }
+    const typeLine = Object.entries(byType).sort((x, y) => y[1].tok - x[1].tok).map(([t, v]) => `${t} ×${v.n} (~${v.tok.toLocaleString()})`).join(", ");
+    const fleets = detectFleets(spawns, fleetWin);
+    const heavy = spawns.filter((s) => (s.tok || 0) >= heavyTok);
+    const advisory = spawns.filter((s) => SINGLE_LOOKUP_DESC.test(s.desc || ""));
+    agentLine = `\n  agent spawns: ${spawns.length} spawn(s), ~${totalSpawnTok.toLocaleString()} tok total (~$${usd(totalSpawnTok).toFixed(2)})${anyApprox ? " (some approx — older transcripts)" : ""}` +
+      `\n    by type: ${typeLine}` +
+      (fleets.length ? `\n    fleets: ${fleets.length} (${fleets.map((f) => `${f.type} ×${f.n}, ~${f.tok.toLocaleString()} tok`).join("; ")}) ← audit-fleet shape the code-locator guard targets` : "") +
+      (heavy.length ? `\n    heavy: ${heavy.length} single spawn(s) over ${heavyTok.toLocaleString()} tok — a locator that reads bodies is doing the wrong job` : "") +
+      (advisory.length ? `\n    advisory: ${advisory.length} description(s) read like a single lookup — those could be a direct vs-search call (no subagent).` : "");
+  }
   // A: surface the edit habit alongside the search bypasses — whole-declaration Edits that could edit by name.
   // editUnreached = those with no prior vts search on the file → the EDIT_STEER (search-result-only) can't
   // reach them; a high fraction is the evidence for a harder lever (a warn on the Edit itself).
@@ -649,7 +725,7 @@ function discoverReport(a = {}) {
       detailLine = `\n  ✓ wrote ${missed.length + (editDetails ? editDetails.length : 0)} detailed record(s) to ${outPath} (LOCAL only — not sent to the model; for offline counterfactual analysis).`;
     } catch { /* best-effort */ }
   }
-  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + learnLine + detailLine;
+  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + agentLine + learnLine + detailLine;
   const byTool = {};
   for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
   const toolLine = Object.entries(byTool).sort((x, y) => y[1] - x[1]).map(([t, n]) => `${t}×${n}`).join(", ");
@@ -659,7 +735,7 @@ function discoverReport(a = {}) {
     `  ${missed.length} code search(es) bypassed vts (${toolLine})\n` +
     `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}\n` +
     `  biggest:\n${top}\n` +
-    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${learnLine}${detailLine}`;
+    `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${agentLine}${learnLine}${detailLine}`;
 }
 
 // ---- LSP client pool (one per root+backend; reused across calls in a process) ----

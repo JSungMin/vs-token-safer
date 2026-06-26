@@ -83,7 +83,8 @@ Commands:
                  The since-window filters individual entries by timestamp; --projectPath scopes the
                  count to that root (and bounds what --learn attributes to it).
                  [--since N (days, default 7) --all (all projects, all time)
-                  --learn (feed the files those searches hit into the warm-set) --projectPath <dir>]
+                  --learn (feed the files those searches hit into the warm-set) --projectPath <dir>
+                  --agents (also account agent SPAWNS — code-locator/Explore fleets, exact totalTokens)]
   gen-compile-db Generate compile_commands.json for an Unreal project via UBT (full clangd index).
                  Dry-run by default; --apply runs it. The DB + clangd's .cache/ land OUTSIDE the source
                  tree (~/.vs-token-safer/db/<project>; --inTree keeps the classic project-root layout).
@@ -97,7 +98,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set(["seeds", "entry", "roots"]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability", "detail"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability", "detail", "agents"]);
 
 function parseArgs(argv) {
   const a = {};
