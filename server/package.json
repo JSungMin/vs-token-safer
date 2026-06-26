@@ -65,7 +65,7 @@
     "pyright": "^1.1.400",
     "typescript": "^6.0.3",
     "typescript-language-server": "^5.0.0",
-    "web-tree-sitter": "^0.25.10",
+    "web-tree-sitter": "^0.26.9",
     "tree-sitter-wasms": "^0.1.13"
   },
   "engines": {
