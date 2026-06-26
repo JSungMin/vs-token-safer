@@ -56,6 +56,7 @@ export function routingDigest(o = readEditLedger()) {
     "  • ADD/REPLACE a whole decl → vts replace_symbol_body / insert_symbol (by name, skips the Read)",
     "  • doc/log, quick literal peek, JUST-edited or unindexed file, sub-decl tweak → CC-native Read/Grep/Edit",
     "  • big tree, slow first query → vts setup --scope <module>; vts preindex",
+    "  • SINGLE lookup → call vts tools DIRECTLY; spawn code-locator ONLY for multi-file exploration (a subagent adds context overhead a one-shot query can't repay)",
   ];
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
