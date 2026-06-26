@@ -1103,6 +1103,46 @@ const editDiscOk = !discEdit.isError && /1 whole-declaration Edit/.test(discEdit
 try { fs.rmSync(eProj, { recursive: true, force: true }); } catch { /* ignore */ }
 const editSteerOk = ssSteerOk && ssOffOk && editDiscOk;
 
+// 91) AGENT-SPAWN accounting (A): discover now sees agent SPAWNS — the dark surface where a code-locator/Explore
+// fleet outweighs any single search bypass. EXACT cost via the result entry's top-level toolUseResult.totalTokens
+// (fallback: the summary's tok count when absent). FLEET = ≥2 same-type in-window; HEAVY = a single spawn over the
+// threshold; WOULD-BE-DIRECT = a single-lookup-shaped description (advisory). Synthetic transcript, isolated dir.
+const aProj = path.join(os.tmpdir(), `vts-eval-${process.pid}-spawndisc`);
+fs.mkdirSync(path.join(aProj, "P--proj"), { recursive: true });
+const ANOW = new Date().toISOString();
+// a spawn is ASYNC: a tool_use launch, a tool_result that carries only the agentId (NO tokens), and a later
+// COMPLETION notification carrying `<task-id> … <subagent_tokens>N`. The token join is task-id === agentId.
+const spU = (id, desc) => JSON.stringify({ type: "assistant", cwd: aProj, timestamp: ANOW, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Agent", input: { subagent_type: "code-locator", description: desc, prompt: "x" } }] } });
+const spLaunch = (id, agentId) => JSON.stringify({ type: "user", cwd: aProj, timestamp: ANOW, toolUseResult: { isAsync: true, status: "success", agentId }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "launched" }] } });
+const spDone = (agentId, toks) => JSON.stringify({ type: "user", cwd: aProj, timestamp: ANOW, message: { role: "user", content: [{ type: "text", text: `<task-notification><task-id>${agentId}</task-id><status>completed</status><usage><subagent_tokens>${toks}</subagent_tokens></usage></task-notification>` }] } });
+fs.writeFileSync(path.join(aProj, "P--proj", "t.jsonl"),
+  [spU("a1", "Audit OnUpdate states 1-100"), spLaunch("a1", "ag1"), spDone("ag1", 60000),        // two heavy code-locators in one window → fleet + 2 heavy; EXACT cost via the completion join
+   spU("a2", "Audit OnUpdate states 100-200"), spLaunch("a2", "ag2"), spDone("ag2", 55000),
+   // an Explore spawn whose launch result carries inline totalTokens (the sync fallback path) — single, small.
+   JSON.stringify({ type: "assistant", cwd: aProj, timestamp: ANOW, message: { role: "assistant", content: [{ type: "tool_use", id: "e1", name: "Agent", input: { subagent_type: "Explore", description: "map the dir", prompt: "x" } }] } }),
+   JSON.stringify({ type: "user", cwd: aProj, timestamp: ANOW, toolUseResult: { agentType: "Explore", totalTokens: 5000 }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "e1", content: "done" }] } }),
+  ].join("\n") + "\n");
+process.env.VTS_CLAUDE_PROJECTS = aProj;
+const discAgent = await runTool("vts_discover", { since: 7, agents: true });
+// fallback proxy + WOULD-BE-DIRECT advisory: a Task spawn with NO toolUseResult and a single-lookup description.
+fs.writeFileSync(path.join(aProj, "P--proj", "u.jsonl"),
+  [JSON.stringify({ type: "assistant", cwd: aProj, timestamp: ANOW, message: { role: "assistant", content: [{ type: "tool_use", id: "b1", name: "Task", input: { subagent_type: "code-locator", description: "where is Foo defined", prompt: "x" } }] } }),
+   JSON.stringify({ type: "user", cwd: aProj, timestamp: ANOW, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "b1", content: "some result text" }] } }),
+  ].join("\n") + "\n");
+const discAgent2 = await runTool("vts_discover", { since: 7, agents: true });
+const aOffPrev = process.env.VTS_DISCOVER_AGENTS; process.env.VTS_DISCOVER_AGENTS = "0";
+const discAgentOff = await runTool("vts_discover", { since: 7, agents: true });
+if (aOffPrev === undefined) delete process.env.VTS_DISCOVER_AGENTS; else process.env.VTS_DISCOVER_AGENTS = aOffPrev;
+delete process.env.VTS_CLAUDE_PROJECTS;
+const agentDiscOk =
+  !discAgent.isError && /agent spawns: 3 spawn/.test(discAgent.text) &&
+  /code-locator ×2 \(~115,000\)/.test(discAgent.text) &&                          // EXACT cost joined from the completion notifications (60k+55k)
+  /Explore ×1 \(~5,000\)/.test(discAgent.text) &&                                 // inline-totalTokens fallback path
+  /fleets: 1/.test(discAgent.text) && /heavy: 2 single/.test(discAgent.text) &&   // both code-locators > 50k threshold
+  /advisory: 1/.test(discAgent2.text) &&                                          // "where is Foo defined" reads like a lookup (summary-approx tier)
+  !/agent spawns:/.test(discAgentOff.text);                                       // VTS_DISCOVER_AGENTS=0 hides the block
+try { fs.rmSync(aProj, { recursive: true, force: true }); } catch { /* ignore */ }
+
 // 54) edit-steer HOOK (L1 warn + L2 escalation): a whole-decl REPLACE/INSERT Edit gets a model-visible
 // nudge with a ready symbol-edit call; a sub-decl tweak / non-code file / VTS_EDIT_WARN=0 stays silent. L2:
 // once the adoption ledger's ignore-streak hits VTS_EDIT_BLOCK_AFTER, a SAFE insert is BLOCKED (a replace
@@ -1921,7 +1961,7 @@ const scopeOk = scResolveOk && scInOk && scEmptyAllOk && scPruneOk && scStatsOk 
 // 80) unified tool-routing policy — vts COMPLEMENTS Claude Code's native tools. shouldSuppressSteer stays
 // silent on generated/build-output paths (CC-native is fine there); routingDigest is the single
 // when-to-use-what decision tree + live adoption posture re-injected at SessionStart.
-const { shouldSuppressSteer, routingDigest, suppressOn, readSteerDecision } = await import("../server/policy.js");
+const { shouldSuppressSteer, routingDigest, suppressOn, readSteerDecision, topLevelDeclNames } = await import("../server/policy.js");
 const supGen = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === true;   // build output → suppress
 const supDotGen = shouldSuppressSteer("/p/Source/Foo.generated.h") === true;        // generated header → suppress
 const supNodeMod = shouldSuppressSteer("/p/node_modules/x/y.js") === true;          // vendored dep → suppress
@@ -1939,7 +1979,16 @@ const digRecentOk = /adoption 20% \(2\/10\), recent 80%/.test(dig2);
 // READ-SIDE steer (H1): a LARGE code-file whole-read nudges toward read_symbol / symbol-edit; tight-gated so it
 // never nags a small file, a non-code file, a generated path, or an already-sliced (offset/limit) read.
 const rsBig = readSteerDecision("/p/Source/Big.cpp", 20000);                        // large code file → steer
-const rsReadOk = !!rsBig && /read_symbol/.test(rsBig) &&
+// B (concrete nudge): with `symbols` the nudge names real decls (ready read_symbol calls); without, the `<name>`
+// placeholder stands. And topLevelDeclNames (PURE) extracts column-0 decls per language from passed-in text.
+const rsConcrete = readSteerDecision("/p/Source/Big.cpp", 20000, { symbols: ["ParseManifest", "ManifestCache"] });
+const declNamesCpp = topLevelDeclNames("class WidgetFactory {\n  void hidden();\n};\nint WidgetFactory::BuildWidget(int n){ return n; }\n", "Big.cpp");
+const declNamesTs = topLevelDeclNames("export function alphaFn(){}\nexport class BetaClass {}\n  const indentedSkip = 1\n", "x.ts");
+const rsReadOk = !!rsBig && /read_symbol symbol="<name>"/.test(rsBig) &&            // no symbols → placeholder
+  /read_symbol symbol="ParseManifest"/.test(rsConcrete) && /read_symbol symbol="ManifestCache"/.test(rsConcrete) && // concrete calls rendered
+  declNamesCpp.includes("WidgetFactory") && declNamesCpp.includes("BuildWidget") && // C++ class + Class::Method (col-0), indented member skipped
+  declNamesTs.includes("alphaFn") && declNamesTs.includes("BetaClass") && !declNamesTs.includes("indentedSkip") &&
+  topLevelDeclNames("x", "/p/README.md").length === 0 &&                            // non-code ext → no extraction
   readSteerDecision("/p/Source/Small.cpp", 1000) === null &&                        // small → null
   readSteerDecision("/p/README.md", 20000) === null &&                              // non-code → null
   readSteerDecision("/p/Source/Foo.generated.h", 20000) === null &&                 // generated → null
@@ -2437,6 +2486,7 @@ const rows = [
   ["v2.2: find <dir> honored in rewrite + concrete-code Glob blocks → find_files", v22Ok, "true", v22Ok],
   ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
+  ["discover: agent-spawn accounting (exact totalTokens + fleet/heavy/advisory, toggle)", agentDiscOk, "true", agentDiscOk],
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["census fallback: path-less search_symbol retries OTHER backends present in the mixed repo (census-desc, gated)", censusFallbackOk, "true", censusFallbackOk],
