@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -655,7 +655,16 @@ process.stdin.on("end", () => {
     if (fp) {
       let sz = 0; try { sz = fs.statSync(fp).size; } catch { /* unreadable → leave 0 (no steer) */ }
       const minB = Number(process.env.VTS_READ_STEER_MIN ?? 6000);
-      const s = sz ? readSteerDecision(fp, sz, { sliced: !!(ti.offset || ti.limit), minBytes: minB, ko: KO }) : null;
+      const sliced = !!(ti.offset || ti.limit);
+      let s = sz ? readSteerDecision(fp, sz, { sliced, minBytes: minB, ko: KO }) : null;
+      // B: when the steer fires, upgrade the `<name>` placeholder to concrete read_symbol calls naming the
+      // file's real top-level decls — a ready call converts better. Best-effort, bounded, never throws into
+      // the hook; on any failure the placeholder nudge above stands.
+      if (s) {
+        let names = [];
+        try { names = topLevelDeclNames(fs.readFileSync(fp, "utf8"), fp); } catch { /* keep the placeholder */ }
+        if (names.length) s = readSteerDecision(fp, sz, { sliced, minBytes: minB, ko: KO, symbols: names });
+      }
       if (s) emitWarn(s + setup);
     }
     process.exit(0);
