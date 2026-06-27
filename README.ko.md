@@ -211,6 +211,21 @@ grep이나 원시 로그 덤프 없이 코드를 엽니다. 반대 방향도 됩
 | 원시 인덱스 응답 → 캡 목록 (eval, 심볼 1,000개) | ~57,308 토큰 | ~1,549 토큰 | **~97.3%** |
 | ~1 MB 에디터 로그 읽기 (`summary`) | ~267,000 토큰 | ~130 토큰 | **~99.95%** |
 
+## 컴패니언: 로컬 모델로 vs-search 구동
+
+**[qwen-vts-orchestrator](https://github.com/JSungMin/qwen-vts-orchestrator)** — **로컬 Qwen2.5-Coder**
+(Ollama, 풀-GPU)가 바로 이 `vs-search` 도구들을 구동하게 해주는 별도(선택) 컴패니언. Claude는 싸고 양 많은
+**코드 위치찾기**를 무료 로컬 모델에 위임하고 압축된 `file:line` 답만 받으므로, 검색 원시 출력이 Claude
+컨텍스트에 들어가지 않습니다.
+
+- **CLI** + **라이브 웹 대시보드**(이 방식 vs CC가 vs-search 직접 vs CC가 grep, 3-way 토큰 절약 패널) +
+  Claude Code용 위임 라우팅 스킬.
+- **무설정 셋업**: GPU 감지 → 모델 티어 선택 → Ollama·모델 설치 → vs-token-safer(이 플러그인)·clangd 자동 탐지.
+- 완전 로컬 — 이 플러그인 헌장과 동일하게 외부 전송 없음.
+
+설치: `/plugin marketplace add JSungMin/qwen-vts-orchestrator` 후 해당 레포의 `setup.ps1` 실행. 파이프라인·
+VRAM 티어·절약 모델은 그 레포 README 참고.
+
 ## 성능
 
 대형 Unreal Engine 5 프로젝트에서의 실제 A/B: 공개 엔진 심볼 하나(`FGameplayTag`)를 Bash grep-and-paste로
