@@ -217,19 +217,20 @@ aimed at a log (`Logs/`, `.log`/`.jsonl`) points you back at gamedev-log instead
 
 ## Companion: drive vs-search with a local model
 
-**[qwen-vts-orchestrator](https://github.com/JSungMin/qwen-vts-orchestrator)** — a separate, optional
-companion that lets a **local Qwen2.5-Coder** (Ollama, full-GPU) drive these same `vs-search` tools. Claude
-delegates cheap, high-volume **code-location** to the free local model and receives only the compact
-`file:line` answer, so the raw search output never enters Claude's context.
+**[vts-local-orchestrator](https://github.com/JSungMin/vts-local-orchestrator)** — a separate, optional
+companion that lets **any local LLM** (Ollama, full-GPU — model-agnostic, default **gemma4:e4b**, chosen by
+benchmark) drive these same `vs-search` tools. Claude delegates cheap, high-volume **code-location** to the
+free local model and receives only the compact `file:line` answer, so the raw search output never enters
+Claude's context.
 
-- **CLI** + a **live web dashboard** with a 3-way token-savings panel (this method vs CC-using-vs-search vs
-  CC-using-grep), plus a delegation-routing skill for Claude Code.
-- **Zero-config setup**: detects the GPU, picks a model tier, installs Ollama + the model, and
-  auto-resolves vs-token-safer (this plugin) and clangd.
+- **CLI** (`qvts`) + a **live web dashboard** with a 3-way token-savings panel (this method vs
+  CC-using-vs-search vs CC-using-grep), plus a delegation-routing skill for Claude Code.
+- **Token-savers**: a persistent savings ledger (`qvts --savings`), a locate cache (zero-cost repeats),
+  batch delegation (`--batch`), and terse repo-relative `file:line` output.
 - Fully local — nothing transmitted off-machine, same as this plugin's charter.
 
-Install: `/plugin marketplace add JSungMin/qwen-vts-orchestrator` then run its `setup.ps1`. See that repo's
-README for the pipeline, VRAM tiers, and the savings model.
+Install: clone it next to this repo, `npm install`, then `bash setup-macos.sh` (Windows: `setup.ps1`). See
+that repo's README for the pipeline, the model benchmark, and the savings model.
 
 ## Performance
 
