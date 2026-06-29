@@ -12,6 +12,32 @@
 //      instead of N scattered reflexive nudges. This is the "integrative" half — vts and CC-native each named
 //      for what they're best at.
 import { readEditLedger, adoptionPct, adoptionPctRecent, controllerReport } from "./edit-ledger.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// Detect a local-LLM orchestrator (the vts-local-orchestrator `qvts` CLI) so vts can DEFER high-volume
+// locate/read to it WHEN PRESENT — without changing guidance for standalone vts users. Opt out with
+// VTS_ORCHESTRATOR_AWARE=0; force on with VTS_ORCHESTRATOR=1. Detection: qvts on PATH, or the orchestrator's
+// global config (~/.vts-local/config.json). Cached for the process.
+let _orchCache;
+function orchestratorPresent() {
+  if (_orchCache !== undefined) return _orchCache;
+  _orchCache = (() => {
+    if (/^(0|false|off|no)$/i.test(process.env.VTS_ORCHESTRATOR_AWARE || "")) return false;
+    if (/^(1|true|on|yes)$/i.test(process.env.VTS_ORCHESTRATOR || "")) return true;
+    const exts = process.platform === "win32" ? ["", ".cmd", ".exe", ".ps1"] : [""];
+    for (const d of (process.env.PATH || "").split(path.delimiter)) {
+      if (!d) continue;
+      for (const e of exts) {
+        try { if (fs.existsSync(path.join(d, "qvts" + e))) return true; } catch { /* ignore */ }
+      }
+    }
+    try { if (fs.existsSync(path.join(os.homedir(), ".vts-local", "config.json"))) return true; } catch { /* ignore */ }
+    return false;
+  })();
+  return _orchCache;
+}
 
 // Generated code / build output / vendored deps — a semantic index adds nothing here; CC-native is fine.
 const SUPPRESS_DIR = /(^|[/\\])(Intermediate|Binaries|Saved|DerivedDataCache|node_modules|build|dist|out|obj|\.git)([/\\]|$)/i;
@@ -110,6 +136,13 @@ export function routingDigest(o = readEditLedger()) {
     "  • big tree, slow first query → vts setup --scope <module>; vts preindex",
     "  • SINGLE lookup → call vts tools DIRECTLY (no agent). code-locator only for a genuine multi-FILE locate; never for an AUDIT/REVIEW/전수조사 and never a FLEET of them — document_symbols + a few search_symbol map a whole file far cheaper than N body-reading agents",
   ];
+  // When a local-LLM orchestrator (qvts) is installed, prefer DELEGATING the high-volume / high-output work to
+  // it (the raw output stays in the free local model; Claude gets only a compact answer). The vts tools above
+  // remain the right choice for a single/quick lookup, an unindexed or just-edited file, and ALL edits.
+  if (orchestratorPresent()) {
+    lines.splice(1, 0,
+      "  • LOCAL ORCHESTRATOR (qvts) DETECTED → DELEGATE high-volume locate (`qvts def_search` / `qvts \"<task>\"`) and big-file READS/surveys (`qvts digest <file>`) to it — it returns only a compact answer, saving Claude tokens. Call the vts tools below DIRECTLY only for a single/quick lookup, an unindexed/just-edited file, and ALL edits.");
+  }
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
     // Lead with the ROLLING rate (current behavior) and keep the all-time ratio as context — the recent
