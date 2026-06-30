@@ -21,7 +21,7 @@ import path from "node:path";
 // VTS_ORCHESTRATOR_AWARE=0; force on with VTS_ORCHESTRATOR=1. Detection: qvts on PATH, or the orchestrator's
 // global config (~/.vts-local/config.json). Cached for the process.
 let _orchCache;
-function orchestratorPresent() {
+export function orchestratorPresent() {
   if (_orchCache !== undefined) return _orchCache;
   _orchCache = (() => {
     if (/^(0|false|off|no)$/i.test(process.env.VTS_ORCHESTRATOR_AWARE || "")) return false;
