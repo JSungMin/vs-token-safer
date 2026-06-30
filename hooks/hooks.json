@@ -27,6 +27,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/block-code-grep.js\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*vs-search__(search_text|search_symbol|find_files|find_references|goto_definition|concept_search|def_search|document_symbols)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/orchestrator-redirect.js\""
+          }
+        ]
       }
     ]
   }
