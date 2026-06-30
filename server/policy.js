@@ -39,6 +39,62 @@ export function orchestratorPresent() {
   return _orchCache;
 }
 
+// Resolve the right SEARCH ROOT for a target the search names, generally — not just the configured project.
+// Many repos split a parent root into sub-trees: Unreal (parent/{Engine, MyGame}), monorepos (repo/{packages/*}),
+// web/python workspaces, etc. If the configured projectPath is one sub-tree (e.g. .../MyGame) but the search
+// targets a file in a SIBLING tree (e.g. .../Engine/...), scoping qvts to the configured root would miss it.
+// So when the search has an explicit file/dir target, walk UP to the enclosing repo root and scope there:
+//   1) the nearest ancestor containing `.git` (the most general monorepo/parent-root marker), else
+//   2) the nearest ancestor with a project marker (*.uproject / *.sln / package.json / pyproject.toml /
+//      setup.py / go.mod / Cargo.toml), else
+//   3) the target's own directory.
+// With no target, fall back to the configured root. Best-effort; never throws.
+const ROOT_MARKER_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "go.mod", "Cargo.toml", "CMakeLists.txt"]);
+const isWithin = (child, parent) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
+// Nearest common ancestor directory of two absolute paths, or null if they share no prefix (e.g. diff drives).
+function commonAncestor(a, b) {
+  const sa = a.split(/[\\/]/), sb = b.split(/[\\/]/);
+  const out = [];
+  for (let i = 0; i < Math.min(sa.length, sb.length); i++) {
+    if (sa[i].toLowerCase() !== sb[i].toLowerCase()) break;
+    out.push(sa[i]);
+  }
+  if (out.length === 0 || (out.length === 1 && out[0] === "")) return null;
+  return out.join(path.sep);
+}
+// Walk up from a path to the nearest PROJECT marker (preferred), else a .git — used only when there's no
+// configured root to anchor on. Project markers are preferred over .git so an UMBRELLA repo (a whole workspace
+// /vault that happens to be one git repo) doesn't over-broaden the scope.
+function markerWalk(start) {
+  let cur = start, gitRoot = null;
+  for (let i = 0; i < 40 && cur; i++) {
+    let ents = [];
+    try { ents = fs.readdirSync(cur); } catch { /* keep climbing */ }
+    if (ents.some((e) => /\.(uproject|sln)$/i.test(e) || ROOT_MARKER_FILES.has(e))) return cur; // closest project marker wins
+    if (!gitRoot && ents.includes(".git")) gitRoot = cur;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return gitRoot || start;
+}
+export function resolveSearchRoot(target, configured) {
+  try {
+    if (!target) return configured || null;
+    let t = path.resolve(String(target));
+    try { if (fs.statSync(t).isFile()) t = path.dirname(t); } catch { t = path.dirname(t); }
+    if (!configured) return markerWalk(t);
+    const c = path.resolve(String(configured));
+    if (isWithin(t, c)) return c;          // target lives inside the configured project → keep it (narrow, correct)
+    // target is in a SIBLING sub-tree (Unreal Engine/ vs Game/, another monorepo package): scope to the nearest
+    // common ancestor so qvts covers BOTH the configured project and the target — that's the real parent root.
+    return commonAncestor(c, t) || c;
+  } catch { return configured || null; }
+}
+
 // Generated code / build output / vendored deps — a semantic index adds nothing here; CC-native is fine.
 const SUPPRESS_DIR = /(^|[/\\])(Intermediate|Binaries|Saved|DerivedDataCache|node_modules|build|dist|out|obj|\.git)([/\\]|$)/i;
 const GENERATED = /\.(generated\.[a-z0-9]+|g\.cs|designer\.cs|pb\.(go|cc|h)|min\.js)$/i;
