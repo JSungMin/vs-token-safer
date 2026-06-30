@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -48,6 +48,27 @@ function uiLang() {
   try { return /^ko/i.test(Intl.DateTimeFormat().resolvedOptions().locale) ? "ko" : "en"; } catch { return "en"; }
 }
 const KO = uiLang() === "ko";
+
+// ORCHESTRATOR REDIRECT (the gap that let code search bypass qvts). When a local orchestrator (qvts) is
+// present, a CODE SEARCH via Bash grep / the Grep tool / the Glob tool is the orchestrator's job — delegating
+// keeps the raw search output in the local model and returns only a compact answer. Without this, this hook
+// rerouted grep → the vts CLI (NOT qvts), so the Bash/Grep/Glob path never reached the orchestrator at all,
+// and the model, handed a "VTS_ENFORCE=0" escape, just bypassed and Read the file. So when qvts is present we
+// redirect these to a ready `qvts` command instead — and we do NOT advertise the VTS_ENFORCE=0 kill switch
+// here (that only taught the bypass). Opt out with VTS_ORCH_BLOCK=0 (then the normal vts steer/rewrite runs).
+const ORCH = orchestratorPresent() && !/^(0|false|off|no)$/i.test(process.env.VTS_ORCH_BLOCK ?? "1");
+const orchRoot = () => process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
+function qvtsCmd(task) {
+  const root = String(orchRoot()).replace(/"/g, "'");
+  const t = String(task || "").replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 200);
+  return `qvts -p "${root}" --json "${t}"`;
+}
+function orchMsg(task) {
+  const cmd = qvtsCmd(task);
+  return KO
+    ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 코드검색은 위임하세요 (직접 grep/Read 말고).\n→ ${cmd}\n   (로컬 모델이 검색하고 compact 답만 반환 — Claude 토큰 절약. 결과 file:line은 사실로 신뢰; 못 찾으면 같은 호출 다시 하면 직접검색 통과.)`
+    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this code search (don't grep/Read directly).\n→ ${cmd}\n   (the local model searches; only a compact answer returns — saves Claude tokens. Trust the file:line; if it finds nothing, re-issue and direct search passes.)`;
+}
 const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
 const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
 
@@ -619,6 +640,12 @@ process.stdin.on("end", () => {
   // Grep TOOL — enforcement v2 (A+): a clear SYMBOL HUNT is BLOCKED (semantic tool is strictly better);
   // everything else stays warn-only (Grep is the sanctioned fallback for freeform text / just-edited files).
   if (toolName === "Grep") {
+    // qvts present → a code/symbol Grep is the orchestrator's job: block and hand back the qvts command (a
+    // log/text-target Grep is left to the normal steer below).
+    if (ORCH && !isLogGrepTool(ti) && notTextLogTarget(ti) && (isCodeGrepTool(ti) || isSymbolHuntGrep(ti))) {
+      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code`) + "\n");
+      process.exit(2);
+    }
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
     // OUTLINE hunt (declaration-KEYWORD alternation, e.g. `^(function|const|export)`, `^(class|struct|enum)`)
     // → steer to document_symbols (warn-only; keyword alts are FP-prone so never blocked). Checked BEFORE the
@@ -639,6 +666,10 @@ process.stdin.on("end", () => {
   // (walk-bounded, won't time out on a giant tree); a bare `*` / code-dir glob stays a warn. The warn alone was
   // ignored — the model kept Glob-ing a huge UE tree instead of switching. VTS_GREP_BLOCK=0 reverts to warn-only.
   if (toolName === "Glob") {
+    if (ORCH && isCodeGlobTool(ti)) {
+      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`) + "\n");
+      process.exit(2);
+    }
     if (grepBlockOn() && isBlockableGlob(ti)) {
       process.stderr.write(globBlockMsg(ti) + setup + "\n");
       process.exit(2); // block — route the concrete code-file glob to find_files
@@ -707,6 +738,29 @@ process.stdin.on("end", () => {
   );
 
   if (codeSegs.length) {
+    // qvts present → delegate the code search to the orchestrator, NOT the vts CLI (the bug this fixes: the
+    // Bash path used to reroute to vts, so it never reached qvts, and the model bypassed via VTS_ENFORCE=0).
+    // A single segment is transparently REWRITTEN to a `qvts` call (runs as qvts, nothing to bypass); a
+    // pipeline blocks with the ready qvts command. No VTS_ENFORCE=0 advertised here.
+    if (ORCH) {
+      const seg = codeSegs[0];
+      const pat = extractGrepPattern(seg, execOf(seg) === "git") || extractFindName(seg) || "";
+      const task = pat ? `find ${pat} in code` : "locate the searched symbol/string in code";
+      if (segments.length === 1) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: "Rerouted code search → local orchestrator (qvts): the raw search stays in the local model, only a compact answer returns to Claude.",
+            updatedInput: { ...ti, command: qvtsCmd(task) },
+            additionalContext: orchMsg(task),
+          },
+        }) + "\n");
+        process.exit(0);
+      }
+      process.stderr.write(orchMsg(task) + "\n");
+      process.exit(2);
+    }
     // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build
     // a safe vts equivalent, is rerouted via updatedInput — the model's flow is unbroken AND the output is
     // guaranteed token-capped. Anything ambiguous (pipelines, complex patterns) falls back to the block.
