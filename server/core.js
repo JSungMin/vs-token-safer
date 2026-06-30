@@ -1241,7 +1241,7 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
   // index fixes, so the advisory is actionable (the concrete `vts setup --scope` + `vts preindex` commands).
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
-    return `\n[completeness: INCONCLUSIVE — bounded ${how} walk didn't cover the tree (a 0 may be incomplete); scope it (vts setup --scope <module>; vts preindex) or certify with search_symbol/find_references.]`;
+    return `\n[completeness: INCONCLUSIVE — bounded ${how} walk didn't cover the tree (a 0 may be incomplete${truncated === "time" ? `; raise VTS_TEXT_TIMEBOX_MS (now ${textTimeboxMs()}ms)` : ""}); scope it (vts setup --scope <module>; vts preindex) or certify with search_symbol/find_references.]`;
   }
   if (truncated === "index") {
     return `\n[completeness: INCONCLUSIVE — indexed/open files only, so a not-yet-indexed file can be missed (not an authoritative 0); scope a big tree (vts setup --scope <module>; vts preindex).]`;
@@ -1547,6 +1547,13 @@ const SKIP_DIRS = new Set([
   "__pycache__", ".venv", "venv", "target",
 ]);
 const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
+// Wall-clock budget for the lexical tree walks (search_text / find_files / concept pool). 4s is fine for a
+// normal repo, but a GIANT unindexed tree (e.g. an Unreal source tree with no clangd index, where the LSP
+// tools all time out and text scan is the only tier left) can legitimately need longer — at 4s the walk
+// aborts mid-tree and a real match reads as a FALSE "no match". Env-tunable so the orchestrator can raise it
+// for big trees (it injects a higher value on an unindexed C/C++ root); the completeness cert still flags any
+// aborted walk as INCONCLUSIVE so a bounded 0 is never presented as authoritative absence.
+const textTimeboxMs = () => envInt("VTS_TEXT_TIMEBOX_MS", 4000);
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).
 function findFilesUnder(root, q, max) {
@@ -1558,7 +1565,7 @@ function findFilesUnder(root, q, max) {
   // Collect up to max+1 so "exactly max files exist" (a complete sweep) isn't misreported as truncated.
   // Time-boxed (4s) like scanTextUnder so a giant tree can never hang the tool — it returns what it found.
   while (stack.length && out.length <= max && scanned < 300000) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
@@ -1580,7 +1587,7 @@ const DIAG_CODE_RE = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|
 function codeFilesUnder(root, max) {
   const out = []; const stack = [root]; let scanned = 0; const t0 = Date.now(); let timedOut = false;
   while (stack.length && out.length < max && scanned < 300000) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
@@ -1641,14 +1648,14 @@ function scanTextUnder(root, q, max, accept) {
   // actually aborted work (checked per directory and per file — the costly steps).
   const out = []; const stack = [root]; const t0 = Date.now(); let timedOut = false;
   while (stack.length && out.length <= max) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
       if (!ok(e.name)) continue;
-      if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+      if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
@@ -2436,12 +2443,12 @@ export async function runTool(name, a = {}) {
         // 0 matches but the 4s walk TIMED OUT before finishing → not genuinely absent, just unreached (this
         // is exactly how a usage hunt on a giant tree returns an empty/partial slice). Say so, and steer a
         // symbol hunt to find_references (semantic, walks no tree, complete).
-        const toNote = hits.truncated === "time" ? " — but the 4s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here)" : "";
+        const toNote = hits.truncated === "time" ? ` — but the ${Math.round(textTimeboxMs() / 1000)}s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here). Narrow projectPath to the source root (e.g. .../Source) and retry — a scoped scan completes and is authoritative` : "";
         const emptySteer = (!docs && !a.path && hits.truncated) ? textSymbolSteer(a.q, true) : "";
         const emptyTextCert = completenessCert({ shown: 0, total: hits.truncated ? null : 0, truncated: hits.truncated || null, semantic: false });
         return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer + emptyTextCert);
       }
-      let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
+      let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — ${Math.round(textTimeboxMs() / 1000)}s time-box hit (narrow projectPath to the source root or refine q; more matches likely exist)` : "";
       if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
       // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
