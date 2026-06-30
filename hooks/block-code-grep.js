@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -58,13 +58,16 @@ const KO = uiLang() === "ko";
 // here (that only taught the bypass). Opt out with VTS_ORCH_BLOCK=0 (then the normal vts steer/rewrite runs).
 const ORCH = orchestratorPresent() && !/^(0|false|off|no)$/i.test(process.env.VTS_ORCH_BLOCK ?? "1");
 const orchRoot = () => process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
-function qvtsCmd(task) {
-  const root = String(orchRoot()).replace(/"/g, "'");
+// `target` (the file/dir the search names) generalizes the root: a file in a sibling sub-tree of the configured
+// project (Unreal Engine/ vs Game/, a monorepo package, a web/python workspace) resolves UP to ITS repo root
+// so qvts scopes where the file actually lives, not the unrelated configured root.
+function qvtsCmd(task, target) {
+  const root = String((target ? resolveSearchRoot(target, orchRoot()) : orchRoot()) || orchRoot()).replace(/"/g, "'");
   const t = String(task || "").replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 200);
   return `qvts -p "${root}" --json "${t}"`;
 }
-function orchMsg(task) {
-  const cmd = qvtsCmd(task);
+function orchMsg(task, target) {
+  const cmd = qvtsCmd(task, target);
   return KO
     ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 코드검색은 위임하세요 (직접 grep/Read 말고).\n→ ${cmd}\n   (로컬 모델이 검색하고 compact 답만 반환 — Claude 토큰 절약. 결과 file:line은 사실로 신뢰; 못 찾으면 같은 호출 다시 하면 직접검색 통과.)`
     : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this code search (don't grep/Read directly).\n→ ${cmd}\n   (the local model searches; only a compact answer returns — saves Claude tokens. Trust the file:line; if it finds nothing, re-issue and direct search passes.)`;
@@ -223,6 +226,18 @@ function extractGrepPattern(segment, isGit) {
 function extractFindName(segment) {
   const m = segment.match(/\s-i?name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
+}
+// The file/dir a grep names (`grep pat <file>`), so the orchestrator root can be generalized from it (a file in
+// a sibling sub-tree resolves to ITS repo root). The last bare token that looks like a path (has a separator or
+// a file extension) and isn't the pattern. Best-effort; null when the grep has no explicit path operand.
+function extractSearchFile(segment) {
+  const toks = segment.trim().split(/\s+/).slice(1); // drop the executable
+  for (let i = toks.length - 1; i >= 0; i--) {
+    const t = stripQuotes(toks[i]);
+    if (!t || t.startsWith("-")) continue;
+    if (/[\\/]/.test(t) || /\.[A-Za-z0-9_]+$/.test(t)) return t;
+  }
+  return null;
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
 // the rewrite searches the tree the command names, not the configured root — dropping it made a
@@ -643,7 +658,7 @@ process.stdin.on("end", () => {
     // qvts present → a code/symbol Grep is the orchestrator's job: block and hand back the qvts command (a
     // log/text-target Grep is left to the normal steer below).
     if (ORCH && !isLogGrepTool(ti) && notTextLogTarget(ti) && (isCodeGrepTool(ti) || isSymbolHuntGrep(ti))) {
-      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code`) + "\n");
+      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code`, ti.path) + "\n");
       process.exit(2);
     }
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
@@ -667,7 +682,7 @@ process.stdin.on("end", () => {
   // ignored — the model kept Glob-ing a huge UE tree instead of switching. VTS_GREP_BLOCK=0 reverts to warn-only.
   if (toolName === "Glob") {
     if (ORCH && isCodeGlobTool(ti)) {
-      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`) + "\n");
+      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`, ti.path || globRootHint(ti)) + "\n");
       process.exit(2);
     }
     if (grepBlockOn() && isBlockableGlob(ti)) {
@@ -746,19 +761,20 @@ process.stdin.on("end", () => {
       const seg = codeSegs[0];
       const pat = extractGrepPattern(seg, execOf(seg) === "git") || extractFindName(seg) || "";
       const task = pat ? `find ${pat} in code` : "locate the searched symbol/string in code";
+      const target = extractSearchFile(seg) || extractFindDir(seg); // a file/dir the command names → generalize the root
       if (segments.length === 1) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "allow",
             permissionDecisionReason: "Rerouted code search → local orchestrator (qvts): the raw search stays in the local model, only a compact answer returns to Claude.",
-            updatedInput: { ...ti, command: qvtsCmd(task) },
-            additionalContext: orchMsg(task),
+            updatedInput: { ...ti, command: qvtsCmd(task, target) },
+            additionalContext: orchMsg(task, target),
           },
         }) + "\n");
         process.exit(0);
       }
-      process.stderr.write(orchMsg(task) + "\n");
+      process.stderr.write(orchMsg(task, target) + "\n");
       process.exit(2);
     }
     // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build

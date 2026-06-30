@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { orchestratorPresent } from "../server/policy.js";
+import { orchestratorPresent, resolveSearchRoot } from "../server/policy.js";
 
 const off = (v) => /^(0|false|off|no)$/i.test(String(v ?? ""));
 
@@ -53,8 +53,14 @@ const LOCATE_TOOLS = new Set([
 ]);
 const toolSuffix = (name) => String(name || "").replace(/^.*__/, ""); // mcp__plugin_vs-token-safer_vs-search__search_text → search_text
 
-const rootFor = (ti) =>
-  ti.projectPath || ti.project_path || process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
+// The configured/explicit root, then GENERALIZED: if the call names a file/dir target (search_text path,
+// document_symbols path) that lives in a sibling sub-tree of the configured root (Unreal Engine/ vs Game/,
+// a monorepo package, …), resolve UP to that target's real repo root so qvts scopes where the file actually is.
+const rootFor = (ti) => {
+  const configured = ti.projectPath || ti.project_path || process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
+  const target = ti.path || ti.file || "";
+  return target ? (resolveSearchRoot(target, configured) || configured) : configured;
+};
 
 // Build a natural-language locate task from the MCP tool args, so the handed-back qvts command is ready to run.
 function taskFor(suffix, ti) {
