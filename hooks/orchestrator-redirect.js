@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { orchestratorPresent, resolveSearchRoot } from "../server/policy.js";
+import { orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
 
 const off = (v) => /^(0|false|off|no)$/i.test(String(v ?? ""));
 
@@ -59,7 +59,8 @@ const toolSuffix = (name) => String(name || "").replace(/^.*__/, ""); // mcp__pl
 const rootFor = (ti) => {
   const configured = ti.projectPath || ti.project_path || process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
   const target = ti.path || ti.file || "";
-  return target ? (resolveSearchRoot(target, configured) || configured) : configured;
+  if (target) { const r = resolveSearchRoot(target, configured) || configured; recordActiveProject(r); return r; } // (A) remember
+  return readActiveProject() || configured; // (A) target-less search inherits the last active project, not the broad parent
 };
 
 // Build a natural-language locate task from the MCP tool args, so the handed-back qvts command is ready to run.
@@ -114,10 +115,20 @@ function fallbackWindowOpen() {
   } catch { return false; }
 }
 
-function msg(qvtsCmd) {
+// (B) when the chosen root is a broad PARENT holding multiple sub-projects, nudge the caller to scope -p.
+function subprojectHint(root) {
+  const subs = subprojectsUnder(root);
+  if (subs.length < 2) return "";
+  const list = subs.slice(0, 5).join(", ");
   return KO
+    ? `\n참고: "${root}"는 여러 프로젝트를 포함한 상위 폴더예요. 정확/빠른 결과를 위해 작업 중인 구체 프로젝트를 -p로 지정하세요 (후보: ${list}).`
+    : `\nNote: "${root}" is a parent holding multiple projects. For accurate/fast results pass -p the specific one you're working on (candidates: ${list}).`;
+}
+function msg(qvtsCmd, root) {
+  const hint = root ? subprojectHint(root) : "";
+  return (KO
     ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 locate는 위임하세요.\n→ ${qvtsCmd}\n   (로컬 모델이 vs-search를 돌리고 compact 답만 반환 — Claude 토큰 절약. answer의 file:line은 사실로 신뢰; 바디는 read_symbol로 직접 읽기.)\n이미 위임했는데 no-match/에러였으면 같은 호출 다시 하면 통과됩니다. warn전환: VTS_ORCH_BLOCK=0`
-    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this locate.\n→ ${qvtsCmd}\n   (the local model runs vs-search and returns only a compact answer — saves Claude tokens. Trust the answer's file:line; read bodies yourself with read_symbol.)\nAlready delegated and got no-match/error? Re-issue the same call and it passes. Warn-only: VTS_ORCH_BLOCK=0`;
+    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this locate.\n→ ${qvtsCmd}\n   (the local model runs vs-search and returns only a compact answer — saves Claude tokens. Trust the answer's file:line; read bodies yourself with read_symbol.)\nAlready delegated and got no-match/error? Re-issue the same call and it passes. Warn-only: VTS_ORCH_BLOCK=0`) + hint;
 }
 
 let input = "";
@@ -141,12 +152,12 @@ process.stdin.on("end", () => {
   const fallbackWindow = fallbackWindowOpen(); // qvts recently came up dry → any direct search is the fallback
 
   if (blockOn() && !fallbackRetry && !fallbackWindow) {
-    process.stderr.write(msg(qvtsCmd) + "\n");
+    process.stderr.write(msg(qvtsCmd, root) + "\n");
     process.exit(2); // block — route this locate to the local orchestrator
   }
   // warn-only mode, OR a post-delegation fallback retry → allow, but surface the nudge.
   process.stdout.write(JSON.stringify({
-    hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: msg(qvtsCmd) },
+    hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: msg(qvtsCmd, root) },
   }) + "\n");
   process.exit(0);
 });
