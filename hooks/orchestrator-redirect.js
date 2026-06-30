@@ -94,6 +94,20 @@ function seenRecently(key) {
   return recent;
 }
 
+// FALLBACK WINDOW — the orchestrator (qvts) drops ~/.vts-local/orch-fallback.json when a delegated locate came
+// up dry (empty / no-match / error). That is the real "the local model already tried and couldn't" signal, so
+// for a short window Claude must be free to search DIRECTLY (the delegation protocol's fallback step) — not just
+// re-issue the IDENTICAL call (seenRecently), but ANY follow-up search (different query/tool). Without this the
+// gate re-blocks every fresh fallback search and Claude abandons search entirely (reads whole files instead).
+const FALLBACK_FILE = path.join(os.homedir(), ".vts-local", "orch-fallback.json");
+const FB_TTL_MS = (() => { const n = Number(process.env.VTS_ORCH_FALLBACK_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 120000; })();
+function fallbackWindowOpen() {
+  try {
+    const m = JSON.parse(fs.readFileSync(FALLBACK_FILE, "utf8"));
+    return m && typeof m.ts === "number" && Date.now() - m.ts <= FB_TTL_MS;
+  } catch { return false; }
+}
+
 function msg(qvtsCmd) {
   return KO
     ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 locate는 위임하세요.\n→ ${qvtsCmd}\n   (로컬 모델이 vs-search를 돌리고 compact 답만 반환 — Claude 토큰 절약. answer의 file:line은 사실로 신뢰; 바디는 read_symbol로 직접 읽기.)\n이미 위임했는데 no-match/에러였으면 같은 호출 다시 하면 통과됩니다. warn전환: VTS_ORCH_BLOCK=0`
@@ -117,9 +131,10 @@ process.stdin.on("end", () => {
   const qvtsCmd = `qvts -p "${safeRoot}" --json "${task}"`;
 
   const key = `${suffix}:${JSON.stringify(ti)}`;
-  const fallbackRetry = seenRecently(key);
+  const fallbackRetry = seenRecently(key);     // identical call re-issued → the post-delegation retry
+  const fallbackWindow = fallbackWindowOpen(); // qvts recently came up dry → any direct search is the fallback
 
-  if (blockOn() && !fallbackRetry) {
+  if (blockOn() && !fallbackRetry && !fallbackWindow) {
     process.stderr.write(msg(qvtsCmd) + "\n");
     process.exit(2); // block — route this locate to the local orchestrator
   }
