@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -59,18 +59,34 @@ const KO = uiLang() === "ko";
 const ORCH = orchestratorPresent() && !/^(0|false|off|no)$/i.test(process.env.VTS_ORCH_BLOCK ?? "1");
 const orchRoot = () => process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
 // `target` (the file/dir the search names) generalizes the root: a file in a sibling sub-tree of the configured
-// project (Unreal Engine/ vs Game/, a monorepo package, a web/python workspace) resolves UP to ITS repo root
-// so qvts scopes where the file actually lives, not the unrelated configured root.
+// project (Unreal Engine/ vs Game/, a monorepo package, a web/python workspace) resolves UP to ITS repo root.
+// (A) record the resolved project when there's a target; reuse the last active project when there isn't, so a
+// target-less code search scopes to where you've been working, not the broad vault/monorepo parent.
+function resolveRoot(target) {
+  const fb = orchRoot();
+  if (target) { const r = resolveSearchRoot(target, fb) || fb; recordActiveProject(r); return r; }
+  return readActiveProject() || fb;
+}
 function qvtsCmd(task, target) {
-  const root = String((target ? resolveSearchRoot(target, orchRoot()) : orchRoot()) || orchRoot()).replace(/"/g, "'");
+  const root = String(resolveRoot(target)).replace(/"/g, "'");
   const t = String(task || "").replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 200);
   return `qvts -p "${root}" --json "${t}"`;
 }
+// (B) when the chosen root is a broad PARENT holding ≥2 sub-projects, nudge to scope -p to the specific one.
+function subprojectHint(root) {
+  const subs = subprojectsUnder(root);
+  if (subs.length < 2) return "";
+  const list = subs.slice(0, 5).join(", ");
+  return KO
+    ? `\n참고: "${root}"는 여러 프로젝트 포함 상위 폴더 — 정확/빠른 결과 위해 -p로 구체 프로젝트 지정 (후보: ${list}).`
+    : `\nNote: "${root}" is a parent of multiple projects — pass -p the specific one for accurate/fast results (candidates: ${list}).`;
+}
 function orchMsg(task, target) {
   const cmd = qvtsCmd(task, target);
-  return KO
+  const hint = subprojectHint(resolveRoot(target));
+  return (KO
     ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 코드검색은 위임하세요 (직접 grep/Read 말고).\n→ ${cmd}\n   (로컬 모델이 검색하고 compact 답만 반환 — Claude 토큰 절약. 결과 file:line은 사실로 신뢰; 못 찾으면 같은 호출 다시 하면 직접검색 통과.)`
-    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this code search (don't grep/Read directly).\n→ ${cmd}\n   (the local model searches; only a compact answer returns — saves Claude tokens. Trust the file:line; if it finds nothing, re-issue and direct search passes.)`;
+    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this code search (don't grep/Read directly).\n→ ${cmd}\n   (the local model searches; only a compact answer returns — saves Claude tokens. Trust the file:line; if it finds nothing, re-issue and direct search passes.)`) + hint;
 }
 const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
 const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
@@ -698,6 +714,9 @@ process.stdin.on("end", () => {
   // (code ext, not generated, not an already-sliced read, size ≥ threshold). VTS_READ_STEER=0 / matcher-removal off.
   if (toolName === "Read") {
     const fp = ti && ti.file_path;
+    // (A) a Read tells us which project the agent is working in — record it so a later target-less qvts search
+    // scopes to THIS project, not the broad vault/monorepo parent. Best-effort; never blocks a Read.
+    if (ORCH && fp) { try { recordActiveProject(resolveSearchRoot(fp, orchRoot())); } catch { /* ignore */ } }
     if (fp) {
       let sz = 0; try { sz = fs.statSync(fp).size; } catch { /* unreadable → leave 0 (no steer) */ }
       const minB = Number(process.env.VTS_READ_STEER_MIN ?? 6000);

@@ -95,6 +95,58 @@ export function resolveSearchRoot(target, configured) {
   } catch { return configured || null; }
 }
 
+// ---- active-project tracking (A) + multi-project guidance (B) ---------------------------------------
+// When working IN a vault/monorepo parent, a search with NO file target falls back to the configured root,
+// which may be the broad parent (everything) rather than the specific project. (A) remembers the LAST root we
+// resolved from a real target/file, so a later target-less search inherits it — e.g. once you touch a file in
+// .../SGE/Game, symbol searches scope to .../SGE/Game until you move to another project (TTL-bounded). (B)
+// when a root is a broad PARENT (no project marker of its own but ≥2 marked sub-projects), we surface those so
+// the caller can pass `-p <the specific one>`.
+const ACTIVE_FILE = path.join(os.homedir(), ".vts-local", "active-project.json");
+const ACTIVE_TTL = (() => { const n = Number(process.env.VTS_ACTIVE_PROJECT_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 1800000; })(); // 30 min
+export function recordActiveProject(root) {
+  try {
+    if (!root) return;
+    const r = String(root);
+    if (!hasProjectMarker(r)) return; // only remember a REAL project root, never a bare parent/vault
+    fs.mkdirSync(path.dirname(ACTIVE_FILE), { recursive: true });
+    fs.writeFileSync(ACTIVE_FILE, JSON.stringify({ root: r, ts: Date.now() }));
+  } catch { /* best effort */ }
+}
+export function readActiveProject() {
+  try { const m = JSON.parse(fs.readFileSync(ACTIVE_FILE, "utf8")); if (m && m.root && Date.now() - m.ts <= ACTIVE_TTL) return m.root; } catch { /* none */ }
+  return null;
+}
+// Does `dir` itself look like a project root (a build/manifest marker directly inside it)?
+export function hasProjectMarker(dir) {
+  try { return fs.readdirSync(dir).some((e) => /\.(uproject|sln)$/i.test(e) || ROOT_MARKER_FILES.has(e) || e === "compile_commands.json"); }
+  catch { return false; }
+}
+// Sub-projects under a broad parent (dirs that ARE project roots, scanning up to 2 levels for UE-style nesting
+// where the marker sits a level below). Returns up to `max` relative paths; [] if `root` is itself a project.
+export function subprojectsUnder(root, max = 6) {
+  const out = [];
+  try {
+    if (hasProjectMarker(root)) return []; // root itself is a project → no need to disambiguate
+    const skip = /^(\.|node_modules$|Binaries$|Intermediate$|Saved$|build$|dist$|out$|obj$)/i;
+    const top = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !skip.test(e.name));
+    for (const e of top) {
+      const p1 = path.join(root, e.name);
+      if (hasProjectMarker(p1)) { out.push(e.name); }
+      else { // one level deeper (UE: parent/<X>/Game/*.uproject)
+        try {
+          for (const f of fs.readdirSync(p1, { withFileTypes: true })) {
+            if (f.isDirectory() && !skip.test(f.name) && hasProjectMarker(path.join(p1, f.name))) out.push(`${e.name}/${f.name}`);
+            if (out.length >= max) break;
+          }
+        } catch { /* ignore */ }
+      }
+      if (out.length >= max) break;
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
 // Generated code / build output / vendored deps — a semantic index adds nothing here; CC-native is fine.
 const SUPPRESS_DIR = /(^|[/\\])(Intermediate|Binaries|Saved|DerivedDataCache|node_modules|build|dist|out|obj|\.git)([/\\]|$)/i;
 const GENERATED = /\.(generated\.[a-z0-9]+|g\.cs|designer\.cs|pb\.(go|cc|h)|min\.js)$/i;
