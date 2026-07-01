@@ -447,7 +447,7 @@ const _cacheOn = process.env.VTS_SYMINDEX_CACHE !== "0";
 // Load the index. Returns { meta, entries:[{f,n,k,l}] } or null if absent/unreadable.
 export function loadSymIndex(root) {
   const p = symIndexPath(root);
-  let st = null;
+  let st;
   try {
     st = fs.statSync(p);
   } catch {

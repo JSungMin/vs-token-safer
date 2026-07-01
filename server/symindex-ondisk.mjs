@@ -280,7 +280,14 @@ export function openReader(root) {
     readSymbol,
     tri: triD,
     close: () => {
-      try { fs.closeSync(posFd); fs.closeSync(jsonlFd); fs.closeSync(tokD.fd); fs.closeSync(triD.fd); } catch {}
+      try {
+        fs.closeSync(posFd);
+        fs.closeSync(jsonlFd);
+        fs.closeSync(tokD.fd);
+        fs.closeSync(triD.fd);
+      } catch {
+        /* already closed */
+      }
     },
   };
   _readerCache.set(key, { mt: st.mtimeMs, reader });
