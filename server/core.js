@@ -2104,7 +2104,7 @@ export async function runTool(name, a = {}) {
       const dirs = scopeDirsFor(root);
       const within = dirs.length ? (p) => inScope(p, dirs) : undefined;
       const t0 = Date.now();
-      const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now() });
+      const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now(), timeBudgetMs: envInt("VTS_INDEX_BUDGET_MS", 120000) });
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
       // Incremental note: how many files were reused (no re-parse) vs re-parsed this run — the cold→warm win.
       const incrNote = r.reparsed != null && (r.reused || r.reparsed) ? ` [incremental: re-parsed ${r.reparsed}, reused ${r.reused} unchanged]` : "";
