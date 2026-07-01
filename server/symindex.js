@@ -45,6 +45,15 @@ export const SKIP_DIRS = new Set(
 );
 export const defaultSkipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
 
+// Generated code (UE reflection: Foo.gen.cpp / Foo.generated.h, and similar) is machine-written boilerplate:
+// low search value (the real declaration is the hand-written .h/.cpp) AND a build hazard — a plugin like
+// Marketplace ships thousands of ~1MB .gen.cpp files whose tree-sitter parse trees exhaust memory and OOM the
+// chunk worker. Skip them from indexing. Override with VTS_INDEX_KEEP_GENERATED=1.
+const GENERATED_RE = /\.(gen|generated)\.(c|cc|cpp|cxx|h|hpp|inl)$/i;
+export function isIndexable(name) {
+  return tsSupports(name) && (process.env.VTS_INDEX_KEEP_GENERATED === "1" || !GENERATED_RE.test(name));
+}
+
 export function symIndexDir(root) {
   return path.join(root, DIR);
 }
@@ -224,7 +233,7 @@ function countSupported(dir, max = Infinity) {
     for (const e of es) {
       if (e.isDirectory()) {
         if (!defaultSkipDir(e.name) && e.name !== DIR) stack.push(path.join(d, e.name));
-      } else if (tsSupports(e.name)) {
+      } else if (isIndexable(e.name)) {
         if (++n >= max) return n;
       }
     }
@@ -262,7 +271,7 @@ export function planChunks(root, { fileCap = 4000 } = {}) {
           ch.push(p);
           stack.push(p);
         }
-      } else if (tsSupports(e.name)) dc++;
+      } else if (isIndexable(e.name)) dc++;
     }
     direct.set(d, dc);
     kids.set(d, ch);
@@ -325,10 +334,26 @@ export async function buildSymIndexChunked(
       const args = [`--max-old-space-size=${heapMb}`, WORKER_PATH, root, c.dir, symsPath, c.shallow ? "1" : "0"];
       execFile(process.execPath, args, { maxBuffer: 512 * 1024 * 1024 }, (err, stdout) => {
         done++;
+        // A worker can finish ALL its parsing (valid JSON already flushed to stdout) and still exit non-zero —
+        // e.g. a libuv teardown assertion crash on process.exit() after tree-sitter WASM cleanup (observed on
+        // Windows). That crash is harmless: the work is done and the JSON is already written. So on a non-zero
+        // exit, still TRY to parse stdout before giving up — only treat it as a real chunk failure if stdout
+        // isn't valid (an actual crash mid-parse, before any output was written).
         if (err) {
-          failed++;
-          if (onProgress) onProgress({ done, total: chunks.length, failedDir: c.dir, err: String(err.message || err).split("\n")[0] });
-          return resolve();
+          try {
+            const r = JSON.parse(stdout);
+            totFiles += r.files;
+            totSymbols += r.symbols;
+            Object.assign(H, r.h);
+            if (fs.existsSync(symsPath) && fs.statSync(symsPath).size > 0) parts.push(symsPath);
+            if (r.remaining) chunks.push({ dir: "@" + r.remaining, shallow: false });
+            if (onProgress) onProgress({ done, total: chunks.length, symbols: totSymbols, recoveredExit: String(err.message || err).split("\n")[0] });
+            return resolve();
+          } catch {
+            failed++;
+            if (onProgress) onProgress({ done, total: chunks.length, failedDir: c.dir, err: String(err.message || err).split("\n")[0] });
+            return resolve();
+          }
         }
         try {
           const r = JSON.parse(stdout);
@@ -336,6 +361,9 @@ export async function buildSymIndexChunked(
           totSymbols += r.symbols;
           Object.assign(H, r.h);
           if (fs.existsSync(symsPath) && fs.statSync(symsPath).size > 0) parts.push(symsPath);
+          // Worker hit its RSS cap and handed back the unprocessed tail — re-dispatch it to a FRESH worker (a new
+          // process resets the grow-only WASM heap). Strictly shrinks each round, so this terminates.
+          if (r.remaining) chunks.push({ dir: "@" + r.remaining, shallow: false });
         } catch {
           failed++;
         }
@@ -343,12 +371,27 @@ export async function buildSymIndexChunked(
         resolve();
       });
     });
+  // Dynamic pool: runChunk may PUSH re-dispatched tail chunks mid-flight, so a runner that finds the queue empty
+  // must wait while others are still active (they might enqueue more) before exiting.
   let idx = 0;
+  let active = 0;
   await Promise.all(
     Array.from({ length: Math.min(concurrency, chunks.length) }, async () => {
-      while (idx < chunks.length) {
+      for (;;) {
+        if (idx >= chunks.length) {
+          if (active > 0) {
+            await new Promise((r) => setTimeout(r, 20));
+            continue;
+          }
+          break;
+        }
         const my = idx++;
-        await runChunk(chunks[my], my);
+        active++;
+        try {
+          await runChunk(chunks[my], my);
+        } finally {
+          active--;
+        }
       }
     }),
   );
