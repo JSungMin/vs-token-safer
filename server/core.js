@@ -938,6 +938,30 @@ function loadCdb(cdbDir) {
 function clangdShardCount(cdbDir) {
   try { let n = 0; for (const f of fs.readdirSync(path.join(cdbDir, ".cache", "clangd", "index"))) if (f.endsWith(".idx")) n++; return n; } catch { return 0; }
 }
+// Bounded big-tree probe for the search_symbol pre-empt: count C/C++ sources, EARLY-EXIT the moment the
+// threshold is crossed (a UE tree crosses it in milliseconds; a small project finishes the whole walk
+// under it just as fast). Cached per root for the process lifetime; 400ms hard budget so a pathological
+// filesystem can't stall a query — on budget exhaustion, decide from what was seen so far.
+const _bigTreeCache = new Map(); // root → boolean
+function bigTreeLikely(root) {
+  if (_bigTreeCache.has(root)) return _bigTreeCache.get(root);
+  const cap = envInt("VTS_SYMBOL_PREEMPT_FILES", 3000);
+  const t0 = Date.now();
+  let n = 0, big = false;
+  const stack = [root];
+  const skip = (name) => name.startsWith(".") || /^(node_modules|intermediate|binaries|saved|deriveddatacache|build|dist|out|obj)$/i.test(name);
+  while (stack.length && !big) {
+    if (Date.now() - t0 > 400) { big = n > cap / 4; break; }
+    const d = stack.pop();
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!skip(e.name)) stack.push(path.join(d, e.name)); }
+      else if (/\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i.test(e.name) && ++n >= cap) { big = true; break; }
+    }
+  }
+  _bigTreeCache.set(root, big);
+  return big;
+}
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_INDEX_ADVISORY ?? "1"))) return "";
@@ -2571,7 +2595,12 @@ export async function runTool(name, a = {}) {
         const shards = cdbDir ? clangdShardCount(cdbDir) : 0;
         const crawlLikely = !db || db.count === 0 ||
           (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000) && shards < Math.floor(db.count * 0.9));
-        if (crawlLikely) {
+        // The crawl-time hazard is a BIG-tree phenomenon: on a small no-DB project clangd answers (or
+        // empties) fast, and that LSP path must stay live (evals/mock clients + healthy small repos both
+        // sit there). So without a committed index, pre-empt only when a bounded probe says the tree is
+        // big; an existing .vts-index skips the probe — someone built it deliberately, serve it.
+        const preempt = crawlLikely && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
+        if (preempt) {
           const why = !db ? "no compile_commands.json" : `~${db.count.toLocaleString()} TUs, index incomplete`;
           const pmax = Number(a.maxResults) || MAX_RESULTS;
           // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
