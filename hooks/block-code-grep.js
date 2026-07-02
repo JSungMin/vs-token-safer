@@ -349,6 +349,31 @@ function isLogSearchSegment(segment) {
   return isSearchSegment(segment) && LOG_TARGET_RE.test(segment);
 }
 
+// Read-only Bash BODY DUMP of a code file: `sed -n 'X,Yp' Foo.cpp`, `cat Foo.h`, `head/tail -n`, a read-only
+// awk. The same token leak the Read-tool steer catches (raw bodies into context), through a side door no
+// search hook covers. Read-ONLY only: `-i`/inplace is the edit-steer's case, and any stdout redirect (`>`,
+// minus `2>` stderr) means the bytes go to a FILE, not into context — leave those alone.
+const readSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_READ_STEER ?? "1"));
+const BODY_READ_EXECS = new Set(["sed", "cat", "head", "tail", "awk"]);
+function isBashCodeBodyRead(seg) {
+  const exec = execOf(seg);
+  if (!BODY_READ_EXECS.has(exec)) return false;
+  if (!CODE_FILE_TOKEN.test(seg)) return false;
+  if (/\s-i\b/.test(seg) || /-i\s+inplace/.test(seg)) return false;          // in-place edit → edit steer
+  if (/>/.test(seg.replace(/\d>/g, ""))) return false;                       // writes to a file → not a dump
+  return true;
+}
+function bodyReadNudge(seg) {
+  const m = CODE_FILE_TOKEN.exec(seg);
+  const f = m ? m[0] : "<file>";
+  const digest = ORCH
+    ? (KO ? `; 요약/조사면 qvts digest "${f}" --focus "<질문>" (로컬 모델이 읽고 요약만 반환)` : `; for a survey use qvts digest "${f}" --focus "<question>" (the local model reads it, only a brief returns)`)
+    : "";
+  return KO
+    ? `[vs-token-safer] Bash(${execOf(seg)})로 코드 본문을 컨텍스트에 덤프 중이에요 (${f}). 선언 하나가 필요하면 read_symbol symbol=<이름> path="${f}" (그 선언만, 토큰캡)${digest}. 정확한 바이트가 필요한 편집 직전에만 직접 읽으세요. 끄기: VTS_READ_STEER=0.`
+    : `[vs-token-safer] Dumping a code-file body into context via Bash (${execOf(seg)} on ${f}). For one declaration use read_symbol symbol=<name> path="${f}" (that decl only, token-capped)${digest}. Read raw bytes only right before an EDIT. Disable: VTS_READ_STEER=0.`;
+}
+
 // Grep TOOL — nudge only on an EXPLICIT code signal (a code-ext glob, a code `type`, or a code path). A
 // bare Grep over the cwd (no path/glob/type) is NOT nudged: can't confirm it targets code, and silence
 // beats noise. An explicit non-code glob/path opts out.
@@ -848,6 +873,14 @@ process.stdin.on("end", () => {
   if (editWarnOn() && isBashCodeEdit(cmd)) {
     emitWarn(bashEditNudge() + setup);
     process.exit(0);
+  }
+  // Bash-based code BODY DUMP (read-only sed -n 'X,Yp' / cat / head / tail / awk over a code file) — the same
+  // context leak the Read-tool steer catches, through a side door none of the search hooks cover (live: a
+  // model ranged-read engine headers with `sed -n '170,260p'`, ~90 raw lines per call, right after a properly
+  // delegated locate). Warn-only, same VTS_READ_STEER switch as the Read-tool steer.
+  if (readSteerOn()) {
+    const br = segments.find(isBashCodeBodyRead);
+    if (br) emitWarn(bodyReadNudge(br) + setup);
   }
   process.exit(0);
 });
