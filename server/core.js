@@ -942,6 +942,23 @@ function clangdShardCount(cdbDir) {
 // threshold is crossed (a UE tree crosses it in milliseconds; a small project finishes the whole walk
 // under it just as fast). Cached per root for the process lifetime; 400ms hard budget so a pathological
 // filesystem can't stall a query — on budget exhaustion, decide from what was seen so far.
+// Shared verdict for the search_symbol / find_references pre-empts: would dispatching this query to clangd
+// likely blow past the MCP client timeout? True when: no compile DB at all; a huge DB whose background index
+// is far from complete (workspace/symbol crawls); or a huge DB with NO warm clangd client yet — a COLD spawn
+// must load tens of thousands of index shards inside this one request (live: 26k TUs with 28k shards — index
+// "complete" — still a 43s timeout from cold). A warm client on a complete index answers fast and keeps full
+// semantics, so it is never pre-empted.
+function clangdCrawlLikely(root) {
+  let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
+  const db = cdbDir ? loadCdb(cdbDir) : null;
+  if (!db || db.count === 0) return { crawl: true, why: "no compile_commands.json" };
+  if (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000)) {
+    const shards = clangdShardCount(cdbDir);
+    if (shards < Math.floor(db.count * 0.9)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, index incomplete` };
+    if (!clients.has(`clangd|${root}`)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, cold start (no warm clangd yet)` };
+  }
+  return { crawl: false, why: "" };
+}
 const _bigTreeCache = new Map(); // root → boolean
 function bigTreeLikely(root) {
   if (_bigTreeCache.has(root)) return _bigTreeCache.get(root);
@@ -2590,18 +2607,13 @@ export async function runTool(name, a = {}) {
       // "resolves" on a C++ tree, however useless its index is. A name lookup answered from the committed
       // index is the same decl-quality result, so serve it NOW. VTS_SYMBOL_PREEMPT=0 disables.
       if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
-        let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
-        const db = cdbDir ? loadCdb(cdbDir) : null;
-        const shards = cdbDir ? clangdShardCount(cdbDir) : 0;
-        const crawlLikely = !db || db.count === 0 ||
-          (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000) && shards < Math.floor(db.count * 0.9));
+        const { crawl: crawlLikely, why } = clangdCrawlLikely(root);
         // The crawl-time hazard is a BIG-tree phenomenon: on a small no-DB project clangd answers (or
         // empties) fast, and that LSP path must stay live (evals/mock clients + healthy small repos both
         // sit there). So without a committed index, pre-empt only when a bounded probe says the tree is
         // big; an existing .vts-index skips the probe — someone built it deliberately, serve it.
         const preempt = crawlLikely && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
         if (preempt) {
-          const why = !db ? "no compile_commands.json" : `~${db.count.toLocaleString()} TUs, index incomplete`;
           const pmax = Number(a.maxResults) || MAX_RESULTS;
           // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
           // beats dispatching to clangd here: on a tree in this state workspace/symbol crawls for tens of
@@ -2697,6 +2709,43 @@ export async function runTool(name, a = {}) {
       return renderFoundSymbols(syms, backendName, adv);
     }
     if (name === "find_references") {
+      // USAGE pre-empt — same hazard the search_symbol pre-empt fixes: on a clangd tree that provably can't
+      // answer fast (no/incomplete compile DB), a by-NAME references query spawns clangd and waits on a
+      // workspace/symbol crawl that times out at the MCP client before any fallback runs. Live consequence:
+      // the orchestrator dropped find_references entirely on such trees, so "who calls X" tasks dead-ended
+      // at the declaration. Serve time-boxed literal usage lines (labelled non-semantic) plus the
+      // committed-index declaration anchor instead. Same switch + gates as the symbol pre-empt.
+      if (backendName === "clangd" && a.symbol && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
+        const { crawl: rCrawl, why: rWhy } = clangdCrawlLikely(root);
+        if (rCrawl && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root))) {
+          const want = String(a.symbol);
+          const rMax = Number(a.maxResults) || MAX_RESULTS;
+          const syn = await syntacticSymbols(root, want, 3);
+          const declLine = syn && syn.lines.length ? `Declaration (committed index): ${syn.lines[0]}\n` : "";
+          // Scan the DECLARATION file(s) first: callers cluster near the declaration (and a `static`
+          // function's callers can ONLY be in its own .cpp), while the tree-wide time-boxed scan walks in
+          // directory order and routinely exhausts its budget before ever reaching the right module — a
+          // "no usage found" that was sitting one file away (live dogfood on a 92k-file cluster).
+          const declFiles = [...new Set((syn ? syn.lines : []).map((l) => l.split(/:\d+:/)[0]))].slice(0, 3);
+          const uses = [];
+          for (const df of declFiles) {
+            try {
+              fs.readFileSync(df, "utf8").split(/\r?\n/).forEach((ln, i) => {
+                if (ln.includes(want) && uses.length < rMax) uses.push(`${df.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(ln)}`);
+              });
+            } catch { /* unreadable decl file — tree scan below still runs */ }
+          }
+          let truncated = null;
+          if (uses.length < rMax) {
+            const more = scanTextUnder(root, want, rMax - uses.length);
+            truncated = more.truncated || null;
+            const seen = new Set(uses.map((u) => u.split(": ")[0]));
+            for (const m of more) if (!seen.has(m.split(": ")[0])) uses.push(m);
+          }
+          if (uses.length) return finishOut(uses, `clangd can't serve this tree fast (${rWhy}) — literal usage matches for "${want}" (file:line of the NAME, not semantic references; declaration-file hits listed first):\n` + declLine + uses.join("\n") + (truncated ? `\n[tree scan truncated: ${truncated} — decl-file hits above are complete; narrow projectPath for the full tree set]` : ""));
+          return finishOut([], `clangd can't serve this tree fast (${rWhy}) and no text usage found for "${want}" under ${root}.\n` + declLine + EMPTY_HINT);
+        }
+      }
       const c = await getClient(root, backendName);
       // The code-modification primitive: when modifying a symbol you need every call site, but you start
       // from a NAME, not a 0-based position. Accept `symbol` and resolve the declaration position via the
