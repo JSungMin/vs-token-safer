@@ -517,6 +517,80 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   return out;
 }
 
+// Resolve a symbol NAME to its FULL declaration span via tree-sitter — the read_symbol / edit twin of the
+// LSP documentSymbol range, but with zero backend. Needed because read_symbol previously went STRAIGHT to
+// clangd's documentSymbol: on a huge UE tree clangd can't serve fast, so the call timed out / returned an
+// empty outline and read_symbol dead-ended (live: 6 failures in a row → the model gave up and Read the
+// whole file). This mirrors the committed-index tier the search tools already fall back to.
+//   name match: exact (`Foo`) OR trailing-qualified (`UAssetManager::Foo` matches a query of `Foo`), so a
+//   bare method name resolves to its out-of-class definition. `line` (1-based, optional) disambiguates
+//   same-named decls by nearest start. Returns { startRow, endRow (0-based, inclusive), name, kind, matches }
+//   or null (deps absent / unsupported / too big / parse fail / no match).
+export async function tsReadSymbol(absPath, want, { line = null, maxBytes = 2_000_000 } = {}) {
+  const ext = extOf(absPath);
+  const entry = EXT_MAP[ext];
+  if (!entry || !want) return null;
+  const [wasmBase, cfgIn] = entry;
+  const cfg = cfgIn || GENERIC;
+  if (!cfg.decl) return null; // tags-query langs don't carry node ranges here — LSP/structure tier handles them
+  let src;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.size > maxBytes) return null;
+    src = fs.readFileSync(absPath, "utf8");
+  } catch {
+    return null;
+  }
+  const lang = await loadLanguage(wasmBase);
+  if (!lang) return null;
+  const TS = _TS;
+  let parser, tree;
+  try {
+    parser = new TS.Parser();
+    parser.setLanguage(lang);
+    tree = parser.parse(src);
+  } catch {
+    return null;
+  }
+  try {
+    const decl = cfg.decl, kindMap = cfg.kind || {};
+    const hits = [];
+    const stack = [tree.rootNode];
+    let guard = 0;
+    while (stack.length && guard++ < 200000) {
+      const node = stack.pop();
+      if (decl.has(node.type)) {
+        const nm = nameOf(node);
+        // exact, or the query is the trailing segment of a qualified name (Class::method, ns::fn)
+        if (nm && (nm === want || nm.endsWith("::" + want) || nm.split("::").pop() === want)) {
+          hits.push({ startRow: node.startPosition.row, endRow: node.endPosition.row, name: nm.slice(0, 120), kind: kindMap[node.type] || node.type });
+        }
+      }
+      for (let i = node.namedChildCount - 1; i >= 0; i--) stack.push(node.namedChild(i));
+    }
+    if (!hits.length) return null;
+    // Prefer a match whose name is EXACTLY the query (a bare-name decl over a coincidental qualified one),
+    // then — when a line hint is given — the nearest start; otherwise the LARGEST span (the definition with a
+    // body beats a one-line forward declaration).
+    hits.sort((a, b) => {
+      const ax = a.name === want ? 0 : 1, bx = b.name === want ? 0 : 1;
+      if (ax !== bx) return ax - bx;
+      if (line != null) return Math.abs(a.startRow - (line - 1)) - Math.abs(b.startRow - (line - 1));
+      return (b.endRow - b.startRow) - (a.endRow - a.startRow);
+    });
+    return { ...hits[0], matches: hits.length };
+  } catch {
+    return null;
+  } finally {
+    try {
+      tree.delete && tree.delete();
+      parser.delete && parser.delete();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // cAST-inspired structural chunking (migrated from "cAST: Structural Chunking via AST", arXiv:2506.15655):
 // when a declaration body exceeds a line budget, cut at a STRUCTURAL boundary (the end of a complete child
 // node — a member/statement) instead of mid-statement, so read_symbol returns syntactically whole output

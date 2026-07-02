@@ -19,7 +19,7 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
@@ -2913,9 +2913,31 @@ export async function runTool(name, a = {}) {
       // READ-side twin of replace_symbol_body: name a symbol → return ONLY that symbol's source (its outline
       // span), never the whole file. Kills the whole-file Read that precedes most edits (measured ~468k tok/30d
       // in the savings ledger). Reuses resolveSymbolForEdit verbatim; signatureOnly trims to the declaration head.
-      const c = await getClient(root, backendName);
-      const r = await resolveSymbolForEdit(c, root, backendName, a);
-      if (r.error) return err(r.error);
+      //
+      // SYNTACTIC FALLBACK: resolveSymbolForEdit calls clangd's documentSymbol, which on a crawl-risk tree
+      // times out or returns an empty/flat outline — so read_symbol dead-ended with no tree-sitter recourse
+      // (live: 6 consecutive failures → the model gave up and Read the whole 70-line span by hand). Tree-sitter
+      // reads ONE file with no backend and yields the full decl span, so try it FIRST when clangd can't serve
+      // fast, and as a fallback whenever the LSP path errors. Needs a file to parse: an explicit `path`, else
+      // the declaration file resolved from the committed index.
+      let synResolved = null;
+      const tryTsRead = async () => {
+        let f = a.path ? String(a.path) : null;
+        if (!f) { const syn = await syntacticSymbols(root, String(a.symbol || ""), 3); if (syn && syn.lines.length) f = syn.lines[0].split(/:\d+:/)[0]; }
+        if (!f || !a.symbol) return null;
+        const ts = await tsReadSymbol(f, String(a.symbol), { line: a.line != null ? Number(a.line) + 1 : null });
+        return ts ? { file: f, ds: { range: { start: { line: ts.startRow }, end: { line: ts.endRow } }, kind: 0 }, ambiguous: ts.matches, kindLabel: ts.kind, syntactic: true } : null;
+      };
+      const preferTs = backendName === "clangd" && clangdCrawlLikely(root).crawl &&
+        !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"));
+      let r;
+      if (preferTs) { synResolved = await tryTsRead(); }
+      if (!synResolved) {
+        const c = await getClient(root, backendName);
+        r = await resolveSymbolForEdit(c, root, backendName, a);
+        if (r.error) { synResolved = await tryTsRead(); if (!synResolved) return err(r.error); }
+      }
+      if (synResolved) r = synResolved;
       const sLine = r.ds.range.start.line, eLine = r.ds.range.end.line;
       const all = fs.readFileSync(r.file, "utf8").split(/\r?\n/);
       const sigOnly = a.signatureOnly === true || a.signatureOnly === "true";
@@ -2939,7 +2961,9 @@ export async function runTool(name, a = {}) {
       // #4 read-avoidance framing (Semble's "combined with file reading"): read_symbol's real win is the
       // WHOLE-FILE Read it replaces, so the savings baseline is the whole file (not the tiny {file,range}) —
       // the ledger then credits the avoided read, not ~0. (search/refs keep their index baseline.)
-      return finishOut(all.join("\n"), backendAdvisory(backendName, root) + `${SYMBOL_KIND[r.ds.kind] || "symbol"} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${backendName}):\n` + body + note);
+      const kindLabel = r.syntactic ? (r.kindLabel || "symbol") : (SYMBOL_KIND[r.ds.kind] || "symbol");
+      const via = r.syntactic ? "tree-sitter (syntactic — clangd can't serve this tree fast)" : backendName;
+      return finishOut(all.join("\n"), (r.syntactic ? "" : backendAdvisory(backendName, root)) + `${kindLabel} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${via}):\n` + body + note);
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");
