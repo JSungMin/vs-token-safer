@@ -903,12 +903,19 @@ export function hasCompileDb(root) {
 }
 export function compileDbAdvisory(root) {
   if (hasCompileDb(root)) return "";
-  return "⚠ clangd needs compile_commands.json — none found under the root. Generate it: run " +
+  // Two independent remedies, cheapest first: (1) the committable symbol index needs NO toolchain and makes
+  // search_symbol instant+complete on its own (the right first move on a giant UE tree); (2) the compile DB
+  // unlocks full semantics (refs/goto/hover) but needs the UE build env and minutes of UBT.
+  const idx = fs.existsSync(symIndexPath(root));
+  const idxLine = idx ? "" :
+    "Cheapest fix first: `vts_index` builds a committable symbol index (.vts-index/, one-time, chunk-safe " +
+    "on huge trees, no toolchain) — search_symbol answers from it instantly; commit it to share. ";
+  return "⚠ clangd needs compile_commands.json — none found under the root. " + idxLine +
+    "For FULL semantics (find_references/goto/hover) generate the DB: run " +
     "`vts_gen_compile_db` (dry-run prints the UBT command; apply=true runs it), or by hand via UBT " +
     "`-mode=GenerateClangDatabase` (`-Compiler=VisualCpp` for clang-cl) / CMake " +
-    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, semantic " +
-    "search_symbol/find_references/goto/hover are limited, but search_symbol falls back to a literal text " +
-    "search and find_files/search_text work fully.";
+    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, " +
+    "search_symbol falls back to the syntactic/text tier and find_files/search_text work fully.";
 }
 // B: when a clangd query comes back EMPTY, say WHY — distinguish (1) the target file isn't in the compile DB
 // at all (its module wasn't built/included) from (2) it IS in the DB but its index shard isn't built yet (the
@@ -930,6 +937,30 @@ function loadCdb(cdbDir) {
 }
 function clangdShardCount(cdbDir) {
   try { let n = 0; for (const f of fs.readdirSync(path.join(cdbDir, ".cache", "clangd", "index"))) if (f.endsWith(".idx")) n++; return n; } catch { return 0; }
+}
+// Bounded big-tree probe for the search_symbol pre-empt: count C/C++ sources, EARLY-EXIT the moment the
+// threshold is crossed (a UE tree crosses it in milliseconds; a small project finishes the whole walk
+// under it just as fast). Cached per root for the process lifetime; 400ms hard budget so a pathological
+// filesystem can't stall a query — on budget exhaustion, decide from what was seen so far.
+const _bigTreeCache = new Map(); // root → boolean
+function bigTreeLikely(root) {
+  if (_bigTreeCache.has(root)) return _bigTreeCache.get(root);
+  const cap = envInt("VTS_SYMBOL_PREEMPT_FILES", 3000);
+  const t0 = Date.now();
+  let n = 0, big = false;
+  const stack = [root];
+  const skip = (name) => name.startsWith(".") || /^(node_modules|intermediate|binaries|saved|deriveddatacache|build|dist|out|obj)$/i.test(name);
+  while (stack.length && !big) {
+    if (Date.now() - t0 > 400) { big = n > cap / 4; break; }
+    const d = stack.pop();
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!skip(e.name)) stack.push(path.join(d, e.name)); }
+      else if (/\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i.test(e.name) && ++n >= cap) { big = true; break; }
+    }
+  }
+  _bigTreeCache.set(root, big);
+  return big;
 }
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
@@ -2558,17 +2589,33 @@ export async function runTool(name, a = {}) {
       // timed out, because the syntactic branch above only fires when NO backend resolves — and clangd always
       // "resolves" on a C++ tree, however useless its index is. A name lookup answered from the committed
       // index is the same decl-quality result, so serve it NOW. VTS_SYMBOL_PREEMPT=0 disables.
-      if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))
-          && fs.existsSync(symIndexPath(root))) {
+      if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
         let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
         const db = cdbDir ? loadCdb(cdbDir) : null;
         const shards = cdbDir ? clangdShardCount(cdbDir) : 0;
         const crawlLikely = !db || db.count === 0 ||
           (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000) && shards < Math.floor(db.count * 0.9));
-        if (crawlLikely) {
+        // The crawl-time hazard is a BIG-tree phenomenon: on a small no-DB project clangd answers (or
+        // empties) fast, and that LSP path must stay live (evals/mock clients + healthy small repos both
+        // sit there). So without a committed index, pre-empt only when a bounded probe says the tree is
+        // big; an existing .vts-index skips the probe — someone built it deliberately, serve it.
+        const preempt = crawlLikely && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
+        if (preempt) {
+          const why = !db ? "no compile_commands.json" : `~${db.count.toLocaleString()} TUs, index incomplete`;
           const pmax = Number(a.maxResults) || MAX_RESULTS;
+          // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
+          // beats dispatching to clangd here: on a tree in this state workspace/symbol crawls for tens of
+          // seconds and the MCP CLIENT times out (-32001) before any local fallback could ever run.
           const syn = await syntacticSymbols(root, a.q, Math.min(pmax, 40));
-          if (syn) return finishOut(syn.lines, `clangd can't serve this tree fast (${!db ? "no compile_commands.json" : `~${db.count.toLocaleString()} TUs, index incomplete`}) — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
+          // Discovery for the NO-INDEX case (a fresh clone / a team that never built one): tell the caller —
+          // typically an agent — that ONE tool call makes this instant and complete from now on. Without this
+          // nudge the committable-index feature is invisible exactly where it helps most (giant UE trees).
+          const buildHint = fs.existsSync(symIndexPath(root)) ? "" :
+            `\n↪ Make this instant + complete: vts_index (one-time build; chunk-safe on huge trees, no toolchain needed) — then commit .vts-index/ to share it with the team.`;
+          if (syn) return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + buildHint + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
+          const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 20));
+          if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint);
+          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + EMPTY_HINT);
         }
       }
       // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
