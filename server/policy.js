@@ -89,8 +89,17 @@ export function resolveSearchRoot(target, configured) {
     if (!configured) return markerWalk(t);
     const c = path.resolve(String(configured));
     if (isWithin(t, c)) return c;          // target lives inside the configured project → keep it (narrow, correct)
-    // target is in a SIBLING sub-tree (Unreal Engine/ vs Game/, another monorepo package): scope to the nearest
-    // common ancestor so qvts covers BOTH the configured project and the target — that's the real parent root.
+    // target is OUTSIDE configured. If it has its OWN project marker, `configured` is very likely just a STALE
+    // global default (e.g. from a past `vts setup` in an unrelated repo) rather than a true sibling package —
+    // trust the target's own root instead of forcing a merge, which would otherwise widen to a huge, unrelated
+    // common ancestor (live dogfood: a stale UE-game default + a target in an unrelated JS repo widened all
+    // the way to the drive-level vault folder holding a dozen unconnected projects, so every suggested -p
+    // candidate list was garbage).
+    const own = markerWalk(t);
+    if (hasProjectMarker(own) && path.resolve(own).toLowerCase() !== c.toLowerCase()) return own;
+    // target is in a genuine SIBLING sub-tree with no marker of its own (Unreal Engine/ vs Game/, another
+    // monorepo package): scope to the nearest common ancestor so qvts covers BOTH the configured project and
+    // the target — that's the real parent root.
     return commonAncestor(c, t) || c;
   } catch { return configured || null; }
 }
