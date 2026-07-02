@@ -164,7 +164,7 @@ export function buildVizData(root) {
   // GLOBAL across every repo touched) + (2) a live, root-scoped IMPORT graph for JS/TS/Py (whose edges the
   // cache lacks). Ranking puts the DASHBOARD ROOT's files FIRST, then fan-in — so the repo you pointed the
   // dashboard at always appears instead of being drowned by a huge unrelated cached tree (the live-found
-  // "viz only shows TSGame, not my JS repo" gap). Capped to VTS_VIZ_MAX_NODES; links to dropped nodes pruned.
+  // "viz only shows MyGame, not my JS repo" gap). Capped to VTS_VIZ_MAX_NODES; links to dropped nodes pruned.
   const graph = (() => {
     const g = readJson(GRAPH_FILE);
     const entries = Object.entries(g).filter(([, e]) => e && Array.isArray(e.i));
