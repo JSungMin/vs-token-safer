@@ -2551,6 +2551,26 @@ export async function runTool(name, a = {}) {
 
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
+      // COMMITTED-INDEX PRE-EMPT: when the backend is clangd but it provably can't answer FAST — no compile
+      // DB at all, or a huge DB whose background index is far from complete — workspace/symbol crawls for
+      // tens of seconds and the MCP CLIENT times out (-32001) before any fallback here ever runs. Live case:
+      // a fully-built committed .vts-index (~4M symbols, ms-fast on-disk tier) sat UNUSED while search_symbol
+      // timed out, because the syntactic branch above only fires when NO backend resolves — and clangd always
+      // "resolves" on a C++ tree, however useless its index is. A name lookup answered from the committed
+      // index is the same decl-quality result, so serve it NOW. VTS_SYMBOL_PREEMPT=0 disables.
+      if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))
+          && fs.existsSync(symIndexPath(root))) {
+        let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
+        const db = cdbDir ? loadCdb(cdbDir) : null;
+        const shards = cdbDir ? clangdShardCount(cdbDir) : 0;
+        const crawlLikely = !db || db.count === 0 ||
+          (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000) && shards < Math.floor(db.count * 0.9));
+        if (crawlLikely) {
+          const pmax = Number(a.maxResults) || MAX_RESULTS;
+          const syn = await syntacticSymbols(root, a.q, Math.min(pmax, 40));
+          if (syn) return finishOut(syn.lines, `clangd can't serve this tree fast (${!db ? "no compile_commands.json" : `~${db.count.toLocaleString()} TUs, index incomplete`}) — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
+        }
+      }
       // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
       // mixed-repo fallback result gets the SAME focus/tee/steer/cert treatment as a primary hit.
       const renderFoundSymbols = (syms, bname, advB, note = "") => {
