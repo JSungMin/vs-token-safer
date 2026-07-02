@@ -192,7 +192,9 @@ function hasFileOpsContext(segments) {
 // warn-only nudge toward the symbol-edit tools (edit by NAME via the parser range — no brace-matching, no
 // exact-match hazard, no whole-file read). FP-careful: a code-file path AND an explicit write/in-place
 // signal must BOTH be present, so a read-only `sed`/`awk` in a pipeline or a `python build.py` isn't nagged.
-const CODE_FILE_TOKEN = /[\w./\\-]+\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/i;
+// `:` in the class so a Windows drive-letter path (`G:/…/Foo.h`) matches WHOLE — without it the match
+// started after the `G:` and the body-read steer suggested a broken, drive-less path in its ready call.
+const CODE_FILE_TOKEN = /[\w.:/\\-]+\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/i;
 function isBashCodeEdit(cmd) {
   const s = String(cmd);
   if (!CODE_FILE_TOKEN.test(s)) return false;                       // no code-file path → not a code edit
