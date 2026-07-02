@@ -35,10 +35,10 @@ Visual-Studio / IDE-agnostic sibling of `rider-mcp-enforcer`. Local-only. Ships 
   `{success:false}`, void reqs→null, unknown→MethodNotFound -32601); a timed-out request sends
   `$/cancelRequest`; client declares `synchronization` + `workspace.configuration` capabilities.
 - `server/scope.js` — INDEXING SCOPE (cold-latency attack): index a SUBTREE not the whole monorepo. Config
-  `scope` / `VTS_SCOPE` (comma-list of dirs rel to root); `vts setup --scope "TSGame,Plugins"` persists it.
+  `scope` / `VTS_SCOPE` (comma-list of dirs rel to root); `vts setup --scope "MyGame,Plugins"` persists it.
   `scopeDirs`/`inScope`/`scopedCdb` (writes a FILTERED compile_commands.json of only in-scope TUs to the
   out-of-tree dir → clangd `--compile-commands-dir` points there → it background-indexes far fewer TUs;
-  live UE5: `VTS_SCOPE=TSGame` = 3,377 of 26,488 TUs (13%), ~7.8× cut) / `scopeStats`. UNIVERSAL: every
+  live UE5: `VTS_SCOPE=MyGame` = 3,377 of 26,488 TUs (13%), ~7.8× cut) / `scopeStats`. UNIVERSAL: every
   backend's afterInit warm walk is scope-filtered too (no tsconfig/sln edit). `backends/index.js`
   `effectiveCdbDir(root)` = scoped CDB when scope set, else `resolveCdbDir`; `scopeDirsFor(root)`. clangd
   STATIC PREINDEX: `clangd-indexer` (full LLVM release bundles it; `VTS_CLANGD_INDEXER_CMD`/next-to-clangd/

@@ -1184,7 +1184,7 @@ const editHookOk = editWarnOk && editEscalateOk;
 // `backend:"clangd"`-pinned global server → `-32001 invalid AST`) > forced BACKEND > path backend > "" (→ pickBackend).
 const { backendForPath, preferBackend } = await import("../server/core.js");
 const backendPathOk =
-  backendForPath("Plugins/TSEditorBridge/Python/trace_core.py") === "pyright" &&
+  backendForPath("Plugins/MyEditorPlugin/Python/trace_core.py") === "pyright" &&
   backendForPath("src/App.tsx") === "typescript" && backendForPath("a/b.mjs") === "typescript" &&
   backendForPath("Source/Foo.cpp") === "clangd" && backendForPath("Bar.h") === "clangd" &&
   backendForPath("Svc.cs") === "roslyn" &&
@@ -1965,7 +1965,7 @@ const { shouldSuppressSteer, routingDigest, suppressOn, readSteerDecision, topLe
 const supGen = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === true;   // build output → suppress
 const supDotGen = shouldSuppressSteer("/p/Source/Foo.generated.h") === true;        // generated header → suppress
 const supNodeMod = shouldSuppressSteer("/p/node_modules/x/y.js") === true;          // vendored dep → suppress
-const supReal = shouldSuppressSteer("/p/Source/TSGame/Weapon.cpp") === false;       // real source → steer as usual
+const supReal = shouldSuppressSteer("/p/Source/MyGame/Weapon.cpp") === false;       // real source → steer as usual
 const supTogglePrev = process.env.VTS_SUPPRESS;
 process.env.VTS_SUPPRESS = "0";
 const supOff = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === false && suppressOn() === false; // toggle off

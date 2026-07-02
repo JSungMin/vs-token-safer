@@ -292,10 +292,10 @@ one real cost. Two opt-in levers cut it — both stay local, nothing is transmit
 
 ```bash
 vts scope --projectPath /path/to/UE        # shows current scope, kept/total TUs, and top-level dirs to pick
-vts setup --scope "TSGame,Plugins"         # persist it (or set VTS_SCOPE="TSGame,Plugins"); then reload/restart
+vts setup --scope "MyGame,Plugins"         # persist it (or set VTS_SCOPE="MyGame,Plugins"); then reload/restart
 ```
 
-clangd then indexes only the in-scope translation units (live UE5: `TSGame` → 3,377 of 26,488 TUs, **13%**),
+clangd then indexes only the in-scope translation units (live UE5: `MyGame` → 3,377 of 26,488 TUs, **13%**),
 and every backend's warm-up is scoped with it. No scope set = whole-tree behavior, unchanged.
 
 **2. Pre-index — build the index ahead of the first query.**

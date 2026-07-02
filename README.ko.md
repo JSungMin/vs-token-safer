@@ -286,10 +286,10 @@ clangd는 비동기로 인덱싱하므로 *첫* 검색은 일회성 워밍업을
 
 ```bash
 vts scope --projectPath /path/to/UE        # 현재 스코프, 유지/전체 TU 수, 고를 수 있는 최상위 디렉터리 표시
-vts setup --scope "TSGame,Plugins"         # 영속화(또는 VTS_SCOPE="TSGame,Plugins"); 이후 reload/재시작
+vts setup --scope "MyGame,Plugins"         # 영속화(또는 VTS_SCOPE="MyGame,Plugins"); 이후 reload/재시작
 ```
 
-그러면 clangd가 스코프 내 번역 단위만 인덱싱하고(실측 UE5: `TSGame` → 26,488 중 3,377 TU, **13%**), 모든
+그러면 clangd가 스코프 내 번역 단위만 인덱싱하고(실측 UE5: `MyGame` → 26,488 중 3,377 TU, **13%**), 모든
 백엔드의 워밍도 함께 스코프됩니다. 스코프 미설정 = 기존 전체 트리 동작 그대로.
 
 **2. 사전 인덱싱 — 첫 질의 전에 인덱스를 빌드.**
