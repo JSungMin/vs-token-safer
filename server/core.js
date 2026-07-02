@@ -19,7 +19,7 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol, tsFileSymbols } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
@@ -2901,6 +2901,26 @@ export async function runTool(name, a = {}) {
         const capNote = files.length >= cap ? ` (capped at ${cap}; raise VTS_SKELETON_DIR_MAX or narrow the path)` : "";
         return finishOut({}, backendAdvisory(backendName, root) + `repo skeleton — ${files.length} file(s) under ${dirRoot}${capNote} (backend: ${backendName}):\n` + (parts.join("\n\n") || "(no outlined symbols)"));
       }
+      // SYNTACTIC PRE-EMPT (completes the set: search_symbol/find_references/read_symbol already do this).
+      // A single-file outline via clangd must still spawn clangd and parse the whole TU + its transitive
+      // headers — on a crawl-risk UE tree that's a cold-start hang on a heavy engine .cpp. tree-sitter
+      // outlines the one file directly, no backend, no header parse — strictly cheaper and can't hang. Only
+      // when clangd is the crawl-risk backend AND tree-sitter supports the file; healthy backends untouched.
+      if (backendName === "clangd" && tsSupports(a.path) && clangdCrawlLikely(root).crawl &&
+          !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
+        // Resolve a RELATIVE path against root — the model routinely passes repo-relative paths (the answers
+        // it gets back ARE relative), and tree-sitter reads the file off disk directly, so a bare relative
+        // path would fail statSync and silently fall through to the clangd error this pre-empt exists to skip.
+        const tsPath = path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path));
+        let tsyms = null; try { tsyms = await tsFileSymbols(tsPath); } catch { /* fall through to clangd */ }
+        if (tsyms && tsyms.length) {
+          const shown = tsyms.slice(0, max).map((s) => `${s.kind} ${s.name}  :${s.line}`).join("\n");
+          const capNote = tsyms.length > max ? `\n… ${tsyms.length - max} more — raise maxResults (now ${max}).` : "";
+          let _base = tsyms; try { _base = fs.readFileSync(a.path, "utf8"); } catch { /* keep syms baseline */ }
+          try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
+          return finishOut(_base, `outline of ${a.path} (tree-sitter — clangd can't serve this tree fast):\n` + shown + capNote + completenessCert({ shown: Math.min(tsyms.length, max), total: tsyms.length, truncated: tsyms.length > max ? "cap" : null, syntactic: true }));
+        }
+      }
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
@@ -2923,6 +2943,8 @@ export async function runTool(name, a = {}) {
       let synResolved = null;
       const tryTsRead = async () => {
         let f = a.path ? String(a.path) : null;
+        // resolve a repo-relative path against root (the model passes relative paths; tree-sitter reads disk)
+        if (f && !path.isAbsolute(f)) f = path.join(root, f);
         if (!f) { const syn = await syntacticSymbols(root, String(a.symbol || ""), 3); if (syn && syn.lines.length) f = syn.lines[0].split(/:\d+:/)[0]; }
         if (!f || !a.symbol) return null;
         const ts = await tsReadSymbol(f, String(a.symbol), { line: a.line != null ? Number(a.line) + 1 : null });
