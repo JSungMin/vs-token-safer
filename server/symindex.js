@@ -596,6 +596,17 @@ function _candidates(idx, q, qTokens) {
 // Run a query through the on-disk reader (Phase 2): prune to a candidate pool via the on-disk postings, then
 // score only those candidates' symbol lines. Same ranking/fallback as the in-memory path. Returns null to signal
 // "no pruning available — fall back to the full in-memory scan" (a <3-char query).
+// Tiebreak among equal name-match scores: surface real DEFINITIONS above forward-declarations. A type-name
+// search on a heavily forward-declared symbol otherwise buries the definition under hundreds of `struct Foo;`
+// forward decls and the maxResults cap drops it entirely (live dogfood: FSkeletalMeshLODRenderData — the real
+// struct at SkeletalMeshLODRenderData.h sat below 196 forward-decls and never made the top-30). "decl" is
+// tree-sitter's non-definition declaration bucket; incidental members/params rank between the two.
+function kindSortRank(k) {
+  if (k === "decl") return 2;                                        // forward declaration — least useful
+  if (k === "member" || k === "field" || k === "param" || k === "var") return 1;
+  return 0;                                                          // class/struct/enum/func/method/ctor/namespace = definition
+}
+
 function _searchViaReader(reader, root, q, qTokens, max) {
   const pool = _candidatesOnDisk(reader, q, qTokens);
   if (pool === null) return null; // no trigram/token signal → let the in-memory tier full-scan it
@@ -611,7 +622,7 @@ function _searchViaReader(reader, root, q, qTokens, max) {
   };
   let hits = scan(1);
   if (!hits.length && qTokens.length >= 2 && /\s/.test(q)) hits = scan(Number(process.env.VTS_SYM_COVER_MIN ?? 0.6));
-  hits.sort((a, b) => b.rank - a.rank || a.name.length - b.name.length);
+  hits.sort((a, b) => b.rank - a.rank || kindSortRank(a.kind) - kindSortRank(b.kind) || a.name.length - b.name.length);
   const sliced = hits.slice(0, max);
   if (hits.length > max) sliced.truncated = "cap";
   sliced.fromIndex = true;
@@ -651,7 +662,7 @@ export function searchSymIndex(root, q, { max = 40 } = {}) {
   // >= VTS_SYM_COVER_MIN of the query tokens, so "warm cache boot" still surfaces warmCache. No precision cost:
   // a non-empty AND result is never diluted with partials.
   if (!hits.length && qTokens.length >= 2 && /\s/.test(q)) hits = scan(Number(process.env.VTS_SYM_COVER_MIN ?? 0.6));
-  hits.sort((a, b) => b.rank - a.rank || a.name.length - b.name.length);
+  hits.sort((a, b) => b.rank - a.rank || kindSortRank(a.kind) - kindSortRank(b.kind) || a.name.length - b.name.length);
   const sliced = hits.slice(0, max);
   if (hits.length > max) sliced.truncated = "cap";
   sliced.fromIndex = true;
