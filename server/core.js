@@ -1602,6 +1602,11 @@ const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase
 // for big trees (it injects a higher value on an unindexed C/C++ root); the completeness cert still flags any
 // aborted walk as INCONCLUSIVE so a bounded 0 is never presented as authoritative absence.
 const textTimeboxMs = () => envInt("VTS_TEXT_TIMEBOX_MS", 4000);
+// Per-file byte ceiling for the text scan. A single generated/minified blob (UE `.gen.cpp`, bundled JS) can be
+// tens of MB on one line; `re.test` over it can stall the event loop far past the between-files time-box check,
+// which is exactly how a pure-text search_text blows past the MCP client's request timeout (-32001) on a giant
+// tree. Skip files bigger than this — they're generated noise for a symbol/usage hunt, not real call sites.
+const textMaxFileBytes = () => envInt("VTS_TEXT_MAXFILE_BYTES", 12 * 1024 * 1024);
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).
 function findFilesUnder(root, q, max) {
@@ -1705,6 +1710,7 @@ function scanTextUnder(root, q, max, accept) {
       if (!ok(e.name)) continue;
       if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
+      if (txt.length > textMaxFileBytes()) continue; // generated/minified blob — its re.test would stall the loop
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
       for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(lines[i])}`);
@@ -2521,7 +2527,10 @@ export async function runTool(name, a = {}) {
         return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer + emptyTextCert);
       }
       let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — ${Math.round(textTimeboxMs() / 1000)}s time-box hit (narrow projectPath to the source root or refine q; more matches likely exist)` : "";
-      if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
+      // Only re-collect for a CAP truncation (real reachable matches exceeded `max` — the tee recovers them).
+      // On a TIME truncation the walk didn't finish, so re-running pays a SECOND full time-box for the same
+      // incomplete slice and writes a misleadingly "full" tee — skip it (this was doubling big-tree latency).
+      if (hits.truncated === "cap") tt += teeNote("search_text", a.q, root, runScan);
       // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
