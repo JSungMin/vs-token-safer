@@ -42,6 +42,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, async () => { try { await disposeClients(); } catch { /* ignore */ } process.exit(0); });
 }
+// If the controlling parent dies (its stdin pipe to us closes) — including an uncatchable SIGKILL that no
+// parent-side handler can survive — the MCP transport can deliver nothing more, but a spawned clangd's pipes
+// can keep our event loop alive, orphaning us + clangd. Exit on stdin EOF (disposing clients first) so a dead
+// parent never leaves this server running. Guarded so we tear down exactly once.
+let _stdinGone = false;
+const _onStdinGone = async () => { if (_stdinGone) return; _stdinGone = true; try { await disposeClients(); } catch { /* ignore */ } process.exit(0); };
+process.stdin.on("end", _onStdinGone);
+process.stdin.on("close", _onStdinGone);
 
 // MCP roots handshake: the client (Claude Code) advertises its workspace folder(s) via the `roots`
 // capability. Used to resolve a per-call project root, so ONE globally-installed server serves every repo
