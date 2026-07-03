@@ -1879,15 +1879,39 @@ function flattenDocSyms(syms, out) {
 // file and goes straight to its outline; otherwise the declaration's file is found via the index (same
 // exact-name ranking as find_references-by-name). An optional 0-based `line` disambiguates same-named
 // symbols. Returns { file, ds, ambiguous } or { error }.
+// Tree-sitter resolution shared by read_symbol AND the edit tools (replace_symbol_body / insert_symbol /
+// safe_delete). resolveSymbolForEdit went STRAIGHT to clangd (symbolReady + documentSymbol), so on a crawl-
+// risk tree edit-by-name dead-ended exactly like read_symbol did ("no indexed declaration … pass path=" /
+// "no symbol named … in <file>"). tsReadSymbol gives the full decl span with no backend; we synthesise a
+// DocumentSymbol-shaped `.range` (end char = the last line's length so a whole-decl replace covers it).
+// File comes from an explicit `path` (resolved against root) or the committed-index declaration file.
+async function tsResolveForEdit(root, a) {
+  const want = String(a.symbol || "");
+  if (!want) return null;
+  let f = a.path ? String(a.path) : null;
+  if (f && !path.isAbsolute(f)) f = path.join(root, f);
+  if (!f) { const syn = await syntacticSymbols(root, want, 3); if (syn && syn.lines.length) f = syn.lines[0].split(/:\d+:/)[0]; }
+  if (!f) return null;
+  const ts = await tsReadSymbol(f, want, { line: a.line != null ? Number(a.line) + 1 : null });
+  if (!ts) return null;
+  let endCh = 0;
+  try { const ln = fs.readFileSync(f, "utf8").split(/\r?\n/)[ts.endRow]; endCh = ln != null ? ln.length : 0; } catch { /* end char 0 → still valid */ }
+  const range = { start: { line: ts.startRow, character: 0 }, end: { line: ts.endRow, character: endCh } };
+  return { file: f, ds: { range, selectionRange: { start: { line: ts.startRow, character: 0 }, end: { line: ts.startRow, character: 0 } }, kind: 0 }, ambiguous: ts.matches, kindLabel: ts.kind, syntactic: true };
+}
+
 async function resolveSymbolForEdit(c, root, backendName, a) {
   const want = String(a.symbol || "");
   if (!want) return { error: "needs `symbol` (the declaration name to edit)." };
+  // crawl-risk clangd → tree-sitter FIRST (clangd would time out / return an empty outline and dead-end).
+  const crawl = backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1")) && clangdCrawlLikely(root).crawl;
+  if (crawl) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; }
   let file = a.path ? String(a.path) : null;
   if (!file) {
     const persisted = backendName === "clangd" && hasPersistedIndex(root);
     const syms = await symbolReady(c, want, persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
     const pick = syms.slice().sort((x, y) => (x.name === want ? 0 : 1) - (y.name === want ? 0 : 1))[0];
-    if (!pick) return { error: `no indexed declaration for "${want}" — pass path=<file> (the outline is read per-file), or run search_symbol first.` };
+    if (!pick) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; return { error: `no indexed declaration for "${want}" — pass path=<file> (the outline is read per-file), or run search_symbol first.` }; }
     file = fromUri(pick.location.uri);
   }
   c.didOpen(file, langIdForPath(file, backendName));
@@ -1898,7 +1922,7 @@ async function resolveSymbolForEdit(c, root, backendName, a) {
     const near = matches.filter((s) => ((s.selectionRange || s.range) || {}).start && (s.selectionRange || s.range).start.line === ln);
     if (near.length) matches = near;
   }
-  if (!matches.length) return { error: `no symbol named "${want}" in ${file.replace(/\\/g, "/")} — the match is exact-name; check spelling or run document_symbols on the file.` };
+  if (!matches.length) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; return { error: `no symbol named "${want}" in ${file.replace(/\\/g, "/")} — the match is exact-name; check spelling or run document_symbols on the file.` }; }
   const ds = matches[0];
   if (!ds.range) return { error: `backend "${backendName}" returned no body range for "${want}" (flat SymbolInformation, not a hierarchical outline) — can't bound the body to edit safely.` };
   return { file, ds, ambiguous: matches.length };
