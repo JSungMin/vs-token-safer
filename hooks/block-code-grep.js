@@ -357,13 +357,35 @@ function isLogSearchSegment(segment) {
 // minus `2>` stderr) means the bytes go to a FILE, not into context — leave those alone.
 const readSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_READ_STEER ?? "1"));
 const BODY_READ_EXECS = new Set(["sed", "cat", "head", "tail", "awk"]);
+// Interpreters that can be handed an INLINE program (`-c`/`-e`/heredoc) which opens a code file, reads it,
+// and prints slices — a hand-rolled read_symbol. The model reaches for these exactly when read_symbol
+// fails (live: read_symbol dead-ended on a UE tree → the model wrote `python -c "s=open(...).read(); i=
+// s.find('::Foo'); print(s[i:i+2600])"` with line numbers — literally reimplementing the tool). None of
+// sed/cat/head/tail/awk match, so this whole class bypassed the body-read steer.
+const INTERP_EXECS = new Set(["python", "python3", "perl", "ruby", "node", "nodejs", "pwsh", "powershell"]);
+// A read primitive (opens/reads a file into a string) vs a write primitive (that's the edit steer's job).
+const READ_PRIM = /open\s*\(|\.read(?:lines|_text|_bytes)?\s*\(|readFileSync|File\.read|Get-Content|IO\.read|<>/;
+// Write PRIMITIVES only — NOT a bare `>` (inside a `python -c` string a `>` is a comparison, not a redirect;
+// stderr fds like `2>&1` are stripped by the caller). A real stdout-to-file redirect is rare here and at
+// worst costs one extra warn.
+const WRITE_PRIM = /open\s*\([^)]*["'][aw]b?\+?["']|\.write(?:_text|_bytes)?\s*\(|writeFileSync|Set-Content|Out-File/;
 function isBashCodeBodyRead(seg) {
   const exec = execOf(seg);
-  if (!BODY_READ_EXECS.has(exec)) return false;
-  if (!CODE_FILE_TOKEN.test(seg)) return false;
-  if (/\s-i\b/.test(seg) || /-i\s+inplace/.test(seg)) return false;          // in-place edit → edit steer
-  if (/>/.test(seg.replace(/\d>/g, ""))) return false;                       // writes to a file → not a dump
-  return true;
+  if (BODY_READ_EXECS.has(exec)) {
+    if (!CODE_FILE_TOKEN.test(seg)) return false;
+    if (/\s-i\b/.test(seg) || /-i\s+inplace/.test(seg)) return false;        // in-place edit → edit steer
+    if (/>/.test(seg.replace(/\d>/g, ""))) return false;                     // writes to a file → not a dump
+    return true;
+  }
+  // interpreter one-liner: an inline program (-c/-e/heredoc) that READS a code file and doesn't WRITE it.
+  if (INTERP_EXECS.has(exec)) {
+    if (!/(^|\s)-[ce]\b|<<'?[A-Za-z_]/.test(seg)) return false;              // must be an inline program, not `python build.py`
+    if (!CODE_FILE_TOKEN.test(seg)) return false;                           // references a code file
+    if (!READ_PRIM.test(seg)) return false;                                 // actually reads it
+    if (WRITE_PRIM.test(seg.replace(/\d>/g, ""))) return false;             // any write → not a pure dump (edit steer / leave alone)
+    return true;
+  }
+  return false;
 }
 function bodyReadNudge(seg) {
   const m = CODE_FILE_TOKEN.exec(seg);
