@@ -1596,12 +1596,34 @@ const SKIP_DIRS = new Set([
 ]);
 // Unreal's `Content/` holds the game's BINARY assets (.uasset/.umap) — on a real title that is HUNDREDS OF
 // THOUSANDS of files (observed: 747k), none of them code. Walking it made every search_text/find_files spend
-// the ENTIRE (orchestrator-raised, 40s) time-box enumerating assets → a trivial query took ~1min per tool call
-// and often returned an unrelated file — which reads to the user as qvts "hanging / looping / failing" on any
-// uasset/ini search. Skip it like the UE build dirs above. Opt out with VTS_INCLUDE_CONTENT=1 (e.g. a static-
-// site `content/` of markdown you genuinely want searched).
-if (!/^(1|true|on|yes)$/i.test(process.env.VTS_INCLUDE_CONTENT || "")) SKIP_DIRS.add("content");
-const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
+// the ENTIRE (orchestrator-raised, 40s) time-box enumerating assets → a trivial uasset/ini query took ~1min
+// per tool call and returned an unrelated file (reads to the user as qvts "hanging / looping / failing").
+// Skip `Content/` — but ONLY on an UNREAL tree, detected by a `.uproject`/`.uprojectdirs` at or above the walk
+// root — so a NON-UE `content/` (a Hugo/Gatsby/Jekyll markdown dir, a CMS, etc.) in any other language stays
+// fully searchable. Force with VTS_SKIP_CONTENT=1 (skip everywhere) or VTS_INCLUDE_CONTENT=1 (never skip).
+const _ueRootCache = new Map();
+function isUnrealRoot(root) {
+  if (/^(1|true|on|yes)$/i.test(process.env.VTS_INCLUDE_CONTENT || "")) return false; // force-keep content
+  if (/^(1|true|on|yes)$/i.test(process.env.VTS_SKIP_CONTENT || "")) return true;      // force-skip content
+  if (!root) return false;
+  const key = String(root);
+  if (_ueRootCache.has(key)) return _ueRootCache.get(key);
+  let ue = false;
+  try {
+    let d = path.resolve(root);
+    for (let i = 0; i < 5; i++) { // check the root and a few ancestors for a UE project/engine marker
+      let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { break; }
+      if (ents.some((e) => e.isFile() && /\.uproject(dirs)?$/i.test(e.name))) { ue = true; break; }
+      const parent = path.dirname(d);
+      if (parent === d) break;
+      d = parent;
+    }
+  } catch { /* best-effort — default to NOT skipping content */ }
+  _ueRootCache.set(key, ue);
+  return ue;
+}
+const skipDir = (name, root) =>
+  name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase()) || (name.toLowerCase() === "content" && isUnrealRoot(root));
 // Wall-clock budget for the lexical tree walks (search_text / find_files / concept pool). 4s is fine for a
 // normal repo, but a GIANT unindexed tree (e.g. an Unreal source tree with no clangd index, where the LSP
 // tools all time out and text scan is the only tier left) can legitimately need longer — at 4s the walk
@@ -1630,7 +1652,7 @@ function findFilesUnder(root, q, max) {
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); }
       else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length > max) break; } }
     }
   }
@@ -1652,7 +1674,7 @@ function codeFilesUnder(root, max) {
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); }
       else { scanned++; if (DIAG_CODE_RE.test(e.name)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
     }
   }
@@ -1713,7 +1735,7 @@ function scanTextUnder(root, q, max, accept) {
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); continue; }
       if (!ok(e.name)) continue;
       if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
@@ -1741,7 +1763,7 @@ async function syntacticSymbols(root, q, max) {
     let hits = searchSymIndex(root, String(q), { max });
     let source = hits && hits.length ? "committed index (.vts-index)" : null;
     if (!source) {
-      hits = await tsSearchSymbols(root, String(q), { max, skipDir });
+      hits = await tsSearchSymbols(root, String(q), { max, skipDir: (n) => skipDir(n, root) });
       source = hits && hits.length ? "tree-sitter (syntactic)" : null;
     }
     if (!source) return null;
@@ -1770,7 +1792,7 @@ async function conceptIndexFor(root) {
       let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
       for (const e of ents) {
         const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
+        if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); continue; }
         if (!tsSupports(e.name) || !within(p)) continue;
         if (files >= fileCap) break;
         files++;
@@ -2189,7 +2211,7 @@ export async function runTool(name, a = {}) {
       const dirs = scopeDirsFor(root);
       const within = dirs.length ? (p) => inScope(p, dirs) : undefined;
       const t0 = Date.now();
-      const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now(), timeBudgetMs: envInt("VTS_INDEX_BUDGET_MS", 120000) });
+      const r = await buildSymIndex(root, { skipDir: (n) => skipDir(n, root), inScope: within, now: Date.now(), timeBudgetMs: envInt("VTS_INDEX_BUDGET_MS", 120000) });
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
       // Incremental note: how many files were reused (no re-parse) vs re-parsed this run — the cold→warm win.
       const incrNote = r.reparsed != null && (r.reused || r.reparsed) ? ` [incremental: re-parsed ${r.reparsed}, reused ${r.reused} unchanged]` : "";
@@ -2623,7 +2645,7 @@ export async function runTool(name, a = {}) {
       if (!a.symbol) return err("find_references needs `symbol` (a name) when no language-server backend is available — a position query (path/line/character) requires a backend.");
       const want = String(a.symbol);
       const fmax = Number(a.maxResults) || MAX_RESULTS;
-      const tsRefs = await tsSearchReferences(root, want, { skipDir });
+      const tsRefs = await tsSearchReferences(root, want, { skipDir: (n) => skipDir(n, root) });
       if (tsRefs && tsRefs.length) {
         const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
         const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
@@ -2811,7 +2833,7 @@ export async function runTool(name, a = {}) {
           // tree-sitter call-site capture (real call references, 11 langs, zero toolchain) — strictly better
           // than the literal scan that follows (a call site, not every textual mention). Then literal scan.
           const idxAdv = clangdIndexAdvisory(backendName, root, a.path || null);
-          const tsRefs = await tsSearchReferences(root, want, { skipDir });
+          const tsRefs = await tsSearchReferences(root, want, { skipDir: (n) => skipDir(n, root) });
           if (tsRefs && tsRefs.length) {
             const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
             const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
