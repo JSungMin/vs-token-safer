@@ -245,17 +245,27 @@ function extractFindName(segment) {
   const m = segment.match(/\s-i?name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
 }
-// The file/dir a grep names (`grep pat <file>`), so the orchestrator root can be generalized from it (a file in
-// a sibling sub-tree resolves to ITS repo root). The last bare token that looks like a path (has a separator or
-// a file extension) and isn't the pattern. Best-effort; null when the grep has no explicit path operand.
-function extractSearchFile(segment) {
+// Split a grep's path operands into a specific FILE (has an extension) vs a DIRECTORY (bare name or slashed, no
+// extension), so BOTH can scope the delegated search and generalize the root (a file/dir in a sibling sub-tree
+// resolves to ITS repo root). Operands are the bare tokens AFTER the pattern; iterate from the end and stop at
+// the pattern token. A bare-word dir (`grep -r Foo Source`) used to be invisible — extractSearchFile only caught
+// file/slashed operands, so a dir target silently dropped to a whole -p root scan (the scope-loss bug). A slashed
+// path with no extension is treated as a DIR (kept whole, not basename-truncated). Best-effort; both null when
+// the grep has no explicit path operand.
+function extractGrepScope(segment, isGit) {
+  const pat = extractGrepPattern(segment, isGit);
   const toks = segment.trim().split(/\s+/).slice(1); // drop the executable
-  for (let i = toks.length - 1; i >= 0; i--) {
+  const start = isGit ? (toks[0] === "grep" ? 1 : 0) : 0; // `git grep` — don't treat the `grep` subcommand as an operand
+  let file = null, dir = null;
+  for (let i = toks.length - 1; i >= start; i--) {
     const t = stripQuotes(toks[i]);
     if (!t || t.startsWith("-")) continue;
-    if (/[\\/]/.test(t) || /\.[A-Za-z0-9_]+$/.test(t)) return t;
+    if (pat != null && t === pat) break;             // reached the pattern → operands after it are exhausted
+    if (!SAFE_PATH.test(t)) continue;                // not a plausible path token
+    if (/\.[A-Za-z0-9_]+$/.test(t)) { if (!file) file = t; }        // has an extension → a file
+    else if (!dir) dir = t;                          // bare or slashed, no extension → a directory
   }
-  return null;
+  return { file, dir };
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
 // the rewrite searches the tree the command names, not the configured root — dropping it made a
@@ -747,7 +757,15 @@ process.stdin.on("end", () => {
   // ignored — the model kept Glob-ing a huge UE tree instead of switching. VTS_GREP_BLOCK=0 reverts to warn-only.
   if (toolName === "Glob") {
     if (ORCH && isCodeGlobTool(ti)) {
-      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`, ti.path || globRootHint(ti)) + "\n");
+      // A Glob that NAMES a specific subdir (explicit `path`, or a literal dir prefix in the pattern) is a cheap,
+      // correctly-scoped filename listing — native Glob honors that subdir and returns compact PATHS. Delegating
+      // LOSES the scope (qvtsCmd resolves the target UP to the repo root and find_files the whole tree) and is
+      // slower + wrong-tree — the same scope-loss the Bash `find <subdir> -name` case avoids by staying native.
+      // The token mandate is about CONTENT, not file lists. A path-less glob (no scope to lose, giant-tree
+      // timeout risk) still delegates. Exclude a bare `.`/`..` (cwd could itself be a huge root).
+      const gscope = globRootHint(ti); // explicit path, else the glob's literal dir prefix
+      if (gscope && !/^\.{1,2}[\\/]?$/.test(gscope)) process.exit(0); // scoped filename listing → native
+      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`, ti.path || gscope) + "\n");
       process.exit(2);
     }
     if (grepBlockOn() && isBlockableGlob(ti)) {
@@ -842,15 +860,20 @@ process.stdin.on("end", () => {
       // huge UE root where native find would walk Content/) and a find with no dir operand — those still
       // delegate to find_files (skip-dirs + bounded).
       if (isFind && findGlob && findDir && !/^\.{1,2}[\\/]?$/.test(findDir)) process.exit(0);
-      const grepPat = isFind ? "" : extractGrepPattern(seg, execOf(seg) === "git"); // never treat a find's path as a grep pattern
-      const searchFile = extractSearchFile(seg); // a SPECIFIC file the search was scoped to
-      // Carry a specific FILE scope into the task so qvts searches THAT file (search_text path=…), not the whole
-      // -p root: a `grep Foo path/Bar.cpp` otherwise became "find Foo in code" and scanned the entire tree.
-      const inScope = searchFile ? ` in ${path.basename(searchFile)}` : " in code";
+      const isGitGrep = execOf(seg) === "git";
+      const grepPat = isFind ? "" : extractGrepPattern(seg, isGitGrep); // never treat a find's path as a grep pattern
+      // Carry the grep's own FILE or DIRECTORY scope into the task so qvts searches THAT file/dir (search_text
+      // path=…), not the whole -p root. A file → basename hint (`grep Foo path/Bar.cpp` → "in Bar.cpp"); a DIR →
+      // its path as given (`grep -r Foo Source` → "under Source"). A bare-dir operand used to be dropped, so a
+      // dir-scoped grep degraded to "find Foo in code" = a whole-tree scan (the scope-loss bug this fixes).
+      const { file: searchFile, dir: searchDir } = isFind ? { file: null, dir: null } : extractGrepScope(seg, isGitGrep);
+      const inScope = searchFile ? ` in ${path.basename(searchFile)}`
+        : searchDir ? ` under ${searchDir}`
+        : " in code";
       const task = grepPat ? `find ${grepPat}${inScope}`
         : findGlob ? `find file named ${findGlob}`
         : "locate the searched symbol/string in code";
-      const target = searchFile || findDir; // a file/dir the command names → generalize the root
+      const target = searchFile || searchDir || findDir; // a file/dir the command names → generalize the root
       if (segments.length === 1) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
