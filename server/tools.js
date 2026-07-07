@@ -19,6 +19,7 @@ export const TOOLS = [
       type: "object",
       properties: {
         q: { type: "string", description: "Symbol name or substring." },
+        path: { type: "string", description: "Scope to a file/class (basename or path substring). An inherited symbol not declared there is reported tree-wide." },
         projectPath: ROOT,
         backend: BACKEND,
         maxResults: CAP,

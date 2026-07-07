@@ -1771,6 +1771,38 @@ async function syntacticSymbols(root, q, max) {
     return { lines, source, truncated: hits.truncated || null, total: hits.length };
   } catch { return null; }
 }
+// Honor an optional path/class SCOPE and the caller's maxResults on a symbol lookup. Two live bugs this fixes:
+// (1) the committed-index cap was a hard `Math.min(pmax, 40)` — a hot name like CreateSceneProxy has 258 index
+// matches, so the relevant override (e.g. USkinnedMeshComponent's) fell past 40 AND maxResults couldn't raise it;
+// (2) a `path` the caller passed to scope the lookup ("find X in SkinnedMeshComponent.h") was dropped entirely,
+// so search_symbol returned an arbitrary tree-wide 40 and the model wrongly concluded "not found in <file>".
+// Scoped: pull a wide set, filter to the file/class token (substring, case-insensitive), cap to pmax. A scope
+// that matches NOTHING returns the tree-wide set flagged `scopeMiss` — an inherited symbol lives in a BASE file,
+// never a false "no match". Unscoped: syntacticSymbols already caps + carries total/truncated; honor pmax up to a
+// ceiling instead of the old hard 40.
+const SYM_SCOPE_CEIL = envInt("VTS_SYM_MAX", 200);
+async function scopedSyntacticSymbols(root, q, pathScope, pmax) {
+  const tok = pathScope ? String(pathScope).replace(/\\/g, "/").replace(/^\.?\/+/, "").toLowerCase().trim() : "";
+  const all = await syntacticSymbols(root, q, tok ? 2000 : Math.min(pmax, SYM_SCOPE_CEIL));
+  if (!all) return null;
+  if (!tok) return all;
+  // Match on a PATH-SEGMENT boundary ("/" + token), not a bare substring: scoping to "SkeletalMeshComponent.cpp"
+  // must NOT also match "PhysicsAssetEditorSkeletalMeshComponent.cpp" — else a genuine miss (a base-class-only
+  // symbol) looks like a hit in the wrong file. A class token ("SkinnedMeshComponent") likewise matches only
+  // that class's files, not "InstancedSkinnedMeshComponent".
+  const inScope = all.lines.filter((l) => l.replace(/\\/g, "/").toLowerCase().includes("/" + tok));
+  if (!inScope.length) {
+    // Not declared in the named file/class — an inherited symbol lives in a BASE file. Hand back the tree-wide
+    // set (capped) flagged scopeMiss so the caller says so, instead of a false "no match".
+    return { lines: all.lines.slice(0, pmax), source: all.source, total: all.total, truncated: all.total > pmax ? "cap" : all.truncated, scopeMiss: pathScope };
+  }
+  return { lines: inScope.slice(0, pmax), source: all.source, total: inScope.length, truncated: inScope.length > pmax ? "cap" : null, scoped: pathScope };
+}
+// A ready inheritance/scope note for a scoped symbol lookup (shared by the clangd-preempt + no-backend paths).
+function symScopeNote(syn, q) {
+  if (syn.scopeMiss) return `\n↪ "${q}" is NOT declared in ${syn.scopeMiss} — it may be INHERITED from a base class. Showing the ${syn.total} tree-wide declaration(s) instead.`;
+  return "";
+}
 // CONCEPT INDEX (fuzzy retrieval, approach B): mine a local concept dictionary from the repo's OWN identifier+
 // comment co-occurrence (server/concept.js) so a fuzzy "how does the auth flow work" query finds related
 // declarations WITHOUT embeddings — nothing transmitted, output still token-capped file:line. Built from the
@@ -2631,9 +2663,9 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       // No toolchain — try the SYNTACTIC tier (committed index / tree-sitter AST) before the literal scan: it
       // returns real declarations for 36 languages with zero setup, vastly better than a usage-line grep.
-      const syn = await syntacticSymbols(root, a.q, Math.min(max, 40));
-      if (syn) return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
-      const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
+      const syn = await scopedSyntacticSymbols(root, a.q, a.path, max);
+      if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
+      const hits = scanTextUnder(root, String(a.q), Math.min(max, 60));
       if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
       return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
     }
@@ -2680,14 +2712,14 @@ export async function runTool(name, a = {}) {
           // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
           // beats dispatching to clangd here: on a tree in this state workspace/symbol crawls for tens of
           // seconds and the MCP CLIENT times out (-32001) before any local fallback could ever run.
-          const syn = await syntacticSymbols(root, a.q, Math.min(pmax, 40));
+          const syn = await scopedSyntacticSymbols(root, a.q, a.path, pmax);
           // Discovery for the NO-INDEX case (a fresh clone / a team that never built one): tell the caller —
           // typically an agent — that ONE tool call makes this instant and complete from now on. Without this
           // nudge the committable-index feature is invisible exactly where it helps most (giant UE trees).
           const buildHint = fs.existsSync(symIndexPath(root)) ? "" :
             `\n↪ Make this instant + complete: vts_index (one-time build; chunk-safe on huge trees, no toolchain needed) — then commit .vts-index/ to share it with the team.`;
-          if (syn) return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + buildHint + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
-          const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 20));
+          if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + buildHint + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
+          const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 60));
           if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint);
           return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + EMPTY_HINT);
         }
