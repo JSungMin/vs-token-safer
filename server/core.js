@@ -1594,6 +1594,13 @@ const SKIP_DIRS = new Set([
   "intermediate", "binaries", "saved", "deriveddatacache", "build", "dist", "out", "obj", "bin",
   "__pycache__", ".venv", "venv", "target",
 ]);
+// Unreal's `Content/` holds the game's BINARY assets (.uasset/.umap) — on a real title that is HUNDREDS OF
+// THOUSANDS of files (observed: 747k), none of them code. Walking it made every search_text/find_files spend
+// the ENTIRE (orchestrator-raised, 40s) time-box enumerating assets → a trivial query took ~1min per tool call
+// and often returned an unrelated file — which reads to the user as qvts "hanging / looping / failing" on any
+// uasset/ini search. Skip it like the UE build dirs above. Opt out with VTS_INCLUDE_CONTENT=1 (e.g. a static-
+// site `content/` of markdown you genuinely want searched).
+if (!/^(1|true|on|yes)$/i.test(process.env.VTS_INCLUDE_CONTENT || "")) SKIP_DIRS.add("content");
 const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
 // Wall-clock budget for the lexical tree walks (search_text / find_files / concept pool). 4s is fine for a
 // normal repo, but a GIANT unindexed tree (e.g. an Unreal source tree with no clangd index, where the LSP
