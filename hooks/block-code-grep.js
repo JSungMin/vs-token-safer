@@ -832,12 +832,25 @@ process.stdin.on("end", () => {
       // filename find as "find <glob> in code" made qvts run a whole-tree TEXT walk for a mere file listing —
       // live: `find … -name "*.h"` burned the 40s time-box and returned junk, costing MORE than a native ls.
       const isFind = execOf(seg) === "find";
-      const grepPat = isFind ? "" : extractGrepPattern(seg, execOf(seg) === "git"); // never treat a find's path as a grep pattern
       const findGlob = isFind ? extractFindName(seg) : "";
-      const task = grepPat ? `find ${grepPat} in code`
+      const findDir = isFind ? extractFindDir(seg) : "";
+      // A filename `find <subdir> -name X` that NAMES a specific directory is a cheap, correctly-SCOPED listing:
+      // native `find` honors that subdir and returns compact PATHS (not bulky content). Delegating it LOSES the
+      // subdir scope (qvts would find_files the whole -p root) and is far slower + wrong-tree — measured 56s and
+      // engine-wide *.h for a single-subdir listing. The token mandate is about CONTENT, not file lists — so let
+      // a subdir-scoped filename find run natively (no redirect). Exclude a bare `.`/`..` (cwd could itself be a
+      // huge UE root where native find would walk Content/) and a find with no dir operand — those still
+      // delegate to find_files (skip-dirs + bounded).
+      if (isFind && findGlob && findDir && !/^\.{1,2}[\\/]?$/.test(findDir)) process.exit(0);
+      const grepPat = isFind ? "" : extractGrepPattern(seg, execOf(seg) === "git"); // never treat a find's path as a grep pattern
+      const searchFile = extractSearchFile(seg); // a SPECIFIC file the search was scoped to
+      // Carry a specific FILE scope into the task so qvts searches THAT file (search_text path=…), not the whole
+      // -p root: a `grep Foo path/Bar.cpp` otherwise became "find Foo in code" and scanned the entire tree.
+      const inScope = searchFile ? ` in ${path.basename(searchFile)}` : " in code";
+      const task = grepPat ? `find ${grepPat}${inScope}`
         : findGlob ? `find file named ${findGlob}`
         : "locate the searched symbol/string in code";
-      const target = extractSearchFile(seg) || extractFindDir(seg); // a file/dir the command names → generalize the root
+      const target = searchFile || findDir; // a file/dir the command names → generalize the root
       if (segments.length === 1) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
