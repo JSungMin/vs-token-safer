@@ -10,7 +10,7 @@
     {
       "name": "vs-token-safer",
       "source": "./",
-      "version": "0.42.14",
+      "version": "0.42.15",
       "category": "development",
       "description": "Sits between Claude Code and your codebase and hands back a short file:line list instead of dumping source. Real language server when it can (clangd / Roslyn / tsserver / pyright), tree-sitter when there's no toolchain, and a no-embeddings fuzzy search built from your repo's own naming when you don't know the exact name. Section-edits Markdown and config too. Local-only. Bundles gamedev-log-analyzer."
     },
