@@ -827,8 +827,16 @@ process.stdin.on("end", () => {
     // pipeline blocks with the ready qvts command. No VTS_ENFORCE=0 advertised here.
     if (ORCH) {
       const seg = codeSegs[0];
-      const pat = extractGrepPattern(seg, execOf(seg) === "git") || extractFindName(seg) || "";
-      const task = pat ? `find ${pat} in code` : "locate the searched symbol/string in code";
+      // Distinguish a CONTENT grep from a FILENAME `find -name`: the latter must become a find-FILES task
+      // ("find file named …") so qvts routes it to find_files (bounded, skips Content/Intermediate). Phrasing a
+      // filename find as "find <glob> in code" made qvts run a whole-tree TEXT walk for a mere file listing —
+      // live: `find … -name "*.h"` burned the 40s time-box and returned junk, costing MORE than a native ls.
+      const isFind = execOf(seg) === "find";
+      const grepPat = isFind ? "" : extractGrepPattern(seg, execOf(seg) === "git"); // never treat a find's path as a grep pattern
+      const findGlob = isFind ? extractFindName(seg) : "";
+      const task = grepPat ? `find ${grepPat} in code`
+        : findGlob ? `find file named ${findGlob}`
+        : "locate the searched symbol/string in code";
       const target = extractSearchFile(seg) || extractFindDir(seg); // a file/dir the command names → generalize the root
       if (segments.length === 1) {
         process.stdout.write(JSON.stringify({

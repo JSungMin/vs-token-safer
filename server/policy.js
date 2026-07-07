@@ -73,7 +73,10 @@ function markerWalk(start) {
   for (let i = 0; i < 40 && cur; i++) {
     let ents = [];
     try { ents = fs.readdirSync(cur); } catch { /* keep climbing */ }
-    if (ents.some((e) => /\.(uproject|sln)$/i.test(e) || ROOT_MARKER_FILES.has(e))) return cur; // closest project marker wins
+    // `.uprojectdirs` is the Unreal WORKSPACE/engine-source root marker: a target deep under `Engine/…` has no
+    // `.uproject` ancestor (that lives in the sibling game module), so without this the walk climbed past the UE
+    // root into an outer umbrella git repo (a vault/monorepo) and scoped a 34k+-file, wrong-project search.
+    if (ents.some((e) => /\.(uproject|uprojectdirs|sln|slnx)$/i.test(e) || ROOT_MARKER_FILES.has(e))) return cur; // closest project marker wins
     if (!gitRoot && ents.includes(".git")) gitRoot = cur;
     const parent = path.dirname(cur);
     if (parent === cur) break;
@@ -128,7 +131,7 @@ export function readActiveProject() {
 }
 // Does `dir` itself look like a project root (a build/manifest marker directly inside it)?
 export function hasProjectMarker(dir) {
-  try { return fs.readdirSync(dir).some((e) => /\.(uproject|sln)$/i.test(e) || ROOT_MARKER_FILES.has(e) || e === "compile_commands.json"); }
+  try { return fs.readdirSync(dir).some((e) => /\.(uproject|uprojectdirs|sln|slnx)$/i.test(e) || ROOT_MARKER_FILES.has(e) || e === "compile_commands.json"); } // .uprojectdirs = UE workspace/engine root (kept in sync with markerWalk)
   catch { return false; }
 }
 // Sub-projects under a broad parent (dirs that ARE project roots, scanning up to 2 levels for UE-style nesting
