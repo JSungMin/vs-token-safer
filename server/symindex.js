@@ -14,8 +14,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { once } from "node:events";
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { tsFileSymbols, tsSupports } from "./treesitter.js";
 import { fnv1a } from "./warmset.js";
 import { splitIdent, symbolMatchScore } from "./concept.js";
@@ -442,7 +443,33 @@ export async function buildSymIndexChunked(
 // Public entry: dispatch a giant tree to the chunked multi-process builder, a normal tree to the in-process one.
 // A tree with > VTS_INDEX_CHUNK_THRESHOLD (default 20000) supported files goes chunked. Force with opts.chunked
 // =true / disable with opts.chunked=false. Chunked mode ignores `incremental` (it's always a full rebuild).
+// GRAMMAR SELF-HEAL: `vts index` needs web-tree-sitter + tree-sitter-wasms, but a marketplace/plugin update
+// wipes node_modules and the index path — unlike the MCP server spawn (which self-heals its own deps) — has no
+// other recovery, so a rebuild would silently produce 0 symbols and (before the 0-symbol guard) clobber a good
+// index. Install them here, PINNED to ^0.25: web-tree-sitter 0.26's wasm dylink format is incompatible with the
+// tree-sitter-wasms grammars and fails to load (getDylinkMetadata). Best-effort + synchronous — runs once before
+// any worker spawns; if it can't install, the build still aborts safely via the 0-symbol guard below.
+function ensureGrammar() {
+  const req = createRequire(import.meta.url);
+  try {
+    req.resolve("web-tree-sitter");               // main entry — exports-safe (the ./package.json subpath is blocked on 0.25+)
+    req.resolve("tree-sitter-wasms/package.json"); // grammar pkg (treesitter.js resolves it exactly this way)
+    return; // both present — package.json pins web-tree-sitter to ^0.25, so an installed copy is dylink-compatible
+  } catch { /* missing → install below */ }
+  const here = path.dirname(fileURLToPath(import.meta.url)); // server dir — treesitter.js resolves grammars from here
+  const isWin = process.platform === "win32";
+  const local = path.join(path.dirname(process.execPath), isWin ? "npm.cmd" : "npm");
+  const npm = fs.existsSync(local) ? `"${local}"` : "npm";
+  process.stderr.write("[vts index] tree-sitter grammar missing or incompatible — installing web-tree-sitter@^0.25 + tree-sitter-wasms (one-time)…\n");
+  try {
+    execSync(`${npm} install web-tree-sitter@^0.25 tree-sitter-wasms --no-audit --no-fund --no-save --loglevel=error`, { cwd: here, stdio: "ignore", timeout: 300000 });
+  } catch (e) {
+    process.stderr.write(`[vts index] grammar auto-install failed (${e && e.message}). Run manually in ${here}: npm i web-tree-sitter@^0.25 tree-sitter-wasms\n`);
+  }
+}
+
 export async function buildSymIndex(root, opts = {}) {
+  ensureGrammar();
   const threshold = Number(process.env.VTS_INDEX_CHUNK_THRESHOLD || 20000);
   let useChunked = opts.chunked === true;
   if (opts.chunked === undefined) useChunked = countSupported(root, threshold + 1) > threshold;
