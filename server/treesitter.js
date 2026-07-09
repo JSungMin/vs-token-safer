@@ -957,16 +957,29 @@ export async function tsFileDeclDocs(absPath, { maxBytes = 2_000_000, gap = 3 } 
     /* ignore */
   }
   // Attach: a comment whose LAST line is within `gap` lines above a decl's first line belongs to it — BUT a
-  // long block is a file/section header, not this decl's docstring, so skip blocks spanning >= maxDocLines and
-  // cap the joined doc to maxDocChars. Keeps the unit a tight name+docstring scope (the concept signal) rather
-  // than letting a header pollute the first decl below it.
+  // block spanning >= maxDocLines is a FILE header, not this decl's docstring, so skip it, and cap the joined
+  // doc to maxDocChars. maxDocLines was 4, which dropped a well-written multi-line section/function docstring
+  // (e.g. a 12-line "ANTI-FABRICATION GUARD" header above verifyAnswerPaths) — so the better-documented a
+  // function, the LESS concept_search could find it. Raised to 20: a real file header is longer still (and is
+  // separated from the first decl by imports/gap anyway), while maxDocChars keeps the token cost bounded.
   comments.sort((a, b) => a.startRow - b.startRow);
+  // Tree-sitter emits each `//` line as its OWN comment node, so a 12-line `//` docstring arrived as 12
+  // separate 1-line comments — only the last stayed within `gap` of the decl, dropping the rest INCLUDING the
+  // leading summary line (e.g. "ANTI-FABRICATION GUARD" above verifyAnswerPaths → concept_search never saw it).
+  // Fuse adjacent comments (no blank line between: next.startRow <= prev.endRow + 1) into one block first, so
+  // the whole docstring reconciles against the decl below by its LAST line.
+  const merged = [];
+  for (const c of comments) {
+    const last = merged[merged.length - 1];
+    if (last && c.startRow <= last.endRow + 1) { last.endRow = c.endRow; last.text += " " + c.text; }
+    else merged.push({ startRow: c.startRow, endRow: c.endRow, text: c.text });
+  }
   const out = [];
-  const maxDocLines = 4,
+  const maxDocLines = Number(process.env.VTS_CONCEPT_DOC_LINES) || 20,
     maxDocChars = 200;
   for (const d of decls) {
     const docs = [];
-    for (const c of comments) {
+    for (const c of merged) {
       if (c.endRow < d.row && d.row - c.endRow <= gap && c.endRow - c.startRow < maxDocLines)
         docs.push(c.text);
     }
