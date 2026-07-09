@@ -189,6 +189,19 @@ async function buildSymIndexSingle(
     if (timedOut) break;
   }
   await new Promise((res) => body.end(res));
+  // GUARD: never overwrite an EXISTING index with a degenerate 0-symbol build. On a non-empty tree, 0 symbols
+  // means tree-sitter failed to LOAD/parse (a missing or ABI-incompatible grammar — e.g. a web-tree-sitter ↔
+  // tree-sitter-wasms dylink mismatch), NOT that the code has no declarations. Writing it would DESTROY a good
+  // committed index (observed live: a 0.26 dylink mismatch produced 0 symbols and clobbered a 3.9M-symbol
+  // index). Abort, keep the existing symbols.jsonl, surface the cause.
+  if (symbols === 0 && fs.existsSync(finalPath)) {
+    try { fs.unlinkSync(tmpPath); } catch { /* temp already gone */ }
+    throw new Error(
+      "vts index: build produced 0 symbols on a tree that already has an index — tree-sitter grammar is " +
+        "unavailable/incompatible. Kept the existing symbols.jsonl (refusing to overwrite it with an empty " +
+        "index). Reinstall in the server dir: npm i web-tree-sitter@^0.25 tree-sitter-wasms",
+    );
+  }
   const header = JSON.stringify({
     v: SYMINDEX_VERSION,
     built: now,
@@ -399,6 +412,18 @@ export async function buildSymIndexChunked(
   // Merge: header line + every part's symbols, streamed (never one giant string — the index can exceed 512 MB).
   const header = JSON.stringify({ v: SYMINDEX_VERSION, built: now, files: totFiles, symbols: totSymbols, partial: failed > 0 || undefined, h: H });
   const finalPath = symIndexPath(root);
+  // GUARD (mirror of buildSymIndexSingle): refuse to clobber an EXISTING index with a 0-symbol build. Every
+  // chunk yielding 0 symbols means the workers' tree-sitter grammar is unavailable/incompatible (a dylink /
+  // ABI mismatch), not that the tree has no code. Live: a web-tree-sitter 0.26 mismatch produced 0 symbols and
+  // destroyed a 3.9M-symbol index. Keep the existing symbols.jsonl and surface the cause.
+  if (totSymbols === 0 && fs.existsSync(finalPath)) {
+    fs.rmSync(partDir, { recursive: true, force: true });
+    throw new Error(
+      "vts index: chunked build produced 0 symbols on a tree that already has an index — tree-sitter grammar " +
+        "is unavailable/incompatible in the index workers. Kept the existing symbols.jsonl (refusing to " +
+        "overwrite it with an empty index). Reinstall in the server dir: npm i web-tree-sitter@^0.25 tree-sitter-wasms",
+    );
+  }
   const out = fs.createWriteStream(finalPath, { encoding: "utf8" });
   out.write(header + "\n");
   for (const pp of parts) {
