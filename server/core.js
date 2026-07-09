@@ -1250,30 +1250,6 @@ function factorCommonPrefix(lines) {
   if (!prefix) return lines.join("\n");
   return `under ${prefix}/\n` + lines.map((l) => "  " + l.slice(prefix.length + 1)).join("\n");
 }
-// TEXT-preserving fold for `path:line: text` rows (search_text): compactLocationLines drops the matched line,
-// and factorCommonPrefix repeats the full filename on every hit — so N hits in ONE file printed the same long
-// path N times. This keeps the matched text but prints each file's path ONCE as a header, then its hits as
-// indented `line: text`. commonDirPrefix still factors the shared directory. Single-hit files stay one-line.
-// Any unexpected row shape (not `path:digits: …`) falls back to factorCommonPrefix untouched, and the machine
-// `hits` array handed to finishOut is unaffected — only this human/display body changes.
-function foldTextHits(lines) {
-  if (!compactResults() || lines.length < 2) return factorCommonPrefix(lines);
-  const parsed = lines.map((l) => { const m = l.match(/^(.*?):(\d+):\s?(.*)$/); return m ? { p: m[1], ln: m[2], t: m[3] } : null; });
-  if (parsed.some((x) => !x)) return factorCommonPrefix(lines);
-  const byFile = new Map();
-  for (const h of parsed) { if (!byFile.has(h.p)) byFile.set(h.p, []); byFile.get(h.p).push(h); }
-  if (byFile.size === lines.length) return factorCommonPrefix(lines); // no same-file repetition to fold
-  const files = [...byFile.keys()];
-  const prefix = files.length > 1 ? commonDirPrefix(files) : "";
-  const rel = (p) => (prefix ? p.slice(prefix.length + 1) : p);
-  const head = prefix ? `under ${prefix}/\n` : "";
-  const body = files.map((p) => {
-    const hs = byFile.get(p);
-    if (hs.length === 1) return `  ${rel(p)}:${hs[0].ln}: ${hs[0].t}`;
-    return `  ${rel(p)}: (${hs.length})\n` + hs.map((h) => `    ${h.ln}: ${h.t}`).join("\n");
-  }).join("\n");
-  return head + body;
-}
 // ── Completeness certificate — the semantic guarantee grep cannot give ──────────────────────────────────
 // Every result-bearing tool states whether the answer set is COMPLETE (the engine/scan covered everything),
 // PARTIAL (capped — more exist and the remainder is KNOWN and recoverable via the cap/tee), or INCONCLUSIVE
@@ -2620,7 +2596,7 @@ export async function runTool(name, a = {}) {
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
       const textCert = completenessCert({ shown: hits.length, total: hits.truncated ? null : hits.length, truncated: hits.truncated || null, semantic: false });
-      const textBody = `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + foldTextHits(hits) + textCert;
+      const textBody = `${hits.length} match(es) for "${a.q}" (${scopeLabel})${tt}:\n` + factorCommonPrefix(hits) + textCert;
       // LEAD with the symbol-hunt steer (not trail it): the model acts on the first lines it reads, so an
       // actionable "use find_references instead" buried under 60 matches is seen too late (live: a symbol
       // text-search ran, the model used the partial body before reaching the trailing steer). A plain text
