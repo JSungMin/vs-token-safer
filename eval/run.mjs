@@ -2116,7 +2116,25 @@ if (tsAvailable()) {
   const chunkOk = !!ck && ck.endRow > 0 && ck.endRow < 13 && ck.omitted > 0 &&
     /;\s*$/.test(chunkSrc.split("\n")[ck.endRow]) &&                      // the cut row ends a WHOLE statement
     ckBad === null;
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && partialFallbackOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk;
+  // (i) §9.3 widened coverage: C/C++ preprocessor macros + enum constants (clangd-unresolved kinds) now
+  // extract, and two high-use grammars promoted to the hand-tuned tier (Lua, Solidity) yield real decls.
+  fs.writeFileSync(path.join(tsDir, "sub", "macros.c"), "#define MAX_LEN 128\n#define SQUARE(x) ((x)*(x))\nenum Color { RED, GREEN, BLUE };\nint compute(int a){ return a; }\n");
+  const cMacroSyms = await tsFileSymbols(path.join(tsDir, "sub", "macros.c"));
+  fs.writeFileSync(path.join(tsDir, "sub", "mod.lua"), "local M = {}\nfunction M.doThing(a) return a end\nlocal function helper() end\nreturn M\n");
+  const luaSyms = await tsFileSymbols(path.join(tsDir, "sub", "mod.lua"));
+  fs.writeFileSync(path.join(tsDir, "sub", "Token.sol"), "contract Token { uint public supply; function transfer() public {} event Sent(uint a); }\n");
+  const solSyms = await tsFileSymbols(path.join(tsDir, "sub", "Token.sol"));
+  const newLangOk =
+    cMacroSyms.some((s) => s.name === "MAX_LEN" && s.kind === "macro") &&
+    cMacroSyms.some((s) => s.name === "SQUARE" && s.kind === "macro") &&
+    cMacroSyms.some((s) => s.name === "RED" && s.kind === "const") &&
+    luaSyms.some((s) => /doThing/.test(s.name) && s.kind === "func") &&
+    luaSyms.some((s) => s.name === "helper" && s.kind === "func") &&
+    solSyms.some((s) => s.name === "Token" && s.kind === "class") &&
+    solSyms.some((s) => s.name === "transfer" && s.kind === "func") &&
+    solSyms.some((s) => s.name === "supply" && s.kind === "field") &&
+    solSyms.some((s) => s.name === "Sent" && s.kind === "event");
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && partialFallbackOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk && newLangOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
