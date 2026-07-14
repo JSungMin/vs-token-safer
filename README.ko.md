@@ -2,8 +2,9 @@
 
 [English](README.md) · **한국어**
 
-> Claude Code용 토큰 절약 코드 레이어 — **어떤** 코드베이스에서도: TypeScript·JavaScript·Python·C#·C++·Go 등.
-> (26k 변환 단위 Unreal Engine 모노레포까지 검증됨. 게임/빌드 로그 분석기도 함께 번들.)
+> Claude Code용 토큰 절약 코드 레이어 — **어떤** 코드베이스에서도. **TypeScript·JavaScript·Python은 설정 없이
+> 바로** 동작하고, C#·C++는 언어 서버를 붙이며, 그 외 30개가 넘는 언어는 내장 tree-sitter 계층으로 바로
+> 들어옵니다. 26k 변환 단위 Unreal Engine 모노레포까지 검증됐으니, 웹·백엔드·데이터 프로젝트라면 오히려 가벼운 축입니다.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED)](https://code.claude.com/docs/en/plugins)
 [![MCP](https://img.shields.io/badge/MCP-server-1f6feb)](https://modelcontextprotocol.io)
@@ -240,9 +241,10 @@ README 참고.
 
 ## 성능
 
-대형 Unreal Engine 5 프로젝트에서의 실제 A/B: 공개 엔진 심볼 하나(`FGameplayTag`)를 Bash grep-and-paste로
-찾을 때와 이 플러그인으로 찾을 때. 프로젝트 소스는 재현하지 않고 집계 수치만 씁니다.
-[BENCHMARK.md](BENCHMARK.md) 참고.
+토큰 절감은 저장소 크기에 비례하고 언어를 가리지 않습니다 — TypeScript 서비스든 Python 코드베이스든 같은
+양상입니다(결정적 3개 언어 벤치마크는 약 87% 절감. [BENCHMARK.md](BENCHMARK.md) 참고). 지금까지 측정한 가장
+극단적인 사례가 대형 Unreal Engine 5 프로젝트입니다: 공개 엔진 심볼 하나(`FGameplayTag`)를 Bash
+grep-and-paste로 찾을 때와 이 플러그인으로 찾을 때. 프로젝트 소스는 재현하지 않고 집계 수치만 씁니다.
 
 | | Bash grep-and-paste (레포 전체) | **플러그인 (clangd 인덱스, 캡)** |
 | --- | ---: | ---: |
