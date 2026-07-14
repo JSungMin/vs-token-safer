@@ -54,9 +54,14 @@ export function langIdForPath(p, backend) {
 }
 
 export class LspClient {
-  constructor(cmd, args = [], { cwd = process.cwd(), env = process.env, shell = false } = {}) {
+  constructor(cmd, args = [], { cwd = process.cwd(), env = process.env, shell = false, friendlyMissing = null } = {}) {
     this.cmd = cmd;
     this.args = args;
+    // When set, a spawn FAILURE (binary not on PATH) rejects with this friendly, actionable message instead of
+    // the raw `failed to spawn <cmd>`. Used for a clangd that isn't installed: a semantic op (goto/hover/rename/
+    // diagnostics) then returns "clangd not found — install …; syntactic alternative: search_symbol/read_symbol"
+    // rather than a dead-end error. Locate ops never reach here (they pre-empt to tree-sitter upstream).
+    this.friendlyMissing = friendlyMissing;
     this.cwd = cwd;
     this.env = env;
     // On Windows, npm-installed LSP CLIs (typescript-language-server, pyright-langserver) are `.cmd`
@@ -85,7 +90,7 @@ export class LspClient {
     this.proc = spawn(cmd, args, { cwd: this.cwd, env: this.env, stdio: ["pipe", "pipe", "pipe"], shell: this.shell });
     this.proc.stdout.on("data", (d) => this._onData(d));
     this.proc.stderr.on("data", (d) => { this.stderr += d.toString(); if (this.stderr.length > 20000) this.stderr = this.stderr.slice(-20000); });
-    this.proc.on("error", (e) => this._failAll(new Error(`failed to spawn ${this.cmd}: ${e.message}`)));
+    this.proc.on("error", (e) => this._failAll(new Error(this.friendlyMissing || `failed to spawn ${this.cmd}: ${e.message}`)));
     this.proc.on("exit", (code) => this._failAll(new Error(`${this.cmd} exited (code ${code}). stderr tail:\n${this.stderr.slice(-400)}`)));
   }
 
