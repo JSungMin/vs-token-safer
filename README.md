@@ -18,21 +18,15 @@
 > Ask where something is, what calls it, or even "how does the auth flow work?" when the name escapes you — and
 > instead of pasting a wall of source into the chat, it replies with a short `file:line` list.
 >
-> When your project builds normally, the answers are exact: it reads the same code index your editor relies on.
-> When it doesn't, it still locates your functions and classes with nothing to set up. And when you've forgotten
-> the name and only remember what the code does, it finds it from the vocabulary your own code already uses — no
-> AI model, nothing uploaded. Markdown and config files work the same way: jump straight to one section by its
-> heading instead of opening the whole file.
+> - **Builds normally?** The answers are exact — it reads the same code index your editor relies on.
+> - **No toolchain set up?** It still locates your functions and classes.
+> - **Forgot the name, only remember what it does?** It finds it from the vocabulary your own code already uses — no AI model, nothing uploaded.
+> - **Markdown or a config file?** Jump straight to one section by its heading instead of opening the whole file.
 >
 > A companion plugin does the same for giant editor and build logs. **None of it leaves your machine.**
 
 <p align="center">
   <img src="docs/vts-savings.png" alt="87% fewer tokens than grep — a deterministic 3-language, 150-file benchmark (47,547 grep tokens vs 6,195); ~99% on the zero-setup tree-sitter tier; ~138x on a real Unreal Engine 5 tree" width="900">
-</p>
-
-<p align="center">
-  <img src="docs/vts-dashboard.gif" alt="The vs-token-safer local dashboard — the indexed repo as a live, rotating 3D graph (Three.js, served on 127.0.0.1)" width="640"><br>
-  <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1.</sub>
 </p>
 
 ```text
@@ -48,12 +42,17 @@ $ replace_symbol_body symbol="createSession" body="…"        # preview; apply=
 ```
 <sub>Same flow on TypeScript, Python, C#, C++, Go and more (clangd · Roslyn · tsserver · pyright · tree-sitter). `VTS_REWRITE=0` blocks instead of rewriting.</sub>
 
+<p align="center">
+  <img src="docs/vts-dashboard.gif" alt="The vs-token-safer local dashboard — the indexed repo as a live, rotating 3D graph (Three.js, served on 127.0.0.1)" width="640"><br>
+  <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1.</sub>
+</p>
+
 ## Why
 
-- `grep` on a large repo — a TypeScript/Python monorepo, a C#/.NET solution, even a 26k-TU Unreal C++ tree — floods the context. The language-server index stays token-capped — ~97–99% smaller ([benchmarks](#performance)).
-- Claude keeps reaching for `grep`. The hook doesn't just block it — it **rewrites the command to the indexed query in place**, so the search still runs and the flow never breaks.
+- **Keep the context lean.** `grep` on a large repo — a TypeScript/Python monorepo, a C#/.NET solution, even a 26k-TU Unreal C++ tree — floods the context. The language-server index stays token-capped — ~97–99% smaller ([benchmarks](#performance)).
+- **Claude keeps reaching for `grep`.** The hook doesn't just block it — it **rewrites the command to the indexed query in place**, so the search still runs and the flow never breaks.
 - **Edit by symbol, not by line.** Replace/insert-around/delete a declaration by *naming* it — the index supplies the span, so you skip reading the whole file into context.
-- You can't tell how much grep still slips through. `vts discover` reads your recent sessions and reports exactly which searches bypassed the index and what they cost.
+- **You can't tell how much grep still slips through.** `vts discover` reads your recent sessions and reports exactly which searches bypassed the index and what they cost.
 - The language server runs **headlessly** — no editor open, unlike an IDE-proxy approach.
 
 ## Quickstart
@@ -87,8 +86,8 @@ reach, then tells you which rung the answer came from:
 
 - **EXACT** — you know the name and the project builds → the official language server (clangd / Roslyn /
   tsserver / pyright), the semantic ground truth.
-- **SYNTACTIC** — no toolchain set up → a tree-sitter parse (36 languages, bundled, no native build) still
-  returns real *declarations*, not a grep.
+- **SYNTACTIC** — no toolchain set up → a tree-sitter parse (36 grammars bundled, no native build; 19 languages
+  with tuned declaration extraction, the rest via a generic parse) still returns real *declarations*, not a grep.
 - **FUZZY** — you only remember what the code *does* → a concept dictionary mined from the repo's own
   identifiers + comments (no AI model, nothing uploaded).
 - **SECTION** — it's a doc or config, not code → Markdown / TOML / YAML / CSS / HTML addressed by heading.
@@ -98,6 +97,15 @@ on FUZZY when you only know the intent; the moment `concept_search` surfaces a r
 EXACT to confirm it against the semantic index (and an exact search that misses drops back down to FUZZY).
 The hooks steer that hand-off in both directions, so "I don't know the name" turns into a precise,
 semantically-verified `file:line` instead of a dead end.
+
+**Graceful degradation — a locate never hard-errors on a cold or missing toolchain.** When clangd is
+**missing, cold, or still indexing**, a locate degrades to the SYNTACTIC (tree-sitter) tier with a one-line
+advisory instead of erroring or blocking, then climbs to EXACT once clangd warms. If a committed
+`.vts-index` has drifted from the source, the answer is still served but labeled `SYNTACTIC · STALE` (with a
+`climb: vts index` hint). And on a cold locate over a large tree, vts **auto-builds the `.vts-index/` in the
+background** so the next query (or the same session, once the build finishes) is instant — you never wait on
+it. So `vts index` below is best thought of as *auto-built in the background; commit it to share*, not a
+manual step you have to remember.
 
 Every answer comes back capped to `file:line` (never source bodies) and carries a one-line **completeness
 certificate** naming the rung — so the model always knows whether it got the semantic truth or a fallback.
@@ -156,6 +164,8 @@ cost small; the CLI keeps the bare subcommands):
 | `setup` / `config` | `vts setup` / `vts config` | Configure / show settings (projectPath, backend, maxResults, clangdCmd, genCompileDb). |
 | `savings` / `savings_reset` | `vts savings` | Token-savings ledger (graph/daily/history) / clear it. |
 | `warmup` | `vts warmup` | Pre-build the language-server index. |
+| `preindex` | `vts preindex` | Build the clangd index ahead of the first query (big-tree cold start). |
+| `index` | `vts index` | Build/refresh the committable `.vts-index/` cold-start symbol index (`index --status` to show it). |
 | `discover` | `vts discover` | Find code searches that bypassed vts (missed savings). |
 | `gen_compile_db` | `vts gen-compile-db` | Generate the Unreal clangd compile DB (UBT). |
 
@@ -212,7 +222,7 @@ aimed at a log (`Logs/`, `.log`/`.jsonl`) points you back at gamedev-log instead
 | Combined savings (measured) | Bash / raw | Plugin | Reduction |
 | --- | ---: | ---: | ---: |
 | Symbol search on a real UE5 repo (`FGameplayTag`) | ~282,194 tok | ~2,048 tok | **~99.3% (~138×)** |
-| Raw index response → capped list (eval, 1,000 symbols) | ~57,308 tok | ~1,549 tok | **~97.3%** |
+| Raw index response → capped list (eval, 1,000 symbols) | ~57,308 tok | ~1,515 tok | **~97.4%** |
 | Read a ~1 MB editor log (`summary`) | ~267,000 tok | ~130 tok | **~99.95%** |
 
 ## Companion: drive vs-search with a local model
@@ -245,8 +255,8 @@ grep-and-paste vs this plugin. No project source is reproduced, only aggregate c
 
 **~99.3% fewer (~138×).** grep returns the full text of every matching line and matches by text (comments,
 strings, unrelated identifiers); the plugin returns one `file:line` per semantic hit, capped. The mock-LSP
-eval (`node eval/run.mjs`, no toolchain) gates this on every commit: `~57,308 → ~1,549 tok` = **97.3%**
-(53/53 checks).
+eval (`node eval/run.mjs`, no toolchain) gates this on every commit: `~57,308 → ~1,515 tok` = **97.4%**
+(92 checks).
 
 **Syntactic tier vs clangd — same location, no cold wait.** On a second real UE5 game module (3,143 files,
 133,890 symbols; aggregate counts only), the tree-sitter tier returned the **same `file:line`** as clangd's
@@ -315,18 +325,29 @@ monolithic static index offline and clangd loads it via `--index-file` — a loc
 first query is instant instead of waiting on the lazy background crawl. Without `clangd-indexer` it falls
 back to a warm pass (and tells you to install full LLVM). Override the binary with `VTS_CLANGD_INDEXER_CMD`.
 
+**clangd background indexing scales by tree size (RAM/CPU tiering).** To keep a huge tree from pinning your
+machine, background indexing is auto-tiered by translation-unit count: **FULL** at ≤ 4,000 TUs (normal
+priority), **SAFE** at 4k–15k (idle CPU priority, throttled), and **OFF** above 15,000 TUs (no whole-tree
+crawl — project-wide `search_symbol`/`find_references` fall to the syntactic tier, while single-file
+`read_symbol`/`hover`/outline stay cheap). A one-line advisory names the tier so you know search degraded on
+purpose; the bounded fix is to `vts setup --scope <module>` then `vts preindex`. Knobs:
+`VTS_CLANGD_BG_INDEX` (force `full`/`off`), `VTS_CLANGD_BG_INDEX_SOFT_TUS` (`4000`),
+`VTS_CLANGD_BG_INDEX_HARD_TUS` (`15000`), `VTS_CLANGD_HUGE_WARM_CAP` (`8`).
+
 **3. Zero-setup tier — works before any toolchain, on any repo.** No compile DB, no language server, no
-wait? vts still answers `search_symbol` from a **tree-sitter** parse (an official standard parser, 36
-languages, bundled as wasm — no native build) — real *declarations*, not a usage grep, in the same
-token-capped `file:line` shape. Make it instant and shareable by committing an index:
+wait? vts still answers `search_symbol` from a **tree-sitter** parse (an official standard parser; 36 grammars
+bundled as wasm — no native build; 19 languages with tuned declaration extraction, the rest via a generic parse) —
+real *declarations*, not a usage grep, in the same token-capped `file:line` shape. Make it instant and shareable by committing an index:
 
 ```bash
 vts index --projectPath /path/to/repo      # writes .vts-index/symbols.jsonl (commit it!)
 vts index --status                          # show the current committed index
 ```
 
-`.vts-index/symbols.jsonl` is plain, git-committable, and portable — commit it so teammates (and your own
-cold starts) get instant symbol search with zero setup. A language server, once it indexes, automatically
+You rarely have to run this by hand: on a cold locate over a large tree vts **auto-builds `.vts-index/` in
+the background** (`VTS_AUTO_INDEX`, on by default) so a later query is instant. `.vts-index/symbols.jsonl` is
+plain, git-committable, and portable — commit it so teammates (and your own cold starts) get instant symbol
+search with zero setup. A language server, once it indexes, automatically
 supersedes it (the syntactic tier locates decls; the LSP adds reference/overload/type resolution on top).
 Benchmark (150-file symbol search): grep `4917` → tree-sitter `53` tokens = **98.9%**, no toolchain.
 
@@ -445,6 +466,10 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_CLANGD_PERSISTED_FLOOR_MS` | `3000` | Brief floor before the first query starts polling. |
 | — | `VTS_CLANGD_INDEX_PRIORITY` | `normal` | clangd background-index priority (`background` = idle-CPU-only). |
 | — | `VTS_CLANGD_JOBS` | `cores-1` | clangd async/index workers (`-j`). |
+| — | `VTS_CLANGD_BG_INDEX` | auto | Force clangd background indexing `full` / `off` (default: auto-tiered by tree size — see *Big trees*). |
+| — | `VTS_CLANGD_BG_INDEX_SOFT_TUS` | `4000` | ≤ this many TUs → FULL background index; above it → SAFE (idle-priority, throttled). |
+| — | `VTS_CLANGD_BG_INDEX_HARD_TUS` | `15000` | Above this many TUs → background index OFF (no whole-tree crawl; falls to the syntactic tier). |
+| — | `VTS_CLANGD_HUGE_WARM_CAP` | `8` | Warm-up open-cap in SAFE/OFF mode (a large tree's warm-up is itself a parse spike). |
 | — | `VTS_PREWARM` | on (if `projectPath`) | MCP server pre-warms at boot; `0` disables. |
 | — | `VTS_PREWARM_BACKENDS` | auto | `auto` / `all` / comma list — which backends to pre-warm. |
 | — | `VTS_WARM_CAP_RATIO` / `VTS_WARM_CAP_MAX` | `0.1` / `300` | Adaptive warm-up open-cap (fraction of a language's files, clamped). |
@@ -471,6 +496,17 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_INDEX_ADVISORY` | `1` | On an EMPTY clangd result, append a why-advisory: the file isn't in `compile_commands.json`, or the background index is only N% built. `0` silences it. |
 | — | `VTS_CLAUDE_PROJECTS` | `~/.claude/projects` | Where `vts discover` looks for transcripts. |
 | — | `VTS_DB_DIR` | `~/.vs-token-safer/db` | Out-of-tree home for generated compile DBs. |
+| — | `VTS_LADDER_LINE` | on (→ `VTS_CERT`) | Shows the one-line `[ladder: RUNG — reason. climb: cmd]` degrade hint; `0` hides it (unset follows `VTS_CERT`). |
+| — | `VTS_AUTO_INDEX` | `1` | Auto-build `.vts-index/` in the background on a cold locate over a large tree; `0` disables. |
+| — | `VTS_AUTOINDEX_MIN_FILES` | `400` | Min tree size (files) that triggers the background auto-index. |
+| — | `VTS_AUTOINDEX_LOCK_TTL_MS` | `1800000` | Cross-process lock TTL for the auto-index build (default 30 min). |
+| — | `VTS_STALE_CHECK` | `1` | Label a drifted committed index `SYNTACTIC · STALE`; `0` skips the freshness probe. |
+| — | `VTS_READ_STEER` | `1` | On a big-file **Read**, nudge toward `read_symbol` (one decl) / the symbol-edit tools; `0` hides. |
+| — | `VTS_READ_STEER_MIN` | `6000` | Min file size (bytes) that triggers the Read → `read_symbol` nudge. |
+| — | `VTS_ORCH_BLOCK` | `1` | When a local orchestrator (qvts) is on PATH, redirect LOCATE + Bash/Grep code-search to `qvts`; `0` = warn-only. |
+| — | `VTS_ORCHESTRATOR_AWARE` | `1` | `0` disables orchestrator detection entirely (the redirect never fires). |
+| — | `VTS_ORCH_TTL_MS` | `180000` | Window in which an identical re-issued locate passes (post-delegation fallback); default 3 min. |
+| — | `VTS_ORCH_FALLBACK_TTL_MS` | `120000` | After a delegated locate comes up dry, the window where Claude may search directly; default 2 min. |
 </details>
 
 <details>
@@ -486,6 +522,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | No C# results / "No backend resolved" | Roslyn engine not found | Install the VS Code C# extension, or `csharp-ls`; or set `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD`. |
 | No JS/TS or Python results | Bundled LSP didn't install (offline first run) | Re-run the session, or set `VTS_TS_CMD` / `VTS_PY_CMD`. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | `VTS_ENFORCE=0` lets grep through. |
+| Locate / grep redirected to `qvts` | A local orchestrator (qvts / vts-local-orchestrator) is on PATH, so the LOCATE tools + Bash/Grep code-search are delegated to it | Run the suggested `qvts` command (returns a compact `file:line`), or set `VTS_ORCH_BLOCK=0` for warn-only. |
 | Wrong backend picked | Multiple project files under the root | Pin `VTS_BACKEND=clangd` (or pass `backend` per call). |
 | `-32001 invalid AST` / nothing on a non-C++ file | A `backend` pinned for a C++ repo was reaching another repo's `.js`/`.cs`/`.py` | Fixed in 0.28.4 — the file's own backend now wins on conflict; update the plugin (`/plugin marketplace update`). |
 | clangd finds nothing on a symbol you KNOW exists | The compile DB doesn't cover that module, OR the background index isn't built yet (vts prints which — see `VTS_INDEX_ADVISORY`) | If "not in compile_commands.json": build the editor target + regenerate the DB. If "index N% complete": keep the server warm so indexing finishes, or scope the DB to your game modules (a 26k-TU full-engine DB indexes slowly — exclude `Engine/` for ~8× faster, complete coverage). |
