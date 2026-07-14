@@ -19,7 +19,7 @@ import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
-import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd } from "./treesitter.js";
+import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol, tsFileSymbols } from "./treesitter.js";
 import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
@@ -903,12 +903,19 @@ export function hasCompileDb(root) {
 }
 export function compileDbAdvisory(root) {
   if (hasCompileDb(root)) return "";
-  return "⚠ clangd needs compile_commands.json — none found under the root. Generate it: run " +
+  // Two independent remedies, cheapest first: (1) the committable symbol index needs NO toolchain and makes
+  // search_symbol instant+complete on its own (the right first move on a giant UE tree); (2) the compile DB
+  // unlocks full semantics (refs/goto/hover) but needs the UE build env and minutes of UBT.
+  const idx = fs.existsSync(symIndexPath(root));
+  const idxLine = idx ? "" :
+    "Cheapest fix first: `vts_index` builds a committable symbol index (.vts-index/, one-time, chunk-safe " +
+    "on huge trees, no toolchain) — search_symbol answers from it instantly; commit it to share. ";
+  return "⚠ clangd needs compile_commands.json — none found under the root. " + idxLine +
+    "For FULL semantics (find_references/goto/hover) generate the DB: run " +
     "`vts_gen_compile_db` (dry-run prints the UBT command; apply=true runs it), or by hand via UBT " +
     "`-mode=GenerateClangDatabase` (`-Compiler=VisualCpp` for clang-cl) / CMake " +
-    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, semantic " +
-    "search_symbol/find_references/goto/hover are limited, but search_symbol falls back to a literal text " +
-    "search and find_files/search_text work fully.";
+    "`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`. OR just keep going — without a DB, " +
+    "search_symbol falls back to the syntactic/text tier and find_files/search_text work fully.";
 }
 // B: when a clangd query comes back EMPTY, say WHY — distinguish (1) the target file isn't in the compile DB
 // at all (its module wasn't built/included) from (2) it IS in the DB but its index shard isn't built yet (the
@@ -930,6 +937,47 @@ function loadCdb(cdbDir) {
 }
 function clangdShardCount(cdbDir) {
   try { let n = 0; for (const f of fs.readdirSync(path.join(cdbDir, ".cache", "clangd", "index"))) if (f.endsWith(".idx")) n++; return n; } catch { return 0; }
+}
+// Bounded big-tree probe for the search_symbol pre-empt: count C/C++ sources, EARLY-EXIT the moment the
+// threshold is crossed (a UE tree crosses it in milliseconds; a small project finishes the whole walk
+// under it just as fast). Cached per root for the process lifetime; 400ms hard budget so a pathological
+// filesystem can't stall a query — on budget exhaustion, decide from what was seen so far.
+// Shared verdict for the search_symbol / find_references pre-empts: would dispatching this query to clangd
+// likely blow past the MCP client timeout? True when: no compile DB at all; a huge DB whose background index
+// is far from complete (workspace/symbol crawls); or a huge DB with NO warm clangd client yet — a COLD spawn
+// must load tens of thousands of index shards inside this one request (live: 26k TUs with 28k shards — index
+// "complete" — still a 43s timeout from cold). A warm client on a complete index answers fast and keeps full
+// semantics, so it is never pre-empted.
+function clangdCrawlLikely(root) {
+  let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
+  const db = cdbDir ? loadCdb(cdbDir) : null;
+  if (!db || db.count === 0) return { crawl: true, why: "no compile_commands.json" };
+  if (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000)) {
+    const shards = clangdShardCount(cdbDir);
+    if (shards < Math.floor(db.count * 0.9)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, index incomplete` };
+    if (!clients.has(`clangd|${root}`)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, cold start (no warm clangd yet)` };
+  }
+  return { crawl: false, why: "" };
+}
+const _bigTreeCache = new Map(); // root → boolean
+function bigTreeLikely(root) {
+  if (_bigTreeCache.has(root)) return _bigTreeCache.get(root);
+  const cap = envInt("VTS_SYMBOL_PREEMPT_FILES", 3000);
+  const t0 = Date.now();
+  let n = 0, big = false;
+  const stack = [root];
+  const skip = (name) => name.startsWith(".") || /^(node_modules|intermediate|binaries|saved|deriveddatacache|build|dist|out|obj)$/i.test(name);
+  while (stack.length && !big) {
+    if (Date.now() - t0 > 400) { big = n > cap / 4; break; }
+    const d = stack.pop();
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!skip(e.name)) stack.push(path.join(d, e.name)); }
+      else if (/\.(c|cc|cxx|cpp|h|hpp|hh|inl)$/i.test(e.name) && ++n >= cap) { big = true; break; }
+    }
+  }
+  _bigTreeCache.set(root, big);
+  return big;
 }
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
@@ -1241,7 +1289,7 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
   // index fixes, so the advisory is actionable (the concrete `vts setup --scope` + `vts preindex` commands).
   if (truncated === "time" || truncated === "scan") {
     const how = truncated === "time" ? "time-boxed" : "scan-limited";
-    return `\n[completeness: INCONCLUSIVE — bounded ${how} walk didn't cover the tree (a 0 may be incomplete); scope it (vts setup --scope <module>; vts preindex) or certify with search_symbol/find_references.]`;
+    return `\n[completeness: INCONCLUSIVE — bounded ${how} walk didn't cover the tree (a 0 may be incomplete${truncated === "time" ? `; raise VTS_TEXT_TIMEBOX_MS (now ${textTimeboxMs()}ms)` : ""}); scope it (vts setup --scope <module>; vts preindex) or certify with search_symbol/find_references.]`;
   }
   if (truncated === "index") {
     return `\n[completeness: INCONCLUSIVE — indexed/open files only, so a not-yet-indexed file can be missed (not an authoritative 0); scope a big tree (vts setup --scope <module>; vts preindex).]`;
@@ -1546,7 +1594,48 @@ const SKIP_DIRS = new Set([
   "intermediate", "binaries", "saved", "deriveddatacache", "build", "dist", "out", "obj", "bin",
   "__pycache__", ".venv", "venv", "target",
 ]);
-const skipDir = (name) => name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase());
+// Unreal's `Content/` holds the game's BINARY assets (.uasset/.umap) — on a real title that is HUNDREDS OF
+// THOUSANDS of files (observed: 747k), none of them code. Walking it made every search_text/find_files spend
+// the ENTIRE (orchestrator-raised, 40s) time-box enumerating assets → a trivial uasset/ini query took ~1min
+// per tool call and returned an unrelated file (reads to the user as qvts "hanging / looping / failing").
+// Skip `Content/` — but ONLY on an UNREAL tree, detected by a `.uproject`/`.uprojectdirs` at or above the walk
+// root — so a NON-UE `content/` (a Hugo/Gatsby/Jekyll markdown dir, a CMS, etc.) in any other language stays
+// fully searchable. Force with VTS_SKIP_CONTENT=1 (skip everywhere) or VTS_INCLUDE_CONTENT=1 (never skip).
+const _ueRootCache = new Map();
+function isUnrealRoot(root) {
+  if (/^(1|true|on|yes)$/i.test(process.env.VTS_INCLUDE_CONTENT || "")) return false; // force-keep content
+  if (/^(1|true|on|yes)$/i.test(process.env.VTS_SKIP_CONTENT || "")) return true;      // force-skip content
+  if (!root) return false;
+  const key = String(root);
+  if (_ueRootCache.has(key)) return _ueRootCache.get(key);
+  let ue = false;
+  try {
+    let d = path.resolve(root);
+    for (let i = 0; i < 5; i++) { // check the root and a few ancestors for a UE project/engine marker
+      let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { break; }
+      if (ents.some((e) => e.isFile() && /\.uproject(dirs)?$/i.test(e.name))) { ue = true; break; }
+      const parent = path.dirname(d);
+      if (parent === d) break;
+      d = parent;
+    }
+  } catch { /* best-effort — default to NOT skipping content */ }
+  _ueRootCache.set(key, ue);
+  return ue;
+}
+const skipDir = (name, root) =>
+  name.startsWith(".") || SKIP_DIRS.has(name.toLowerCase()) || (name.toLowerCase() === "content" && isUnrealRoot(root));
+// Wall-clock budget for the lexical tree walks (search_text / find_files / concept pool). 4s is fine for a
+// normal repo, but a GIANT unindexed tree (e.g. an Unreal source tree with no clangd index, where the LSP
+// tools all time out and text scan is the only tier left) can legitimately need longer — at 4s the walk
+// aborts mid-tree and a real match reads as a FALSE "no match". Env-tunable so the orchestrator can raise it
+// for big trees (it injects a higher value on an unindexed C/C++ root); the completeness cert still flags any
+// aborted walk as INCONCLUSIVE so a bounded 0 is never presented as authoritative absence.
+const textTimeboxMs = () => envInt("VTS_TEXT_TIMEBOX_MS", 4000);
+// Per-file byte ceiling for the text scan. A single generated/minified blob (UE `.gen.cpp`, bundled JS) can be
+// tens of MB on one line; `re.test` over it can stall the event loop far past the between-files time-box check,
+// which is exactly how a pure-text search_text blows past the MCP client's request timeout (-32001) on a giant
+// tree. Skip files bigger than this — they're generated noise for a symbol/usage hunt, not real call sites.
+const textMaxFileBytes = () => envInt("VTS_TEXT_MAXFILE_BYTES", 12 * 1024 * 1024);
 // File-by-name search (no LSP) — basename glob (* ?) or substring, bounded. Sanctioned replacement for
 // `find -name` (which the grep-block hook discourages).
 function findFilesUnder(root, q, max) {
@@ -1558,12 +1647,12 @@ function findFilesUnder(root, q, max) {
   // Collect up to max+1 so "exactly max files exist" (a complete sweep) isn't misreported as truncated.
   // Time-boxed (4s) like scanTextUnder so a giant tree can never hang the tool — it returns what it found.
   while (stack.length && out.length <= max && scanned < 300000) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); }
       else { scanned++; if (re ? re.test(e.name) : e.name.toLowerCase().includes(ql)) { out.push(p.replace(/\\/g, "/")); if (out.length > max) break; } }
     }
   }
@@ -1580,12 +1669,12 @@ const DIAG_CODE_RE = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|
 function codeFilesUnder(root, max) {
   const out = []; const stack = [root]; let scanned = 0; const t0 = Date.now(); let timedOut = false;
   while (stack.length && out.length < max && scanned < 300000) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); }
       else { scanned++; if (DIAG_CODE_RE.test(e.name)) { out.push(p.replace(/\\/g, "/")); if (out.length >= max) break; } }
     }
   }
@@ -1641,15 +1730,16 @@ function scanTextUnder(root, q, max, accept) {
   // actually aborted work (checked per directory and per file — the costly steps).
   const out = []; const stack = [root]; const t0 = Date.now(); let timedOut = false;
   while (stack.length && out.length <= max) {
-    if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+    if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
     const dir = stack.pop();
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
+      if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); continue; }
       if (!ok(e.name)) continue;
-      if (Date.now() - t0 >= 4000) { timedOut = true; break; }
+      if (Date.now() - t0 >= textTimeboxMs()) { timedOut = true; break; }
       let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
+      if (txt.length > textMaxFileBytes()) continue; // generated/minified blob — its re.test would stall the loop
       if (!re.test(txt)) continue;
       const lines = txt.split(/\r?\n/);
       for (let i = 0; i < lines.length && out.length <= max; i++) if (re.test(lines[i])) out.push(`${p.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(lines[i])}`);
@@ -1673,13 +1763,45 @@ async function syntacticSymbols(root, q, max) {
     let hits = searchSymIndex(root, String(q), { max });
     let source = hits && hits.length ? "committed index (.vts-index)" : null;
     if (!source) {
-      hits = await tsSearchSymbols(root, String(q), { max, skipDir });
+      hits = await tsSearchSymbols(root, String(q), { max, skipDir: (n) => skipDir(n, root) });
       source = hits && hits.length ? "tree-sitter (syntactic)" : null;
     }
     if (!source) return null;
     const lines = hits.map((h) => `${h.file}:${h.line}: ${h.kind} ${h.name}`);
     return { lines, source, truncated: hits.truncated || null, total: hits.length };
   } catch { return null; }
+}
+// Honor an optional path/class SCOPE and the caller's maxResults on a symbol lookup. Two live bugs this fixes:
+// (1) the committed-index cap was a hard `Math.min(pmax, 40)` — a hot name like CreateSceneProxy has 258 index
+// matches, so the relevant override (e.g. USkinnedMeshComponent's) fell past 40 AND maxResults couldn't raise it;
+// (2) a `path` the caller passed to scope the lookup ("find X in SkinnedMeshComponent.h") was dropped entirely,
+// so search_symbol returned an arbitrary tree-wide 40 and the model wrongly concluded "not found in <file>".
+// Scoped: pull a wide set, filter to the file/class token (substring, case-insensitive), cap to pmax. A scope
+// that matches NOTHING returns the tree-wide set flagged `scopeMiss` — an inherited symbol lives in a BASE file,
+// never a false "no match". Unscoped: syntacticSymbols already caps + carries total/truncated; honor pmax up to a
+// ceiling instead of the old hard 40.
+const SYM_SCOPE_CEIL = envInt("VTS_SYM_MAX", 200);
+async function scopedSyntacticSymbols(root, q, pathScope, pmax) {
+  const tok = pathScope ? String(pathScope).replace(/\\/g, "/").replace(/^\.?\/+/, "").toLowerCase().trim() : "";
+  const all = await syntacticSymbols(root, q, tok ? 2000 : Math.min(pmax, SYM_SCOPE_CEIL));
+  if (!all) return null;
+  if (!tok) return all;
+  // Match on a PATH-SEGMENT boundary ("/" + token), not a bare substring: scoping to "SkeletalMeshComponent.cpp"
+  // must NOT also match "PhysicsAssetEditorSkeletalMeshComponent.cpp" — else a genuine miss (a base-class-only
+  // symbol) looks like a hit in the wrong file. A class token ("SkinnedMeshComponent") likewise matches only
+  // that class's files, not "InstancedSkinnedMeshComponent".
+  const inScope = all.lines.filter((l) => l.replace(/\\/g, "/").toLowerCase().includes("/" + tok));
+  if (!inScope.length) {
+    // Not declared in the named file/class — an inherited symbol lives in a BASE file. Hand back the tree-wide
+    // set (capped) flagged scopeMiss so the caller says so, instead of a false "no match".
+    return { lines: all.lines.slice(0, pmax), source: all.source, total: all.total, truncated: all.total > pmax ? "cap" : all.truncated, scopeMiss: pathScope };
+  }
+  return { lines: inScope.slice(0, pmax), source: all.source, total: inScope.length, truncated: inScope.length > pmax ? "cap" : null, scoped: pathScope };
+}
+// A ready inheritance/scope note for a scoped symbol lookup (shared by the clangd-preempt + no-backend paths).
+function symScopeNote(syn, q) {
+  if (syn.scopeMiss) return `\n↪ "${q}" is NOT declared in ${syn.scopeMiss} — it may be INHERITED from a base class. Showing the ${syn.total} tree-wide declaration(s) instead.`;
+  return "";
 }
 // CONCEPT INDEX (fuzzy retrieval, approach B): mine a local concept dictionary from the repo's OWN identifier+
 // comment co-occurrence (server/concept.js) so a fuzzy "how does the auth flow work" query finds related
@@ -1702,7 +1824,7 @@ async function conceptIndexFor(root) {
       let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
       for (const e of ents) {
         const p = path.join(dir, e.name);
-        if (e.isDirectory()) { if (!skipDir(e.name)) stack.push(p); continue; }
+        if (e.isDirectory()) { if (!skipDir(e.name, root)) stack.push(p); continue; }
         if (!tsSupports(e.name) || !within(p)) continue;
         if (files >= fileCap) break;
         files++;
@@ -1824,15 +1946,39 @@ function flattenDocSyms(syms, out) {
 // file and goes straight to its outline; otherwise the declaration's file is found via the index (same
 // exact-name ranking as find_references-by-name). An optional 0-based `line` disambiguates same-named
 // symbols. Returns { file, ds, ambiguous } or { error }.
+// Tree-sitter resolution shared by read_symbol AND the edit tools (replace_symbol_body / insert_symbol /
+// safe_delete). resolveSymbolForEdit went STRAIGHT to clangd (symbolReady + documentSymbol), so on a crawl-
+// risk tree edit-by-name dead-ended exactly like read_symbol did ("no indexed declaration … pass path=" /
+// "no symbol named … in <file>"). tsReadSymbol gives the full decl span with no backend; we synthesise a
+// DocumentSymbol-shaped `.range` (end char = the last line's length so a whole-decl replace covers it).
+// File comes from an explicit `path` (resolved against root) or the committed-index declaration file.
+async function tsResolveForEdit(root, a) {
+  const want = String(a.symbol || "");
+  if (!want) return null;
+  let f = a.path ? String(a.path) : null;
+  if (f && !path.isAbsolute(f)) f = path.join(root, f);
+  if (!f) { const syn = await syntacticSymbols(root, want, 3); if (syn && syn.lines.length) f = syn.lines[0].split(/:\d+:/)[0]; }
+  if (!f) return null;
+  const ts = await tsReadSymbol(f, want, { line: a.line != null ? Number(a.line) + 1 : null });
+  if (!ts) return null;
+  let endCh = 0;
+  try { const ln = fs.readFileSync(f, "utf8").split(/\r?\n/)[ts.endRow]; endCh = ln != null ? ln.length : 0; } catch { /* end char 0 → still valid */ }
+  const range = { start: { line: ts.startRow, character: 0 }, end: { line: ts.endRow, character: endCh } };
+  return { file: f, ds: { range, selectionRange: { start: { line: ts.startRow, character: 0 }, end: { line: ts.startRow, character: 0 } }, kind: 0 }, ambiguous: ts.matches, kindLabel: ts.kind, syntactic: true };
+}
+
 async function resolveSymbolForEdit(c, root, backendName, a) {
   const want = String(a.symbol || "");
   if (!want) return { error: "needs `symbol` (the declaration name to edit)." };
+  // crawl-risk clangd → tree-sitter FIRST (clangd would time out / return an empty outline and dead-end).
+  const crawl = backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1")) && clangdCrawlLikely(root).crawl;
+  if (crawl) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; }
   let file = a.path ? String(a.path) : null;
   if (!file) {
     const persisted = backendName === "clangd" && hasPersistedIndex(root);
     const syms = await symbolReady(c, want, persisted, envInt("VTS_CLANGD_PERSISTED_WAIT_MS", 60000));
     const pick = syms.slice().sort((x, y) => (x.name === want ? 0 : 1) - (y.name === want ? 0 : 1))[0];
-    if (!pick) return { error: `no indexed declaration for "${want}" — pass path=<file> (the outline is read per-file), or run search_symbol first.` };
+    if (!pick) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; return { error: `no indexed declaration for "${want}" — pass path=<file> (the outline is read per-file), or run search_symbol first.` }; }
     file = fromUri(pick.location.uri);
   }
   c.didOpen(file, langIdForPath(file, backendName));
@@ -1843,7 +1989,7 @@ async function resolveSymbolForEdit(c, root, backendName, a) {
     const near = matches.filter((s) => ((s.selectionRange || s.range) || {}).start && (s.selectionRange || s.range).start.line === ln);
     if (near.length) matches = near;
   }
-  if (!matches.length) return { error: `no symbol named "${want}" in ${file.replace(/\\/g, "/")} — the match is exact-name; check spelling or run document_symbols on the file.` };
+  if (!matches.length) { const ts = await tsResolveForEdit(root, a); if (ts) return ts; return { error: `no symbol named "${want}" in ${file.replace(/\\/g, "/")} — the match is exact-name; check spelling or run document_symbols on the file.` }; }
   const ds = matches[0];
   if (!ds.range) return { error: `backend "${backendName}" returned no body range for "${want}" (flat SymbolInformation, not a hierarchical outline) — can't bound the body to edit safely.` };
   return { file, ds, ambiguous: matches.length };
@@ -2097,7 +2243,7 @@ export async function runTool(name, a = {}) {
       const dirs = scopeDirsFor(root);
       const within = dirs.length ? (p) => inScope(p, dirs) : undefined;
       const t0 = Date.now();
-      const r = await buildSymIndex(root, { skipDir, inScope: within, now: Date.now() });
+      const r = await buildSymIndex(root, { skipDir: (n) => skipDir(n, root), inScope: within, now: Date.now(), timeBudgetMs: envInt("VTS_INDEX_BUDGET_MS", 120000) });
       const scopeNote = dirs.length ? ` (scope: ${dirs.length} dir(s))` : "";
       // Incremental note: how many files were reused (no re-parse) vs re-parsed this run — the cold→warm win.
       const incrNote = r.reparsed != null && (r.reused || r.reparsed) ? ` [incremental: re-parsed ${r.reparsed}, reused ${r.reused} unchanged]` : "";
@@ -2436,13 +2582,16 @@ export async function runTool(name, a = {}) {
         // 0 matches but the 4s walk TIMED OUT before finishing → not genuinely absent, just unreached (this
         // is exactly how a usage hunt on a giant tree returns an empty/partial slice). Say so, and steer a
         // symbol hunt to find_references (semantic, walks no tree, complete).
-        const toNote = hits.truncated === "time" ? " — but the 4s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here)" : "";
+        const toNote = hits.truncated === "time" ? ` — but the ${Math.round(textTimeboxMs() / 1000)}s time-box hit before the scan finished, so this 0 is NOT conclusive (the walk didn't cover the whole tree; a real 0 and an unreached-in-time 0 are indistinguishable here). Narrow projectPath to the source root (e.g. .../Source) and retry — a scoped scan completes and is authoritative` : "";
         const emptySteer = (!docs && !a.path && hits.truncated) ? textSymbolSteer(a.q, true) : "";
         const emptyTextCert = completenessCert({ shown: 0, total: hits.truncated ? null : 0, truncated: hits.truncated || null, semantic: false });
         return finishOut([], `No text matches for "${a.q}" (${scopeLabel}) under ${root}${toNote}.` + LOG_EMPTY_HINT + emptySteer + emptyTextCert);
       }
-      let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — 4s time-box hit (narrow projectPath/q; more matches likely exist)` : "";
-      if (hits.truncated) tt += teeNote("search_text", a.q, root, runScan);
+      let tt = hits.truncated === "cap" ? ` — capped at ${max} (raise maxResults or narrow q; more exist)` : hits.truncated === "time" ? ` — ${Math.round(textTimeboxMs() / 1000)}s time-box hit (narrow projectPath to the source root or refine q; more matches likely exist)` : "";
+      // Only re-collect for a CAP truncation (real reachable matches exceeded `max` — the tee recovers them).
+      // On a TIME truncation the walk didn't finish, so re-running pays a SECOND full time-box for the same
+      // incomplete slice and writes a misleadingly "full" tee — skip it (this was doubling big-tree latency).
+      if (hits.truncated === "cap") tt += teeNote("search_text", a.q, root, runScan);
       // Steer a symbol/class usage hunt toward find_references/search_symbol (complete + far smaller than a
       // time-boxed text scan). Only on a CODE scan — a doc/single-file target is an intentional text lookup.
       const steer = (!docs && !a.path) ? textSymbolSteer(a.q, hits.truncated) : "";
@@ -2514,9 +2663,9 @@ export async function runTool(name, a = {}) {
       const max = Number(a.maxResults) || MAX_RESULTS;
       // No toolchain — try the SYNTACTIC tier (committed index / tree-sitter AST) before the literal scan: it
       // returns real declarations for 36 languages with zero setup, vastly better than a usage-line grep.
-      const syn = await syntacticSymbols(root, a.q, Math.min(max, 40));
-      if (syn) return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}":\n` + syn.lines.join("\n") + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true }));
-      const hits = scanTextUnder(root, String(a.q), Math.min(max, 20));
+      const syn = await scopedSyntacticSymbols(root, a.q, a.path, max);
+      if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
+      const hits = scanTextUnder(root, String(a.q), Math.min(max, 60));
       if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
       return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
     }
@@ -2528,7 +2677,7 @@ export async function runTool(name, a = {}) {
       if (!a.symbol) return err("find_references needs `symbol` (a name) when no language-server backend is available — a position query (path/line/character) requires a backend.");
       const want = String(a.symbol);
       const fmax = Number(a.maxResults) || MAX_RESULTS;
-      const tsRefs = await tsSearchReferences(root, want, { skipDir });
+      const tsRefs = await tsSearchReferences(root, want, { skipDir: (n) => skipDir(n, root) });
       if (tsRefs && tsRefs.length) {
         const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
         const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
@@ -2544,6 +2693,37 @@ export async function runTool(name, a = {}) {
 
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
+      // COMMITTED-INDEX PRE-EMPT: when the backend is clangd but it provably can't answer FAST — no compile
+      // DB at all, or a huge DB whose background index is far from complete — workspace/symbol crawls for
+      // tens of seconds and the MCP CLIENT times out (-32001) before any fallback here ever runs. Live case:
+      // a fully-built committed .vts-index (~4M symbols, ms-fast on-disk tier) sat UNUSED while search_symbol
+      // timed out, because the syntactic branch above only fires when NO backend resolves — and clangd always
+      // "resolves" on a C++ tree, however useless its index is. A name lookup answered from the committed
+      // index is the same decl-quality result, so serve it NOW. VTS_SYMBOL_PREEMPT=0 disables.
+      if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
+        const { crawl: crawlLikely, why } = clangdCrawlLikely(root);
+        // The crawl-time hazard is a BIG-tree phenomenon: on a small no-DB project clangd answers (or
+        // empties) fast, and that LSP path must stay live (evals/mock clients + healthy small repos both
+        // sit there). So without a committed index, pre-empt only when a bounded probe says the tree is
+        // big; an existing .vts-index skips the probe — someone built it deliberately, serve it.
+        const preempt = crawlLikely && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
+        if (preempt) {
+          const pmax = Number(a.maxResults) || MAX_RESULTS;
+          // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
+          // beats dispatching to clangd here: on a tree in this state workspace/symbol crawls for tens of
+          // seconds and the MCP CLIENT times out (-32001) before any local fallback could ever run.
+          const syn = await scopedSyntacticSymbols(root, a.q, a.path, pmax);
+          // Discovery for the NO-INDEX case (a fresh clone / a team that never built one): tell the caller —
+          // typically an agent — that ONE tool call makes this instant and complete from now on. Without this
+          // nudge the committable-index feature is invisible exactly where it helps most (giant UE trees).
+          const buildHint = fs.existsSync(symIndexPath(root)) ? "" :
+            `\n↪ Make this instant + complete: vts_index (one-time build; chunk-safe on huge trees, no toolchain needed) — then commit .vts-index/ to share it with the team.`;
+          if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + buildHint + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
+          const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 60));
+          if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint);
+          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + EMPTY_HINT);
+        }
+      }
       // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
       // mixed-repo fallback result gets the SAME focus/tee/steer/cert treatment as a primary hit.
       const renderFoundSymbols = (syms, bname, advB, note = "") => {
@@ -2623,6 +2803,43 @@ export async function runTool(name, a = {}) {
       return renderFoundSymbols(syms, backendName, adv);
     }
     if (name === "find_references") {
+      // USAGE pre-empt — same hazard the search_symbol pre-empt fixes: on a clangd tree that provably can't
+      // answer fast (no/incomplete compile DB), a by-NAME references query spawns clangd and waits on a
+      // workspace/symbol crawl that times out at the MCP client before any fallback runs. Live consequence:
+      // the orchestrator dropped find_references entirely on such trees, so "who calls X" tasks dead-ended
+      // at the declaration. Serve time-boxed literal usage lines (labelled non-semantic) plus the
+      // committed-index declaration anchor instead. Same switch + gates as the symbol pre-empt.
+      if (backendName === "clangd" && a.symbol && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
+        const { crawl: rCrawl, why: rWhy } = clangdCrawlLikely(root);
+        if (rCrawl && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root))) {
+          const want = String(a.symbol);
+          const rMax = Number(a.maxResults) || MAX_RESULTS;
+          const syn = await syntacticSymbols(root, want, 3);
+          const declLine = syn && syn.lines.length ? `Declaration (committed index): ${syn.lines[0]}\n` : "";
+          // Scan the DECLARATION file(s) first: callers cluster near the declaration (and a `static`
+          // function's callers can ONLY be in its own .cpp), while the tree-wide time-boxed scan walks in
+          // directory order and routinely exhausts its budget before ever reaching the right module — a
+          // "no usage found" that was sitting one file away (live dogfood on a 92k-file cluster).
+          const declFiles = [...new Set((syn ? syn.lines : []).map((l) => l.split(/:\d+:/)[0]))].slice(0, 3);
+          const uses = [];
+          for (const df of declFiles) {
+            try {
+              fs.readFileSync(df, "utf8").split(/\r?\n/).forEach((ln, i) => {
+                if (ln.includes(want) && uses.length < rMax) uses.push(`${df.replace(/\\/g, "/")}:${i + 1}: ${trimMatchLine(ln)}`);
+              });
+            } catch { /* unreadable decl file — tree scan below still runs */ }
+          }
+          let truncated = null;
+          if (uses.length < rMax) {
+            const more = scanTextUnder(root, want, rMax - uses.length);
+            truncated = more.truncated || null;
+            const seen = new Set(uses.map((u) => u.split(": ")[0]));
+            for (const m of more) if (!seen.has(m.split(": ")[0])) uses.push(m);
+          }
+          if (uses.length) return finishOut(uses, `clangd can't serve this tree fast (${rWhy}) — literal usage matches for "${want}" (file:line of the NAME, not semantic references; declaration-file hits listed first):\n` + declLine + uses.join("\n") + (truncated ? `\n[tree scan truncated: ${truncated} — decl-file hits above are complete; narrow projectPath for the full tree set]` : ""));
+          return finishOut([], `clangd can't serve this tree fast (${rWhy}) and no text usage found for "${want}" under ${root}.\n` + declLine + EMPTY_HINT);
+        }
+      }
       const c = await getClient(root, backendName);
       // The code-modification primitive: when modifying a symbol you need every call site, but you start
       // from a NAME, not a 0-based position. Accept `symbol` and resolve the declaration position via the
@@ -2648,7 +2865,7 @@ export async function runTool(name, a = {}) {
           // tree-sitter call-site capture (real call references, 11 langs, zero toolchain) — strictly better
           // than the literal scan that follows (a call site, not every textual mention). Then literal scan.
           const idxAdv = clangdIndexAdvisory(backendName, root, a.path || null);
-          const tsRefs = await tsSearchReferences(root, want, { skipDir });
+          const tsRefs = await tsSearchReferences(root, want, { skipDir: (n) => skipDir(n, root) });
           if (tsRefs && tsRefs.length) {
             const refLines = tsRefs.map((r) => `${r.file}:${r.line}`);
             const body = compactResults() ? compactLocationLines(refLines) : refLines.join("\n");
@@ -2778,6 +2995,26 @@ export async function runTool(name, a = {}) {
         const capNote = files.length >= cap ? ` (capped at ${cap}; raise VTS_SKELETON_DIR_MAX or narrow the path)` : "";
         return finishOut({}, backendAdvisory(backendName, root) + `repo skeleton — ${files.length} file(s) under ${dirRoot}${capNote} (backend: ${backendName}):\n` + (parts.join("\n\n") || "(no outlined symbols)"));
       }
+      // SYNTACTIC PRE-EMPT (completes the set: search_symbol/find_references/read_symbol already do this).
+      // A single-file outline via clangd must still spawn clangd and parse the whole TU + its transitive
+      // headers — on a crawl-risk UE tree that's a cold-start hang on a heavy engine .cpp. tree-sitter
+      // outlines the one file directly, no backend, no header parse — strictly cheaper and can't hang. Only
+      // when clangd is the crawl-risk backend AND tree-sitter supports the file; healthy backends untouched.
+      if (backendName === "clangd" && tsSupports(a.path) && clangdCrawlLikely(root).crawl &&
+          !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
+        // Resolve a RELATIVE path against root — the model routinely passes repo-relative paths (the answers
+        // it gets back ARE relative), and tree-sitter reads the file off disk directly, so a bare relative
+        // path would fail statSync and silently fall through to the clangd error this pre-empt exists to skip.
+        const tsPath = path.isAbsolute(String(a.path)) ? String(a.path) : path.join(root, String(a.path));
+        let tsyms = null; try { tsyms = await tsFileSymbols(tsPath); } catch { /* fall through to clangd */ }
+        if (tsyms && tsyms.length) {
+          const shown = tsyms.slice(0, max).map((s) => `${s.kind} ${s.name}  :${s.line}`).join("\n");
+          const capNote = tsyms.length > max ? `\n… ${tsyms.length - max} more — raise maxResults (now ${max}).` : "";
+          let _base = tsyms; try { _base = fs.readFileSync(a.path, "utf8"); } catch { /* keep syms baseline */ }
+          try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
+          return finishOut(_base, `outline of ${a.path} (tree-sitter — clangd can't serve this tree fast):\n` + shown + capNote + completenessCert({ shown: Math.min(tsyms.length, max), total: tsyms.length, truncated: tsyms.length > max ? "cap" : null, syntactic: true }));
+        }
+      }
       c.didOpen(a.path, lang);
       const syms = (await c.documentSymbol(a.path)) || [];
       try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
@@ -2790,9 +3027,33 @@ export async function runTool(name, a = {}) {
       // READ-side twin of replace_symbol_body: name a symbol → return ONLY that symbol's source (its outline
       // span), never the whole file. Kills the whole-file Read that precedes most edits (measured ~468k tok/30d
       // in the savings ledger). Reuses resolveSymbolForEdit verbatim; signatureOnly trims to the declaration head.
-      const c = await getClient(root, backendName);
-      const r = await resolveSymbolForEdit(c, root, backendName, a);
-      if (r.error) return err(r.error);
+      //
+      // SYNTACTIC FALLBACK: resolveSymbolForEdit calls clangd's documentSymbol, which on a crawl-risk tree
+      // times out or returns an empty/flat outline — so read_symbol dead-ended with no tree-sitter recourse
+      // (live: 6 consecutive failures → the model gave up and Read the whole 70-line span by hand). Tree-sitter
+      // reads ONE file with no backend and yields the full decl span, so try it FIRST when clangd can't serve
+      // fast, and as a fallback whenever the LSP path errors. Needs a file to parse: an explicit `path`, else
+      // the declaration file resolved from the committed index.
+      let synResolved = null;
+      const tryTsRead = async () => {
+        let f = a.path ? String(a.path) : null;
+        // resolve a repo-relative path against root (the model passes relative paths; tree-sitter reads disk)
+        if (f && !path.isAbsolute(f)) f = path.join(root, f);
+        if (!f) { const syn = await syntacticSymbols(root, String(a.symbol || ""), 3); if (syn && syn.lines.length) f = syn.lines[0].split(/:\d+:/)[0]; }
+        if (!f || !a.symbol) return null;
+        const ts = await tsReadSymbol(f, String(a.symbol), { line: a.line != null ? Number(a.line) + 1 : null });
+        return ts ? { file: f, ds: { range: { start: { line: ts.startRow }, end: { line: ts.endRow } }, kind: 0 }, ambiguous: ts.matches, kindLabel: ts.kind, syntactic: true } : null;
+      };
+      const preferTs = backendName === "clangd" && clangdCrawlLikely(root).crawl &&
+        !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"));
+      let r;
+      if (preferTs) { synResolved = await tryTsRead(); }
+      if (!synResolved) {
+        const c = await getClient(root, backendName);
+        r = await resolveSymbolForEdit(c, root, backendName, a);
+        if (r.error) { synResolved = await tryTsRead(); if (!synResolved) return err(r.error); }
+      }
+      if (synResolved) r = synResolved;
       const sLine = r.ds.range.start.line, eLine = r.ds.range.end.line;
       const all = fs.readFileSync(r.file, "utf8").split(/\r?\n/);
       const sigOnly = a.signatureOnly === true || a.signatureOnly === "true";
@@ -2816,7 +3077,9 @@ export async function runTool(name, a = {}) {
       // #4 read-avoidance framing (Semble's "combined with file reading"): read_symbol's real win is the
       // WHOLE-FILE Read it replaces, so the savings baseline is the whole file (not the tiny {file,range}) —
       // the ledger then credits the avoided read, not ~0. (search/refs keep their index baseline.)
-      return finishOut(all.join("\n"), backendAdvisory(backendName, root) + `${SYMBOL_KIND[r.ds.kind] || "symbol"} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${backendName}):\n` + body + note);
+      const kindLabel = r.syntactic ? (r.kindLabel || "symbol") : (SYMBOL_KIND[r.ds.kind] || "symbol");
+      const via = r.syntactic ? "tree-sitter (syntactic — clangd can't serve this tree fast)" : backendName;
+      return finishOut(all.join("\n"), (r.syntactic ? "" : backendAdvisory(backendName, root)) + `${kindLabel} "${a.symbol}" @ ${fp}:${sLine + 1}-${eLine + 1}${ambl} (backend: ${via}):\n` + body + note);
     }
     if (name === "rename") {
       if (!a.path || a.line == null || a.character == null || !a.newName) return err("rename needs path, line, character (0-based), newName.");

@@ -12,6 +12,152 @@
 //      instead of N scattered reflexive nudges. This is the "integrative" half — vts and CC-native each named
 //      for what they're best at.
 import { readEditLedger, adoptionPct, adoptionPctRecent, controllerReport } from "./edit-ledger.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// Detect a local-LLM orchestrator (the vts-local-orchestrator `qvts` CLI) so vts can DEFER high-volume
+// locate/read to it WHEN PRESENT — without changing guidance for standalone vts users. Opt out with
+// VTS_ORCHESTRATOR_AWARE=0; force on with VTS_ORCHESTRATOR=1. Detection: qvts on PATH, or the orchestrator's
+// global config (~/.vts-local/config.json). Cached for the process.
+let _orchCache;
+export function orchestratorPresent() {
+  if (_orchCache !== undefined) return _orchCache;
+  _orchCache = (() => {
+    if (/^(0|false|off|no)$/i.test(process.env.VTS_ORCHESTRATOR_AWARE || "")) return false;
+    if (/^(1|true|on|yes)$/i.test(process.env.VTS_ORCHESTRATOR || "")) return true;
+    const exts = process.platform === "win32" ? ["", ".cmd", ".exe", ".ps1"] : [""];
+    for (const d of (process.env.PATH || "").split(path.delimiter)) {
+      if (!d) continue;
+      for (const e of exts) {
+        try { if (fs.existsSync(path.join(d, "qvts" + e))) return true; } catch { /* ignore */ }
+      }
+    }
+    try { if (fs.existsSync(path.join(os.homedir(), ".vts-local", "config.json"))) return true; } catch { /* ignore */ }
+    return false;
+  })();
+  return _orchCache;
+}
+
+// Resolve the right SEARCH ROOT for a target the search names, generally — not just the configured project.
+// Many repos split a parent root into sub-trees: Unreal (parent/{Engine, MyGame}), monorepos (repo/{packages/*}),
+// web/python workspaces, etc. If the configured projectPath is one sub-tree (e.g. .../MyGame) but the search
+// targets a file in a SIBLING tree (e.g. .../Engine/...), scoping qvts to the configured root would miss it.
+// So when the search has an explicit file/dir target, walk UP to the enclosing repo root and scope there:
+//   1) the nearest ancestor containing `.git` (the most general monorepo/parent-root marker), else
+//   2) the nearest ancestor with a project marker (*.uproject / *.sln / package.json / pyproject.toml /
+//      setup.py / go.mod / Cargo.toml), else
+//   3) the target's own directory.
+// With no target, fall back to the configured root. Best-effort; never throws.
+const ROOT_MARKER_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "go.mod", "Cargo.toml", "CMakeLists.txt"]);
+const isWithin = (child, parent) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+};
+// Nearest common ancestor directory of two absolute paths, or null if they share no prefix (e.g. diff drives).
+function commonAncestor(a, b) {
+  const sa = a.split(/[\\/]/), sb = b.split(/[\\/]/);
+  const out = [];
+  for (let i = 0; i < Math.min(sa.length, sb.length); i++) {
+    if (sa[i].toLowerCase() !== sb[i].toLowerCase()) break;
+    out.push(sa[i]);
+  }
+  if (out.length === 0 || (out.length === 1 && out[0] === "")) return null;
+  return out.join(path.sep);
+}
+// Walk up from a path to the nearest PROJECT marker (preferred), else a .git — used only when there's no
+// configured root to anchor on. Project markers are preferred over .git so an UMBRELLA repo (a whole workspace
+// /vault that happens to be one git repo) doesn't over-broaden the scope.
+function markerWalk(start) {
+  let cur = start, gitRoot = null;
+  for (let i = 0; i < 40 && cur; i++) {
+    let ents = [];
+    try { ents = fs.readdirSync(cur); } catch { /* keep climbing */ }
+    // `.uprojectdirs` is the Unreal WORKSPACE/engine-source root marker: a target deep under `Engine/…` has no
+    // `.uproject` ancestor (that lives in the sibling game module), so without this the walk climbed past the UE
+    // root into an outer umbrella git repo (a vault/monorepo) and scoped a 34k+-file, wrong-project search.
+    if (ents.some((e) => /\.(uproject|uprojectdirs|sln|slnx)$/i.test(e) || ROOT_MARKER_FILES.has(e))) return cur; // closest project marker wins
+    if (!gitRoot && ents.includes(".git")) gitRoot = cur;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return gitRoot || start;
+}
+export function resolveSearchRoot(target, configured) {
+  try {
+    if (!target) return configured || null;
+    let t = path.resolve(String(target));
+    try { if (fs.statSync(t).isFile()) t = path.dirname(t); } catch { t = path.dirname(t); }
+    if (!configured) return markerWalk(t);
+    const c = path.resolve(String(configured));
+    if (isWithin(t, c)) return c;          // target lives inside the configured project → keep it (narrow, correct)
+    // target is OUTSIDE configured. If it has its OWN project marker, `configured` is very likely just a STALE
+    // global default (e.g. from a past `vts setup` in an unrelated repo) rather than a true sibling package —
+    // trust the target's own root instead of forcing a merge, which would otherwise widen to a huge, unrelated
+    // common ancestor (live dogfood: a stale UE-game default + a target in an unrelated JS repo widened all
+    // the way to the drive-level vault folder holding a dozen unconnected projects, so every suggested -p
+    // candidate list was garbage).
+    const own = markerWalk(t);
+    if (hasProjectMarker(own) && path.resolve(own).toLowerCase() !== c.toLowerCase()) return own;
+    // target is in a genuine SIBLING sub-tree with no marker of its own (Unreal Engine/ vs Game/, another
+    // monorepo package): scope to the nearest common ancestor so qvts covers BOTH the configured project and
+    // the target — that's the real parent root.
+    return commonAncestor(c, t) || c;
+  } catch { return configured || null; }
+}
+
+// ---- active-project tracking (A) + multi-project guidance (B) ---------------------------------------
+// When working IN a vault/monorepo parent, a search with NO file target falls back to the configured root,
+// which may be the broad parent (everything) rather than the specific project. (A) remembers the LAST root we
+// resolved from a real target/file, so a later target-less search inherits it — e.g. once you touch a file in
+// .../SGE/Game, symbol searches scope to .../SGE/Game until you move to another project (TTL-bounded). (B)
+// when a root is a broad PARENT (no project marker of its own but ≥2 marked sub-projects), we surface those so
+// the caller can pass `-p <the specific one>`.
+const ACTIVE_FILE = path.join(os.homedir(), ".vts-local", "active-project.json");
+const ACTIVE_TTL = (() => { const n = Number(process.env.VTS_ACTIVE_PROJECT_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 1800000; })(); // 30 min
+export function recordActiveProject(root) {
+  try {
+    if (!root) return;
+    const r = String(root);
+    if (!hasProjectMarker(r)) return; // only remember a REAL project root, never a bare parent/vault
+    fs.mkdirSync(path.dirname(ACTIVE_FILE), { recursive: true });
+    fs.writeFileSync(ACTIVE_FILE, JSON.stringify({ root: r, ts: Date.now() }));
+  } catch { /* best effort */ }
+}
+export function readActiveProject() {
+  try { const m = JSON.parse(fs.readFileSync(ACTIVE_FILE, "utf8")); if (m && m.root && Date.now() - m.ts <= ACTIVE_TTL) return m.root; } catch { /* none */ }
+  return null;
+}
+// Does `dir` itself look like a project root (a build/manifest marker directly inside it)?
+export function hasProjectMarker(dir) {
+  try { return fs.readdirSync(dir).some((e) => /\.(uproject|uprojectdirs|sln|slnx)$/i.test(e) || ROOT_MARKER_FILES.has(e) || e === "compile_commands.json"); } // .uprojectdirs = UE workspace/engine root (kept in sync with markerWalk)
+  catch { return false; }
+}
+// Sub-projects under a broad parent (dirs that ARE project roots, scanning up to 2 levels for UE-style nesting
+// where the marker sits a level below). Returns up to `max` relative paths; [] if `root` is itself a project.
+export function subprojectsUnder(root, max = 6) {
+  const out = [];
+  try {
+    if (hasProjectMarker(root)) return []; // root itself is a project → no need to disambiguate
+    const skip = /^(\.|node_modules$|Binaries$|Intermediate$|Saved$|build$|dist$|out$|obj$)/i;
+    const top = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !skip.test(e.name));
+    for (const e of top) {
+      const p1 = path.join(root, e.name);
+      if (hasProjectMarker(p1)) { out.push(e.name); }
+      else { // one level deeper (UE: parent/<X>/Game/*.uproject)
+        try {
+          for (const f of fs.readdirSync(p1, { withFileTypes: true })) {
+            if (f.isDirectory() && !skip.test(f.name) && hasProjectMarker(path.join(p1, f.name))) out.push(`${e.name}/${f.name}`);
+            if (out.length >= max) break;
+          }
+        } catch { /* ignore */ }
+      }
+      if (out.length >= max) break;
+    }
+  } catch { /* ignore */ }
+  return out;
+}
 
 // Generated code / build output / vendored deps — a semantic index adds nothing here; CC-native is fine.
 const SUPPRESS_DIR = /(^|[/\\])(Intermediate|Binaries|Saved|DerivedDataCache|node_modules|build|dist|out|obj|\.git)([/\\]|$)/i;
@@ -110,6 +256,13 @@ export function routingDigest(o = readEditLedger()) {
     "  • big tree, slow first query → vts setup --scope <module>; vts preindex",
     "  • SINGLE lookup → call vts tools DIRECTLY (no agent). code-locator only for a genuine multi-FILE locate; never for an AUDIT/REVIEW/전수조사 and never a FLEET of them — document_symbols + a few search_symbol map a whole file far cheaper than N body-reading agents",
   ];
+  // When a local-LLM orchestrator (qvts) is installed, prefer DELEGATING the high-volume / high-output work to
+  // it (the raw output stays in the free local model; Claude gets only a compact answer). The vts tools above
+  // remain the right choice for a single/quick lookup, an unindexed or just-edited file, and ALL edits.
+  if (orchestratorPresent()) {
+    lines.splice(1, 0,
+      "  • LOCAL ORCHESTRATOR (qvts) DETECTED → DELEGATE high-volume locate (`qvts def_search` / `qvts \"<task>\"`) and big-file READS/surveys (`qvts digest <file>`) to it — it returns only a compact answer, saving Claude tokens. Call the vts tools below DIRECTLY only for a single/quick lookup, an unindexed/just-edited file, and ALL edits.");
+  }
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
     // Lead with the ROLLING rate (current behavior) and keep the all-time ratio as context — the recent

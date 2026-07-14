@@ -36,7 +36,7 @@ import { splitSegments } from "../server/shell-split.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames } from "../server/policy.js";
+import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -48,6 +48,46 @@ function uiLang() {
   try { return /^ko/i.test(Intl.DateTimeFormat().resolvedOptions().locale) ? "ko" : "en"; } catch { return "en"; }
 }
 const KO = uiLang() === "ko";
+
+// ORCHESTRATOR REDIRECT (the gap that let code search bypass qvts). When a local orchestrator (qvts) is
+// present, a CODE SEARCH via Bash grep / the Grep tool / the Glob tool is the orchestrator's job — delegating
+// keeps the raw search output in the local model and returns only a compact answer. Without this, this hook
+// rerouted grep → the vts CLI (NOT qvts), so the Bash/Grep/Glob path never reached the orchestrator at all,
+// and the model, handed a "VTS_ENFORCE=0" escape, just bypassed and Read the file. So when qvts is present we
+// redirect these to a ready `qvts` command instead — and we do NOT advertise the VTS_ENFORCE=0 kill switch
+// here (that only taught the bypass). Opt out with VTS_ORCH_BLOCK=0 (then the normal vts steer/rewrite runs).
+const ORCH = orchestratorPresent() && !/^(0|false|off|no)$/i.test(process.env.VTS_ORCH_BLOCK ?? "1");
+const orchRoot = () => process.env.VTS_PROJECT_PATH || readConfig().projectPath || process.cwd();
+// `target` (the file/dir the search names) generalizes the root: a file in a sibling sub-tree of the configured
+// project (Unreal Engine/ vs Game/, a monorepo package, a web/python workspace) resolves UP to ITS repo root.
+// (A) record the resolved project when there's a target; reuse the last active project when there isn't, so a
+// target-less code search scopes to where you've been working, not the broad vault/monorepo parent.
+function resolveRoot(target) {
+  const fb = orchRoot();
+  if (target) { const r = resolveSearchRoot(target, fb) || fb; recordActiveProject(r); return r; }
+  return readActiveProject() || fb;
+}
+function qvtsCmd(task, target) {
+  const root = String(resolveRoot(target)).replace(/"/g, "'");
+  const t = String(task || "").replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 200);
+  return `qvts -p "${root}" --json "${t}"`;
+}
+// (B) when the chosen root is a broad PARENT holding ≥2 sub-projects, nudge to scope -p to the specific one.
+function subprojectHint(root) {
+  const subs = subprojectsUnder(root);
+  if (subs.length < 2) return "";
+  const list = subs.slice(0, 5).join(", ");
+  return KO
+    ? `\n참고: "${root}"는 여러 프로젝트 포함 상위 폴더 — 정확/빠른 결과 위해 -p로 구체 프로젝트 지정 (후보: ${list}).`
+    : `\nNote: "${root}" is a parent of multiple projects — pass -p the specific one for accurate/fast results (candidates: ${list}).`;
+}
+function orchMsg(task, target) {
+  const cmd = qvtsCmd(task, target);
+  const hint = subprojectHint(resolveRoot(target));
+  return (KO
+    ? `✨ vs-token-safer: 로컬 오케스트레이터(qvts) 감지 — 이 코드검색은 위임하세요 (직접 grep/Read 말고).\n→ ${cmd}\n   (로컬 모델이 검색하고 compact 답만 반환 — Claude 토큰 절약. 결과 file:line은 사실로 신뢰; 못 찾으면 같은 호출 다시 하면 직접검색 통과.)`
+    : `✨ vs-token-safer: local orchestrator (qvts) detected — delegate this code search (don't grep/Read directly).\n→ ${cmd}\n   (the local model searches; only a compact answer returns — saves Claude tokens. Trust the file:line; if it finds nothing, re-issue and direct search passes.)`) + hint;
+}
 const notSetUp = () => { try { return !fs.existsSync(CONFIG_FILE); } catch { return false; } };
 const SETUP_LINE = "\nNot set up yet? Run /vs-token-safer:setup (or `vts setup --projectPath <root>`) to configure the project root + backend.";
 
@@ -152,7 +192,9 @@ function hasFileOpsContext(segments) {
 // warn-only nudge toward the symbol-edit tools (edit by NAME via the parser range — no brace-matching, no
 // exact-match hazard, no whole-file read). FP-careful: a code-file path AND an explicit write/in-place
 // signal must BOTH be present, so a read-only `sed`/`awk` in a pipeline or a `python build.py` isn't nagged.
-const CODE_FILE_TOKEN = /[\w./\\-]+\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/i;
+// `:` in the class so a Windows drive-letter path (`G:/…/Foo.h`) matches WHOLE — without it the match
+// started after the `G:` and the body-read steer suggested a broken, drive-less path in its ready call.
+const CODE_FILE_TOKEN = /[\w.:/\\-]+\.(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)\b/i;
 function isBashCodeEdit(cmd) {
   const s = String(cmd);
   if (!CODE_FILE_TOKEN.test(s)) return false;                       // no code-file path → not a code edit
@@ -202,6 +244,28 @@ function extractGrepPattern(segment, isGit) {
 function extractFindName(segment) {
   const m = segment.match(/\s-i?name\s+("([^"]+)"|'([^']+)'|(\S+))/);
   return m ? (m[2] || m[3] || m[4] || "") : null;
+}
+// Split a grep's path operands into a specific FILE (has an extension) vs a DIRECTORY (bare name or slashed, no
+// extension), so BOTH can scope the delegated search and generalize the root (a file/dir in a sibling sub-tree
+// resolves to ITS repo root). Operands are the bare tokens AFTER the pattern; iterate from the end and stop at
+// the pattern token. A bare-word dir (`grep -r Foo Source`) used to be invisible — extractSearchFile only caught
+// file/slashed operands, so a dir target silently dropped to a whole -p root scan (the scope-loss bug). A slashed
+// path with no extension is treated as a DIR (kept whole, not basename-truncated). Best-effort; both null when
+// the grep has no explicit path operand.
+function extractGrepScope(segment, isGit) {
+  const pat = extractGrepPattern(segment, isGit);
+  const toks = segment.trim().split(/\s+/).slice(1); // drop the executable
+  const start = isGit ? (toks[0] === "grep" ? 1 : 0) : 0; // `git grep` — don't treat the `grep` subcommand as an operand
+  let file = null, dir = null;
+  for (let i = toks.length - 1; i >= start; i--) {
+    const t = stripQuotes(toks[i]);
+    if (!t || t.startsWith("-")) continue;
+    if (pat != null && t === pat) break;             // reached the pattern → operands after it are exhausted
+    if (!SAFE_PATH.test(t)) continue;                // not a plausible path token
+    if (/\.[A-Za-z0-9_]+$/.test(t)) { if (!file) file = t; }        // has an extension → a file
+    else if (!dir) dir = t;                          // bare or slashed, no extension → a directory
+  }
+  return { file, dir };
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
 // the rewrite searches the tree the command names, not the configured root — dropping it made a
@@ -295,6 +359,53 @@ function buildDocsGrepRewrite(segment) {
 // A search segment whose target is a LOG (steer to gamedev-log; never blocked).
 function isLogSearchSegment(segment) {
   return isSearchSegment(segment) && LOG_TARGET_RE.test(segment);
+}
+
+// Read-only Bash BODY DUMP of a code file: `sed -n 'X,Yp' Foo.cpp`, `cat Foo.h`, `head/tail -n`, a read-only
+// awk. The same token leak the Read-tool steer catches (raw bodies into context), through a side door no
+// search hook covers. Read-ONLY only: `-i`/inplace is the edit-steer's case, and any stdout redirect (`>`,
+// minus `2>` stderr) means the bytes go to a FILE, not into context — leave those alone.
+const readSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_READ_STEER ?? "1"));
+const BODY_READ_EXECS = new Set(["sed", "cat", "head", "tail", "awk"]);
+// Interpreters that can be handed an INLINE program (`-c`/`-e`/heredoc) which opens a code file, reads it,
+// and prints slices — a hand-rolled read_symbol. The model reaches for these exactly when read_symbol
+// fails (live: read_symbol dead-ended on a UE tree → the model wrote `python -c "s=open(...).read(); i=
+// s.find('::Foo'); print(s[i:i+2600])"` with line numbers — literally reimplementing the tool). None of
+// sed/cat/head/tail/awk match, so this whole class bypassed the body-read steer.
+const INTERP_EXECS = new Set(["python", "python3", "perl", "ruby", "node", "nodejs", "pwsh", "powershell"]);
+// A read primitive (opens/reads a file into a string) vs a write primitive (that's the edit steer's job).
+const READ_PRIM = /open\s*\(|\.read(?:lines|_text|_bytes)?\s*\(|readFileSync|File\.read|Get-Content|IO\.read|<>/;
+// Write PRIMITIVES only — NOT a bare `>` (inside a `python -c` string a `>` is a comparison, not a redirect;
+// stderr fds like `2>&1` are stripped by the caller). A real stdout-to-file redirect is rare here and at
+// worst costs one extra warn.
+const WRITE_PRIM = /open\s*\([^)]*["'][aw]b?\+?["']|\.write(?:_text|_bytes)?\s*\(|writeFileSync|Set-Content|Out-File/;
+function isBashCodeBodyRead(seg) {
+  const exec = execOf(seg);
+  if (BODY_READ_EXECS.has(exec)) {
+    if (!CODE_FILE_TOKEN.test(seg)) return false;
+    if (/\s-i\b/.test(seg) || /-i\s+inplace/.test(seg)) return false;        // in-place edit → edit steer
+    if (/>/.test(seg.replace(/\d>/g, ""))) return false;                     // writes to a file → not a dump
+    return true;
+  }
+  // interpreter one-liner: an inline program (-c/-e/heredoc) that READS a code file and doesn't WRITE it.
+  if (INTERP_EXECS.has(exec)) {
+    if (!/(^|\s)-[ce]\b|<<'?[A-Za-z_]/.test(seg)) return false;              // must be an inline program, not `python build.py`
+    if (!CODE_FILE_TOKEN.test(seg)) return false;                           // references a code file
+    if (!READ_PRIM.test(seg)) return false;                                 // actually reads it
+    if (WRITE_PRIM.test(seg.replace(/\d>/g, ""))) return false;             // any write → not a pure dump (edit steer / leave alone)
+    return true;
+  }
+  return false;
+}
+function bodyReadNudge(seg) {
+  const m = CODE_FILE_TOKEN.exec(seg);
+  const f = m ? m[0] : "<file>";
+  const digest = ORCH
+    ? (KO ? `; 요약/조사면 qvts digest "${f}" --focus "<질문>" (로컬 모델이 읽고 요약만 반환)` : `; for a survey use qvts digest "${f}" --focus "<question>" (the local model reads it, only a brief returns)`)
+    : "";
+  return KO
+    ? `[vs-token-safer] Bash(${execOf(seg)})로 코드 본문을 컨텍스트에 덤프 중이에요 (${f}). 선언 하나가 필요하면 read_symbol symbol=<이름> path="${f}" (그 선언만, 토큰캡)${digest}. 정확한 바이트가 필요한 편집 직전에만 직접 읽으세요. 끄기: VTS_READ_STEER=0.`
+    : `[vs-token-safer] Dumping a code-file body into context via Bash (${execOf(seg)} on ${f}). For one declaration use read_symbol symbol=<name> path="${f}" (that decl only, token-capped)${digest}. Read raw bytes only right before an EDIT. Disable: VTS_READ_STEER=0.`;
 }
 
 // Grep TOOL — nudge only on an EXPLICIT code signal (a code-ext glob, a code `type`, or a code path). A
@@ -619,6 +730,12 @@ process.stdin.on("end", () => {
   // Grep TOOL — enforcement v2 (A+): a clear SYMBOL HUNT is BLOCKED (semantic tool is strictly better);
   // everything else stays warn-only (Grep is the sanctioned fallback for freeform text / just-edited files).
   if (toolName === "Grep") {
+    // qvts present → a code/symbol Grep is the orchestrator's job: block and hand back the qvts command (a
+    // log/text-target Grep is left to the normal steer below).
+    if (ORCH && !isLogGrepTool(ti) && notTextLogTarget(ti) && (isCodeGrepTool(ti) || isSymbolHuntGrep(ti))) {
+      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code`, ti.path) + "\n");
+      process.exit(2);
+    }
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
     // OUTLINE hunt (declaration-KEYWORD alternation, e.g. `^(function|const|export)`, `^(class|struct|enum)`)
     // → steer to document_symbols (warn-only; keyword alts are FP-prone so never blocked). Checked BEFORE the
@@ -639,6 +756,18 @@ process.stdin.on("end", () => {
   // (walk-bounded, won't time out on a giant tree); a bare `*` / code-dir glob stays a warn. The warn alone was
   // ignored — the model kept Glob-ing a huge UE tree instead of switching. VTS_GREP_BLOCK=0 reverts to warn-only.
   if (toolName === "Glob") {
+    if (ORCH && isCodeGlobTool(ti)) {
+      // A Glob that NAMES a specific subdir (explicit `path`, or a literal dir prefix in the pattern) is a cheap,
+      // correctly-scoped filename listing — native Glob honors that subdir and returns compact PATHS. Delegating
+      // LOSES the scope (qvtsCmd resolves the target UP to the repo root and find_files the whole tree) and is
+      // slower + wrong-tree — the same scope-loss the Bash `find <subdir> -name` case avoids by staying native.
+      // The token mandate is about CONTENT, not file lists. A path-less glob (no scope to lose, giant-tree
+      // timeout risk) still delegates. Exclude a bare `.`/`..` (cwd could itself be a huge root).
+      const gscope = globRootHint(ti); // explicit path, else the glob's literal dir prefix
+      if (gscope && !/^\.{1,2}[\\/]?$/.test(gscope)) process.exit(0); // scoped filename listing → native
+      process.stderr.write(orchMsg(`find file named ${globBasename(ti.pattern)}`, ti.path || gscope) + "\n");
+      process.exit(2);
+    }
     if (grepBlockOn() && isBlockableGlob(ti)) {
       process.stderr.write(globBlockMsg(ti) + setup + "\n");
       process.exit(2); // block — route the concrete code-file glob to find_files
@@ -652,6 +781,9 @@ process.stdin.on("end", () => {
   // (code ext, not generated, not an already-sliced read, size ≥ threshold). VTS_READ_STEER=0 / matcher-removal off.
   if (toolName === "Read") {
     const fp = ti && ti.file_path;
+    // (A) a Read tells us which project the agent is working in — record it so a later target-less qvts search
+    // scopes to THIS project, not the broad vault/monorepo parent. Best-effort; never blocks a Read.
+    if (ORCH && fp) { try { recordActiveProject(resolveSearchRoot(fp, orchRoot())); } catch { /* ignore */ } }
     if (fp) {
       let sz = 0; try { sz = fs.statSync(fp).size; } catch { /* unreadable → leave 0 (no steer) */ }
       const minB = Number(process.env.VTS_READ_STEER_MIN ?? 6000);
@@ -707,6 +839,56 @@ process.stdin.on("end", () => {
   );
 
   if (codeSegs.length) {
+    // qvts present → delegate the code search to the orchestrator, NOT the vts CLI (the bug this fixes: the
+    // Bash path used to reroute to vts, so it never reached qvts, and the model bypassed via VTS_ENFORCE=0).
+    // A single segment is transparently REWRITTEN to a `qvts` call (runs as qvts, nothing to bypass); a
+    // pipeline blocks with the ready qvts command. No VTS_ENFORCE=0 advertised here.
+    if (ORCH) {
+      const seg = codeSegs[0];
+      // Distinguish a CONTENT grep from a FILENAME `find -name`: the latter must become a find-FILES task
+      // ("find file named …") so qvts routes it to find_files (bounded, skips Content/Intermediate). Phrasing a
+      // filename find as "find <glob> in code" made qvts run a whole-tree TEXT walk for a mere file listing —
+      // live: `find … -name "*.h"` burned the 40s time-box and returned junk, costing MORE than a native ls.
+      const isFind = execOf(seg) === "find";
+      const findGlob = isFind ? extractFindName(seg) : "";
+      const findDir = isFind ? extractFindDir(seg) : "";
+      // A filename `find <subdir> -name X` that NAMES a specific directory is a cheap, correctly-SCOPED listing:
+      // native `find` honors that subdir and returns compact PATHS (not bulky content). Delegating it LOSES the
+      // subdir scope (qvts would find_files the whole -p root) and is far slower + wrong-tree — measured 56s and
+      // engine-wide *.h for a single-subdir listing. The token mandate is about CONTENT, not file lists — so let
+      // a subdir-scoped filename find run natively (no redirect). Exclude a bare `.`/`..` (cwd could itself be a
+      // huge UE root where native find would walk Content/) and a find with no dir operand — those still
+      // delegate to find_files (skip-dirs + bounded).
+      if (isFind && findGlob && findDir && !/^\.{1,2}[\\/]?$/.test(findDir)) process.exit(0);
+      const isGitGrep = execOf(seg) === "git";
+      const grepPat = isFind ? "" : extractGrepPattern(seg, isGitGrep); // never treat a find's path as a grep pattern
+      // Carry the grep's own FILE or DIRECTORY scope into the task so qvts searches THAT file/dir (search_text
+      // path=…), not the whole -p root. A file → basename hint (`grep Foo path/Bar.cpp` → "in Bar.cpp"); a DIR →
+      // its path as given (`grep -r Foo Source` → "under Source"). A bare-dir operand used to be dropped, so a
+      // dir-scoped grep degraded to "find Foo in code" = a whole-tree scan (the scope-loss bug this fixes).
+      const { file: searchFile, dir: searchDir } = isFind ? { file: null, dir: null } : extractGrepScope(seg, isGitGrep);
+      const inScope = searchFile ? ` in ${path.basename(searchFile)}`
+        : searchDir ? ` under ${searchDir}`
+        : " in code";
+      const task = grepPat ? `find ${grepPat}${inScope}`
+        : findGlob ? `find file named ${findGlob}`
+        : "locate the searched symbol/string in code";
+      const target = searchFile || searchDir || findDir; // a file/dir the command names → generalize the root
+      if (segments.length === 1) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: "Rerouted code search → local orchestrator (qvts): the raw search stays in the local model, only a compact answer returns to Claude.",
+            updatedInput: { ...ti, command: qvtsCmd(task, target) },
+            additionalContext: orchMsg(task, target),
+          },
+        }) + "\n");
+        process.exit(0);
+      }
+      process.stderr.write(orchMsg(task, target) + "\n");
+      process.exit(2);
+    }
     // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build
     // a safe vts equivalent, is rerouted via updatedInput — the model's flow is unbroken AND the output is
     // guaranteed token-capped. Anything ambiguous (pipelines, complex patterns) falls back to the block.
@@ -759,6 +941,14 @@ process.stdin.on("end", () => {
   if (editWarnOn() && isBashCodeEdit(cmd)) {
     emitWarn(bashEditNudge() + setup);
     process.exit(0);
+  }
+  // Bash-based code BODY DUMP (read-only sed -n 'X,Yp' / cat / head / tail / awk over a code file) — the same
+  // context leak the Read-tool steer catches, through a side door none of the search hooks cover (live: a
+  // model ranged-read engine headers with `sed -n '170,260p'`, ~90 raw lines per call, right after a properly
+  // delegated locate). Warn-only, same VTS_READ_STEER switch as the Read-tool steer.
+  if (readSteerOn()) {
+    const br = segments.find(isBashCodeBodyRead);
+    if (br) emitWarn(bodyReadNudge(br) + setup);
   }
   process.exit(0);
 });

@@ -1,6 +1,6 @@
 {
   "name": "vs-token-safer",
-  "version": "0.40.1",
+  "version": "0.42.27",
   "type": "module",
   "description": "Sits between an LLM coding agent and your repository and answers where/what/how questions with a short file:line list instead of raw source. It uses a real language server when it can (clangd / Roslyn / tsserver / pyright), tree-sitter when there's no toolchain, and a no-embeddings fuzzy search built from the repo's own naming when you don't know the exact name. It section-edits Markdown and config files the same way. Local-only, nothing transmitted. CLI + MCP. No IDE required.",
   "keywords": [
@@ -60,13 +60,15 @@
     "start": "node index.js",
     "test": "node ../eval/run.mjs"
   },
-  "optionalDependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "pyright": "^1.1.400",
-    "typescript": "^6.0.3",
-    "typescript-language-server": "^5.0.0",
+  "dependencies": {
     "web-tree-sitter": "^0.25.10",
     "tree-sitter-wasms": "^0.1.13"
+  },
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "pyright": "^1.1.411",
+    "typescript": "^6.0.3",
+    "typescript-language-server": "^5.0.0"
   },
   "engines": {
     "node": ">=18"
