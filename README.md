@@ -2,8 +2,10 @@
 
 **English** · [한국어](README.ko.md)
 
-> A token-saving code layer for Claude Code on **any** codebase — TypeScript, JavaScript, Python, C#, C++, Go, and
-> more. (Battle-tested down to a 26k-translation-unit Unreal Engine monorepo; bundles a game/build-log analyzer too.)
+> A token-saving code layer for Claude Code, for **any** codebase. **TypeScript, JavaScript, and Python work
+> with zero setup**; C# and C++ add a language server; and 30+ more languages come in on the built-in
+> tree-sitter tier. Proven up to a 26k-translation-unit Unreal Engine monorepo — so your web, backend, or
+> data repo is the easy case.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED)](https://code.claude.com/docs/en/plugins)
 [![MCP](https://img.shields.io/badge/MCP-server-1f6feb)](https://modelcontextprotocol.io)
@@ -244,9 +246,11 @@ that repo's README for the pipeline, the model benchmark, and the savings model.
 
 ## Performance
 
-A real A/B on a large Unreal Engine 5 project: finding one public engine symbol (`FGameplayTag`) via Bash
-grep-and-paste vs this plugin. No project source is reproduced, only aggregate counts; see
-[BENCHMARK.md](BENCHMARK.md).
+The token win scales with repo size and is language-agnostic — a TypeScript service or a Python codebase
+sees the same shape (the deterministic 3-language benchmark cuts ~87%; details in
+[BENCHMARK.md](BENCHMARK.md)). The most extreme case we've measured is a large Unreal Engine 5 project:
+finding one public engine symbol (`FGameplayTag`) via Bash grep-and-paste vs this plugin. No project source
+is reproduced, only aggregate counts.
 
 | | Bash grep-and-paste (whole repo) | **Plugin (clangd index, capped)** |
 | --- | ---: | ---: |
