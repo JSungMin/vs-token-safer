@@ -94,6 +94,32 @@ likely-query-first.
 **Takeaway:** tokens win massively and unconditionally (~97–99%). Wall-clock wins when the scope is
 large/unknown (Engine included) and the index is warm; a cold first query is the price you pay once.
 
+## Syntactic tier (tree-sitter) vs semantic (clangd) — the graceful-degradation payoff
+
+When clangd is **missing, cold, or still indexing**, vs-token-safer answers on the **SYNTACTIC** (tree-sitter)
+tier from a committable index instead of blocking — then climbs to EXACT once clangd is warm. Measured on a
+**second real Unreal Engine 5 game module** (3,143 files, 133,890 symbols — aggregate counts only; no paths or
+project symbol names reproduced):
+
+| | tree-sitter tier (SYNTACTIC) | clangd (EXACT) |
+| --- | ---: | ---: |
+| Locate latency | **~240 ms** | ~127 s (cold-to-first-answer) |
+| Position accuracy | reference | **identical — 4/4 sampled symbols, line delta 0** |
+| Index build | ~62 s one-time (133,890 symbols) | cold-index each cold session |
+
+- **Accuracy:** across a sample of unique class/struct declarations, the tree-sitter position matched clangd's
+  authoritative EXACT position **exactly** (line delta 0). For *declaration location*, the syntactic tier is as
+  correct as the semantic one — it just can't resolve overloads/types, which is what the EXACT rung is for.
+- **Latency:** the tree-sitter answer returns in ~240 ms; clangd's **first (cold)** answer on the same module
+  took ~127 s — a **~530×** gap that clangd's semantic power does not close for a plain locate. (In a warm
+  session clangd is sub-second; the point is you no longer wait for warm to get the location.)
+- **Token flood, same module:** on high-usage symbols, `search_symbol` (capped declarations) vs whole-tree
+  grep-and-paste (every usage) came out to **~43× fewer tokens (97.7% saved)** — grep dumps every
+  comment/usage/include line; the plugin returns the capped declaration list.
+
+This is why the ladder answers **tree-sitter-first** on a cold/large tree and climbs to EXACT once clangd is
+warm: you get the same `file:line` **now**, and semantic certainty **later**.
+
 ## Accuracy difference (and why)
 
 The two paths optimize differently — it is a **precision/recall trade**, not "one is simply correct":
