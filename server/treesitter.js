@@ -73,6 +73,12 @@ const C_CPP = {
     "alias_declaration",
     "concept_definition",
     "template_declaration",
+    // §9.3: clangd routinely leaves preprocessor symbols UNRESOLVED (macros aren't in its AST symbol table)
+    // and enum constants are easy to miss on a cold/partial index — tree-sitter sees them syntactically, so
+    // the committed index carries `#define` macros and enumerators that the semantic tier can't answer.
+    "preproc_def", // #define MAX 10
+    "preproc_function_def", // #define SQ(x) ((x)*(x))
+    "enumerator", // enum { RED, GREEN } → each constant
   ]),
   kind: {
     function_definition: "func",
@@ -87,6 +93,9 @@ const C_CPP = {
     alias_declaration: "type",
     concept_definition: "concept",
     template_declaration: "template",
+    preproc_def: "macro",
+    preproc_function_def: "macro",
+    enumerator: "const",
   },
 };
 const CSHARP = {
@@ -229,6 +238,53 @@ const RUBY = {
   decl: new Set(["method", "singleton_method", "class", "module"]),
   kind: { method: "method", singleton_method: "method", class: "class", module: "module" },
 };
+// §9.3: high-use untuned grammars promoted to the hand-tuned tier (node types verified against the bundled
+// tree-sitter-lua / tree-sitter-solidity via a fixture — see eval/fixtures). Lua is ubiquitous in game/config
+// scripting; Solidity has no clangd/LSP most devs run, so tree-sitter is the ONLY decl source.
+const LUA = {
+  decl: new Set([
+    "function_definition_statement", // function foo() / function M.foo()
+    "local_function_definition_statement", // local function foo()
+    "local_variable_declaration", // local x = …
+  ]),
+  kind: {
+    function_definition_statement: "func",
+    local_function_definition_statement: "func",
+    local_variable_declaration: "var",
+  },
+};
+const SOLIDITY = {
+  decl: new Set([
+    "contract_declaration",
+    "interface_declaration",
+    "library_declaration",
+    "function_definition",
+    "constructor_definition",
+    "modifier_definition",
+    "event_definition",
+    "struct_declaration",
+    "enum_declaration",
+    "state_variable_declaration", // storage vars (fields)
+    "constant_variable_declaration",
+    "error_declaration",
+    "user_defined_type_definition",
+  ]),
+  kind: {
+    contract_declaration: "class",
+    interface_declaration: "interface",
+    library_declaration: "namespace",
+    function_definition: "func",
+    constructor_definition: "ctor",
+    modifier_definition: "modifier",
+    event_definition: "event",
+    struct_declaration: "struct",
+    enum_declaration: "enum",
+    state_variable_declaration: "field",
+    constant_variable_declaration: "const",
+    error_declaration: "error",
+    user_defined_type_definition: "type",
+  },
+};
 const GENERIC = {
   decl: new Set([
     "function_declaration",
@@ -274,6 +330,8 @@ const EXT_MAP = {
   java: ["java", JAVA],
   rs: ["rust", RUST],
   rb: ["ruby", RUBY],
+  lua: ["lua", LUA], // §9.3: game/config scripting (verified node types)
+  sol: ["solidity", SOLIDITY], // §9.3: no LSP most devs run → tree-sitter is the only decl source
   // Tags-query tier (canonical .scm extraction; validated against the bundled grammars). Extends the
   // syntactic rung past the hand-tuned flagship languages — see server/tags/*.scm.
   php: ["php", TAGS],
