@@ -248,6 +248,12 @@ strings, unrelated identifiers); the plugin returns one `file:line` per semantic
 eval (`node eval/run.mjs`, no toolchain) gates this on every commit: `~57,308 → ~1,549 tok` = **97.3%**
 (53/53 checks).
 
+**Syntactic tier vs clangd — same location, no cold wait.** On a second real UE5 game module (3,143 files,
+133,890 symbols; aggregate counts only), the tree-sitter tier returned the **same `file:line`** as clangd's
+EXACT answer on every sampled symbol (line delta 0), in **~240 ms** vs clangd's **~127 s** cold-to-first-answer
+— a ~530× gap the semantic tier doesn't close for a *locate*. That's why the ladder answers tree-sitter-first
+while clangd warms, then climbs to EXACT. One-time index build ~62 s; details in [BENCHMARK.md](BENCHMARK.md).
+
 <details>
 <summary><b>Accuracy: precision/recall trade-off</b></summary>
 

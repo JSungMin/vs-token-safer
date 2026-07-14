@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 import { LspClient, fromUri, langIdForPath, envInt, canonFsPath } from "./lsp.js";
-import { pickBackend, BACKENDS, clangdAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled, clangdIndexModeAdvisory } from "./backends/index.js";
+import { pickBackend, BACKENDS, clangdAdvisory, clangdAvailable, clangdMissingAdvisory, dbDirFor, resolveCdbDir, hasPersistedIndex, findProjectRoot, effectiveCdbDir, scopeDirsFor, buildStaticIndex, hasClangdIndexer, indexerEnabled, clangdIndexModeAdvisory } from "./backends/index.js";
 import { scopeStats, inScope } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
@@ -20,7 +20,7 @@ import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, co
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol, tsFileSymbols } from "./treesitter.js";
-import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex } from "./symindex.js";
+import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex, hasSymIndex, indexFreshness, ensureAutoIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
@@ -818,7 +818,10 @@ function getClient(root, backendName) {
   // held the event loop open (the eval hung after PASS / the CI test step never exited).
   let spawned = null;
   entry.p = (async () => {
-    const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell });
+    // Semantic-only clangd op reaching here with clangd absent (locate ops pre-empt upstream) → hand the client a
+    // friendly, actionable spawn-failure message (S1 §2.3) instead of the raw `failed to spawn clangd`.
+    const friendlyMissing = backendName === "clangd" && !clangdAvailable(b.cmd) ? clangdMissingAdvisory() : null;
+    const c = new LspClient(b.cmd, b.args(root), { cwd: root, shell: process.platform === "win32" && !!b.winShell, friendlyMissing });
     spawned = c;
     allClients.add(c); // register the INSTANT it's constructed (child alive from initialize on) → never orphanable
     await c.initialize(root);
@@ -950,15 +953,29 @@ function clangdShardCount(cdbDir) {
 // semantics, so it is never pre-empted.
 function clangdCrawlLikely(root) {
   let cdbDir; try { cdbDir = effectiveCdbDir(root); } catch { cdbDir = null; }
+  // S1: clangd is the routed backend but the binary isn't spawnable (not installed / off PATH). A locate must
+  // NOT dispatch to it (it would hard-fail at spawn, lsp.js) — treat exactly like a crawl risk so every pre-empt
+  // auto-falls-back to the syntactic tier. `missing` lets the search/refs gates skip the big-tree probe (a small
+  // clangd-less project should degrade too, not just a giant one). Cached via the shared clangd version probe.
+  if (!clangdAvailable(BACKENDS.clangd.cmd)) return { crawl: true, missing: true, why: "clangd not installed" };
   const db = cdbDir ? loadCdb(cdbDir) : null;
   if (!db || db.count === 0) return { crawl: true, why: "no compile_commands.json" };
+  const warm = clients.has(`clangd|${root}`);
+  // S2: a COLD clangd (no warm client yet) with a committed index already on disk — the locate answers from that
+  // index in ms, so don't make the query eat clangd's cold-start (load tens of thousands of shards inside this
+  // one request, up to VTS_LSP_INDEX_WAIT_MS). Gated on the index EXISTING so a small healthy project's live LSP
+  // path (evals/mock clients, no committed index) is untouched; TU count is irrelevant once we can serve it fast.
+  if (!warm && hasSymIndex(root)) return { crawl: true, cold: true, why: "cold clangd, committed index available" };
   if (db.count > envInt("VTS_SYMBOL_PREEMPT_TU_MAX", 8000)) {
     const shards = clangdShardCount(cdbDir);
     if (shards < Math.floor(db.count * 0.9)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, index incomplete` };
-    if (!clients.has(`clangd|${root}`)) return { crawl: true, why: `~${db.count.toLocaleString()} TUs, cold start (no warm clangd yet)` };
+    if (!warm) return { crawl: true, cold: true, why: `~${db.count.toLocaleString()} TUs, cold start (no warm clangd yet)` };
   }
   return { crawl: false, why: "" };
 }
+// Roots that already emitted the one-time "background index build started" ladder note (§3) this process, so
+// the nudge fires exactly once per root even though many degraded answers flow through the pre-empt.
+const _autoIndexNoted = new Set();
 const _bigTreeCache = new Map(); // root → boolean
 function bigTreeLikely(root) {
   if (_bigTreeCache.has(root)) return _bigTreeCache.get(root);
@@ -978,6 +995,44 @@ function bigTreeLikely(root) {
   }
   _bigTreeCache.set(root, big);
   return big;
+}
+// §9.2: language-AGNOSTIC "is this tree worth a committed index?" probe (bigTreeLikely counts only C/C++ — this
+// counts every tree-sitter-supported extension so a large JS/TS/C#/Python/Go/… tree also gets the always-on
+// committed index, independent of which backend or whether clangd exists). Early-exits the instant the file
+// count crosses the floor, 400ms hard budget, cached per root. The floor (VTS_AUTOINDEX_MIN_FILES, default 400)
+// sits well above a small project so a healthy small repo is never auto-indexed — only trees big enough that a
+// clangd/LSP cold start would actually stall the first answer get the background build.
+const _autoIndexTreeCache = new Map(); // root → boolean
+function autoIndexTreeLikely(root) {
+  if (_autoIndexTreeCache.has(root)) return _autoIndexTreeCache.get(root);
+  const cap = envInt("VTS_AUTOINDEX_MIN_FILES", 400);
+  const t0 = Date.now();
+  let n = 0, big = false;
+  const stack = [root];
+  const skip = (name) => name.startsWith(".") || /^(node_modules|intermediate|binaries|saved|deriveddatacache|build|dist|out|obj|bin|__pycache__|venv|target|vendor|thirdparty|third_party)$/i.test(name);
+  while (stack.length && !big) {
+    if (Date.now() - t0 > 400) { big = n > cap / 4; break; }
+    const d = stack.pop();
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!skip(e.name)) stack.push(path.join(d, e.name)); }
+      else if (tsSupports(e.name) && ++n >= cap) { big = true; break; }
+    }
+  }
+  _autoIndexTreeCache.set(root, big);
+  return big;
+}
+// §9.2: kick the DETACHED committed-index build on ANY locate over a sizeable tree that has none yet —
+// independent of clangd (a warm-clangd C++ tree, or a roslyn/tsserver/pyright tree, all benefit so the NEXT
+// cold start answers from tree-sitter instantly instead of waiting on the language server's cold index).
+// Silent: ensureAutoIndex never blocks and its build output never reaches a response; the degrade paths still
+// emit their own one-time "building .vts-index" ladder note. Gated by VTS_AUTO_INDEX + the existing dedupe/lock.
+function kickAutoIndex(root) {
+  try {
+    if (hasSymIndex(root)) return;
+    if (!autoIndexTreeLikely(root)) return;
+    ensureAutoIndex(root);
+  } catch { /* best-effort, never surfaces */ }
 }
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
@@ -1259,10 +1314,41 @@ function factorCommonPrefix(lines) {
 // bounded lexical walk can at least honestly flag INCONCLUSIVE instead of presenting a possibly-truncated 0 as
 // fact. The tag is additive (the human-facing notes elsewhere stay) and machine-readable. VTS_CERT=0 hides it.
 function certOn() { return !/^(0|false|off|no)$/i.test(String(process.env.VTS_CERT ?? "1")); }
+// UNIFIED LADDER LINE (§1). Every degrade path (clangd missing / cold / stale / fuzzy miss) appends ONE line
+// that names the RUNG the answer sits on, WHY it degraded (3–6 words), and the single command to CLIMB (or
+// DESCEND) one rung — superseding the scattered per-path buildHint/advisory/climb strings with one contract, so
+// the agent always knows the next move and the response is a net line SHORTER. VTS_LADDER_LINE default on; when
+// unset it follows the existing VTS_CERT switch (so `VTS_CERT=0` still hides everything as before).
+function ladderOn() {
+  const v = process.env.VTS_LADDER_LINE;
+  if (v == null) return certOn();
+  return !/^(0|false|off|no)$/i.test(String(v));
+}
+// rung e.g. "SYNTACTIC" / "SYNTACTIC miss"; reason 3–6 words; climb one concrete command; verb "climb"|"descend".
+function ladderLine({ rung, reason = "", climb = "", verb = "climb" } = {}) {
+  if (!ladderOn()) return "";
+  const r = reason ? ` — ${reason}` : "";
+  const c = climb ? `. ${verb}: ${climb}` : "";
+  return `\n[ladder: ${rung}${r}${c}]`;
+}
+// The exact-rung climb command for the CURRENTLY-AVAILABLE backend (§5.3): with clangd present, ground-truth is
+// goto_definition/find_references; without it (S1), the best exact-ish rung is a syntactic search_symbol.
+function climbCommandFor(name) {
+  return clangdAvailable(BACKENDS.clangd.cmd)
+    ? `find_references symbol="${name}" (or goto_definition) for ground-truth refs/def`
+    : `search_symbol q="${name}" (syntactic — install clangd for semantic goto/refs)`;
+}
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false, fuzzy = false, section = false } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false, fuzzy = false, section = false, stale = 0 } = {}) {
   if (!certOn()) return "";
+  // SYNTACTIC · STALE — the committed index answered, but the freshness probe found source(s) changed since it
+  // was built, so the file:line may be off (§4). Still returns the answer; the cert just downgrades honesty and
+  // the caller pairs it with a `climb: vts index` ladder line. Takes precedence over the plain SYNTACTIC label.
+  if (syntactic && stale) {
+    const n = typeof stale === "number" && stale > 0 ? `${stale} file(s) changed` : "source changed";
+    return `\n[completeness: SYNTACTIC · STALE — ${shown} decl(s), but ${n} since the index was built (positions may be off); rebuild: vts index.]`;
+  }
   // ONE label names BOTH which precision RUNG answered AND how complete the set is (the unified precision
   // label). The four ladder rungs — exact (semantic LSP) / syntactic (tree-sitter) / fuzzy (concept dictionary)
   // / section (structure tier) — each carry their own honesty caveat; a capped/timed-out result falls through
@@ -2421,7 +2507,9 @@ export async function runTool(name, a = {}) {
       }
       // Precision-ladder navigation: concept_search is the FUZZY rung (related, not exact). Once a seed looks
       // right, climb to the exact rung for ground-truth — name the hit to find_references / goto_definition.
-      const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — find_references symbol="${seed.s.name}" or goto_definition for ground-truth refs/def.]` : "";
+      // §5.3: generate the ascent command against the CURRENTLY-AVAILABLE backend — goto/refs when clangd is
+      // present, a syntactic search_symbol when it isn't (so a fuzzy hit on a clangd-less tree still has a climb).
+      const climb = process.env.VTS_CONCEPT_STEER !== "0" ? `\n[ladder: this is the fuzzy rung. Climb to exact on a hit — ${climbCommandFor(seed.s.name)}.]` : "";
       return finishOut(rows, `${ranked.length} concept match(es) for "${a.q}" (fuzzy — local concept dictionary, no embeddings, file:line):${expLine}\n` + rows.join("\n") + cert + climb + flow);
     }
     if (name === "vts_dce") {
@@ -2690,6 +2778,10 @@ export async function runTool(name, a = {}) {
     if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn|typescript|pyright, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++), a .sln/.csproj (C#), a tsconfig/package.json (JS/TS), or a pyproject.toml/*.py (Python).`);
     const max = Number(a.maxResults) || MAX_RESULTS;
     const lang = langIdForPath(a.path, backendName); // languageId for didOpen (hover/document_symbols/rename); unused by search_symbol
+    // §9.2: on ANY locate over a sizeable index-less tree, start the committed tree-sitter index in the
+    // background NOW — clangd-independent, so the first answer never waits on a language-server cold start and
+    // the next cold start is instant. No-ops when an index exists / the tree is small / VTS_AUTO_INDEX=0.
+    if (name === "search_symbol" || name === "find_references" || name === "document_symbols" || name === "read_symbol") kickAutoIndex(root);
 
     if (name === "search_symbol") {
       if (!a.q) return err("search_symbol needs q (the symbol name/substring).");
@@ -2701,27 +2793,58 @@ export async function runTool(name, a = {}) {
       // "resolves" on a C++ tree, however useless its index is. A name lookup answered from the committed
       // index is the same decl-quality result, so serve it NOW. VTS_SYMBOL_PREEMPT=0 disables.
       if (backendName === "clangd" && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
-        const { crawl: crawlLikely, why } = clangdCrawlLikely(root);
+        const { crawl: crawlLikely, why, missing, cold } = clangdCrawlLikely(root);
         // The crawl-time hazard is a BIG-tree phenomenon: on a small no-DB project clangd answers (or
         // empties) fast, and that LSP path must stay live (evals/mock clients + healthy small repos both
         // sit there). So without a committed index, pre-empt only when a bounded probe says the tree is
-        // big; an existing .vts-index skips the probe — someone built it deliberately, serve it.
-        const preempt = crawlLikely && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
+        // big; an existing .vts-index skips the probe — someone built it deliberately, serve it. S1
+        // (clangd MISSING) bypasses the big-tree gate entirely — a clangd-less C++ tree of any size must
+        // degrade rather than route to a spawn that can't happen.
+        const preempt = crawlLikely && (missing || fs.existsSync(symIndexPath(root)) || bigTreeLikely(root));
         if (preempt) {
           const pmax = Number(a.maxResults) || MAX_RESULTS;
           // syntacticSymbols = committed .vts-index first (ms), else a bounded live tree-sitter walk. Either
           // beats dispatching to clangd here: on a tree in this state workspace/symbol crawls for tens of
           // seconds and the MCP CLIENT times out (-32001) before any local fallback could ever run.
           const syn = await scopedSyntacticSymbols(root, a.q, a.path, pmax);
-          // Discovery for the NO-INDEX case (a fresh clone / a team that never built one): tell the caller —
-          // typically an agent — that ONE tool call makes this instant and complete from now on. Without this
-          // nudge the committable-index feature is invisible exactly where it helps most (giant UE trees).
-          const buildHint = fs.existsSync(symIndexPath(root)) ? "" :
-            `\n↪ Make this instant + complete: vts_index (one-time build; chunk-safe on huge trees, no toolchain needed) — then commit .vts-index/ to share it with the team.`;
-          if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + buildHint + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
+          const hasIdx = fs.existsSync(symIndexPath(root));
+          // S2/S3: no committed index yet → kick off `vts index` DETACHED (output never enters a response) so
+          // the next cold start is instant. The nudge (incl. "git add .vts-index to share") fires ONCE per root.
+          let autoNote = "";
+          if (!hasIdx) {
+            const ai = ensureAutoIndex(root);
+            if (ai.started && !_autoIndexNoted.has(root)) { _autoIndexNoted.add(root); autoNote = `\n↪ Building .vts-index/ in the background (one-time) — later queries get instant + complete; commit it to share: git add .vts-index (never auto-committed).`; }
+          }
+          // ONE unified ladder line supersedes the old multi-line buildHint (net shorter). Reason names WHY it
+          // degraded; climb is the single next move (install / re-query / build the index). Legacy buildHint is
+          // kept ONLY when the ladder line is switched off, so VTS_LADDER_LINE=0 preserves the prior output.
+          // §9.1: tree-sitter is a FIRST-CLASS instant tier, not a "clangd failed" fallback. When clangd is
+          // merely warming (cold), frame the committed syntactic answer as the instant primary and clangd as the
+          // EXACT upgrade that follows — [ladder: SYNTACTIC (instant) — clangd warming. climb: re-query for EXACT].
+          const rung = cold ? "SYNTACTIC (instant)" : "SYNTACTIC";
+          const reason = missing ? "clangd not installed" : cold ? "clangd warming" : why;
+          const climb = missing ? "install clangd (vts setup) → goto_definition for semantic def/refs"
+            : cold ? "re-query for EXACT"
+            : hasIdx ? "" : "vts index (one-time; then goto_definition once clangd warms)";
+          const ladder = ladderLine({ rung, reason, climb });
+          const buildHint = ladderOn() ? "" : (hasIdx ? "" :
+            `\n↪ Make this instant + complete: vts_index (one-time build; chunk-safe on huge trees, no toolchain needed) — then commit .vts-index/ to share it with the team.`);
+          if (syn) {
+            const scopeTag = syn.scoped ? ` in ${syn.scoped}` : "";
+            // STALE (§4): a committed-index answer can be stale — probe freshness (budgeted, mtime-only) and
+            // downgrade the cert + swap in a `vts index` rebuild climb. A live tree-sitter answer is never stale.
+            const fresh = /committed index/.test(syn.source || "") ? indexFreshness(root) : { stale: false, changed: 0 };
+            const tail = fresh.stale ? ladderLine({ rung: "SYNTACTIC · STALE", reason: `${fresh.changed} file(s) changed`, climb: "vts index (rebuild)" }) : ladder;
+            return finishOut(syn.lines, `clangd can't serve this tree fast (${why}) — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + buildHint + autoNote + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true, stale: fresh.stale ? fresh.changed : 0 }) + tail);
+          }
+          // MISS (no declaration on the syntactic rung): §5 fuzzy continuity — steer DOWN to concept_search (the
+          // same descend intentSteer uses) so a clangd-missing/cold degrade flows into the fuzzy rung, not a dead end.
+          const descend = process.env.VTS_CONCEPT_STEER !== "0"
+            ? ladderLine({ rung: "SYNTACTIC miss", reason, climb: `concept_search q="${a.q}" (fuzzy — repo-mined, no embeddings)`, verb: "descend" })
+            : ladder;
           const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 60));
-          if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint);
-          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + EMPTY_HINT);
+          if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint + autoNote + descend);
+          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + autoNote + descend + EMPTY_HINT);
         }
       }
       // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
@@ -2810,12 +2933,27 @@ export async function runTool(name, a = {}) {
       // at the declaration. Serve time-boxed literal usage lines (labelled non-semantic) plus the
       // committed-index declaration anchor instead. Same switch + gates as the symbol pre-empt.
       if (backendName === "clangd" && a.symbol && !/^(0|false|off|no)$/i.test(String(process.env.VTS_SYMBOL_PREEMPT ?? "1"))) {
-        const { crawl: rCrawl, why: rWhy } = clangdCrawlLikely(root);
-        if (rCrawl && (fs.existsSync(symIndexPath(root)) || bigTreeLikely(root))) {
+        const { crawl: rCrawl, why: rWhy, missing: rMissing, cold: rCold } = clangdCrawlLikely(root);
+        // S1 (clangd MISSING) bypasses the big-tree gate — a clangd-less C++ tree of any size degrades here.
+        if (rCrawl && (rMissing || fs.existsSync(symIndexPath(root)) || bigTreeLikely(root))) {
           const want = String(a.symbol);
           const rMax = Number(a.maxResults) || MAX_RESULTS;
           const syn = await syntacticSymbols(root, want, 3);
           const declLine = syn && syn.lines.length ? `Declaration (committed index): ${syn.lines[0]}\n` : "";
+          // S2/S3 background build (one-time nudge per root) — same detached path as the symbol pre-empt.
+          let rAutoNote = "";
+          if (!fs.existsSync(symIndexPath(root))) {
+            const ai = ensureAutoIndex(root);
+            if (ai.started && !_autoIndexNoted.has(root)) { _autoIndexNoted.add(root); rAutoNote = `\n↪ Building .vts-index/ in the background (one-time) — later queries get instant + complete; commit it to share: git add .vts-index (never auto-committed).`; }
+          }
+          // Unified ladder line: WHY it degraded + the one climb (install / re-query / rebuild for SEMANTIC refs).
+          // §9.1: cold clangd → the committed syntactic answer is the instant primary, EXACT follows on re-query.
+          const rRung = rCold ? "SYNTACTIC (instant)" : "SYNTACTIC";
+          const rReason = rMissing ? "clangd not installed" : rCold ? "clangd warming" : rWhy;
+          const rClimb = rMissing ? "install clangd (vts setup) → find_references for semantic call sites"
+            : rCold ? "re-query for EXACT references"
+            : "vts index, then find_references once clangd warms (semantic call sites)";
+          const rLadder = ladderLine({ rung: rRung, reason: rReason, climb: rClimb });
           // Scan the DECLARATION file(s) first: callers cluster near the declaration (and a `static`
           // function's callers can ONLY be in its own .cpp), while the tree-wide time-boxed scan walks in
           // directory order and routinely exhausts its budget before ever reaching the right module — a
@@ -2836,8 +2974,12 @@ export async function runTool(name, a = {}) {
             const seen = new Set(uses.map((u) => u.split(": ")[0]));
             for (const m of more) if (!seen.has(m.split(": ")[0])) uses.push(m);
           }
-          if (uses.length) return finishOut(uses, `clangd can't serve this tree fast (${rWhy}) — literal usage matches for "${want}" (file:line of the NAME, not semantic references; declaration-file hits listed first):\n` + declLine + uses.join("\n") + (truncated ? `\n[tree scan truncated: ${truncated} — decl-file hits above are complete; narrow projectPath for the full tree set]` : ""));
-          return finishOut([], `clangd can't serve this tree fast (${rWhy}) and no text usage found for "${want}" under ${root}.\n` + declLine + EMPTY_HINT);
+          if (uses.length) return finishOut(uses, `clangd can't serve this tree fast (${rWhy}) — literal usage matches for "${want}" (file:line of the NAME, not semantic references; declaration-file hits listed first):\n` + declLine + uses.join("\n") + (truncated ? `\n[tree scan truncated: ${truncated} — decl-file hits above are complete; narrow projectPath for the full tree set]` : "") + rAutoNote + rLadder);
+          // MISS: §5 fuzzy continuity — descend to concept_search so a clangd-missing/cold degrade keeps flowing.
+          const rDescend = process.env.VTS_CONCEPT_STEER !== "0"
+            ? ladderLine({ rung: "SYNTACTIC miss", reason: rReason, climb: `concept_search q="${want}" (fuzzy — repo-mined, no embeddings)`, verb: "descend" })
+            : rLadder;
+          return finishOut([], `clangd can't serve this tree fast (${rWhy}) and no text usage found for "${want}" under ${root}.\n` + declLine + rAutoNote + rDescend + EMPTY_HINT);
         }
       }
       const c = await getClient(root, backendName);

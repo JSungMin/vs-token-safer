@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { once } from "node:events";
-import { execFile, execSync } from "node:child_process";
+import { execFile, execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { tsFileSymbols, tsSupports } from "./treesitter.js";
@@ -66,6 +66,125 @@ export function hasSymIndex(root) {
     return fs.existsSync(symIndexPath(root));
   } catch {
     return false;
+  }
+}
+
+// Highest mtime across a per-file manifest ({rel: {mt, sz, h}}) — the freshness watermark stamped into the
+// header so a later query can tell whether any SOURCE has changed since the index was built (indexFreshness).
+// Cheap: the manifest is already in hand at build time (every file was stat'd), so no extra walk.
+function _maxMtimeOf(hashes) {
+  let mx = 0;
+  for (const k in hashes) { const v = hashes[k]; if (v && v.mt > mx) mx = v.mt; }
+  return mx;
+}
+
+// ── Query-time freshness (S3: partial/stale index) ──────────────────────────────────────────────────────────
+// Read ONLY the header line (the freshness stamp) of symbols.jsonl — never load the whole index (which can be
+// hundreds of MB) just to read {built, files, maxMtime}. Cached by path+mtime+size.
+const _metaCache = new Map(); // path → { mt, sz, meta }
+export function symIndexMeta(root) {
+  const p = symIndexPath(root);
+  let st; try { st = fs.statSync(p); } catch { return null; }
+  const c = _metaCache.get(p);
+  if (c && c.mt === st.mtimeMs && c.sz === st.size) return c.meta;
+  let fd, meta = null;
+  try {
+    fd = fs.openSync(p, "r");
+    const buf = Buffer.alloc(65536);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const s = buf.toString("utf8", 0, n);
+    const nl = s.indexOf("\n");
+    const o = JSON.parse(nl === -1 ? s : s.slice(0, nl));
+    if (o && o.v) meta = o;
+  } catch { meta = null; }
+  finally { try { if (fd !== undefined) fs.closeSync(fd); } catch { /* ignore */ } }
+  _metaCache.set(p, { mt: st.mtimeMs, sz: st.size, meta });
+  return meta;
+}
+// Is the committed index STALE relative to the current tree? A BUDGETED probe (400ms, like bigTreeLikely) that
+// reads mtime/existence ONLY (never file bodies) and EARLY-EXITS the instant it finds a source newer than the
+// index's watermark. Returns { stale, changed } — `changed` is a lower bound (≥1 on early-exit) or a count-delta
+// when the walk completes in budget. NEVER blocks the answer; a legacy index with no watermark → not stale
+// (can't judge honestly). Cached by root + the jsonl's mtime so repeat queries don't re-walk. VTS_STALE_CHECK=0
+// disables (always treats the index as fresh).
+const _freshnessCache = new Map(); // `${root}\0${jsonlMtime}` → { stale, changed }
+export function indexFreshness(root) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_STALE_CHECK ?? "1"))) return { stale: false, changed: 0 };
+  const meta = symIndexMeta(root);
+  if (!meta || meta.maxMtime == null) return { stale: false, changed: 0 }; // no watermark → don't cry stale
+  let jmt; try { jmt = fs.statSync(symIndexPath(root)).mtimeMs; } catch { return { stale: false, changed: 0 }; }
+  const key = `${root}\0${jmt}`;
+  const hit = _freshnessCache.get(key);
+  if (hit) return hit;
+  const t0 = Date.now();
+  const stack = [root];
+  let seen = 0, changed = 0, budget = false;
+  const maxMt = meta.maxMtime;
+  outer:
+  while (stack.length) {
+    if (Date.now() - t0 > 400) { budget = true; break; }
+    const dir = stack.pop();
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (e.isDirectory()) { if (!defaultSkipDir(e.name) && e.name !== DIR) stack.push(path.join(dir, e.name)); continue; }
+      if (!isIndexable(e.name)) continue;
+      seen++;
+      let st; try { st = fs.statSync(path.join(dir, e.name)); } catch { continue; }
+      if (Math.round(st.mtimeMs) > maxMt) { changed = 1; break outer; } // any newer source → stale, stop early
+    }
+  }
+  let res;
+  if (changed > 0) res = { stale: true, changed };
+  // Count-delta is only trustworthy when the whole tree was walked in budget (a partial walk under-counts).
+  else if (!budget && meta.files != null && Math.abs(seen - meta.files) > Math.max(2, Math.round(meta.files * 0.02)))
+    res = { stale: true, changed: Math.abs(seen - meta.files) };
+  else res = { stale: false, changed: 0 };
+  _freshnessCache.set(key, res);
+  return res;
+}
+
+// ── S2/S3: auto-build the committed index in the BACKGROUND ──────────────────────────────────────────────────
+// When a locate hits a tree that has no committed index, kick off `vts index` DETACHED so the NEXT cold start
+// (or the same session, once it finishes) answers instantly — without ever blocking THIS query or leaking build
+// output into a tool response. Deduped by an in-process Set AND a cross-process lock file (a fresh lock younger
+// than the TTL means another process is already building). VTS_AUTO_INDEX=0 disables. Returns { started, reason }.
+const _autoIndexInflight = new Set();
+function _autoIndexLock() { return path.join(os.homedir(), ".vts-local", "autoindex.lock"); }
+export function ensureAutoIndex(root) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_AUTO_INDEX ?? "1"))) return { started: false, reason: "disabled" };
+  const key = path.resolve(root);
+  if (_autoIndexInflight.has(key)) return { started: false, reason: "inflight" };
+  if (hasSymIndex(root)) return { started: false, reason: "exists" };
+  const ttlMs = Number(process.env.VTS_AUTOINDEX_LOCK_TTL_MS || 30 * 60 * 1000);
+  const lockPath = _autoIndexLock();
+  // Cross-process dedupe: the lock file holds one {root: startedMs} record per active build. Skip if a FRESH
+  // record for this root exists (another vts process is building it). Prune stale/expired records opportunistically.
+  let locks = {};
+  try { locks = JSON.parse(fs.readFileSync(lockPath, "utf8")) || {}; } catch { /* absent/corrupt → fresh map */ }
+  const now = Date.now();
+  for (const k in locks) if (!(now - (locks[k] || 0) < ttlMs)) delete locks[k]; // drop expired
+  if (locks[key] && now - locks[key] < ttlMs) { _autoIndexInflight.add(key); return { started: false, reason: "locked" }; }
+  // Detached spawn: `node <cli.js> index --projectPath <root>`, all output to a log file (NEVER a response).
+  try {
+    const dir = path.dirname(lockPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const logDir = path.join(dir, "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const slug = path.basename(key).replace(/[^\w.-]/g, "_") + "-" + Math.abs(fnv1a(key)).toString(36);
+    const logPath = path.join(logDir, `autoindex-${slug}.log`);
+    const out = fs.openSync(logPath, "a");
+    const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
+    const child = spawn(process.execPath, [cli, "index", "--projectPath", root], {
+      cwd: root, detached: true, stdio: ["ignore", out, out], windowsHide: true,
+    });
+    child.unref();
+    try { fs.closeSync(out); } catch { /* fd handed to child */ }
+    locks[key] = now;
+    try { fs.writeFileSync(lockPath, JSON.stringify(locks)); } catch { /* best-effort lock */ }
+    _autoIndexInflight.add(key);
+    return { started: true, reason: "spawned", log: logPath };
+  } catch (e) {
+    return { started: false, reason: "error", error: String((e && e.message) || e) };
   }
 }
 
@@ -208,6 +327,7 @@ async function buildSymIndexSingle(
     built: now,
     files,
     symbols,
+    maxMtime: _maxMtimeOf(newHashes), // freshness watermark (S3 staleness probe)
     partial: timedOut || undefined,
     h: newHashes,
   });
@@ -411,7 +531,7 @@ export async function buildSymIndexChunked(
   );
 
   // Merge: header line + every part's symbols, streamed (never one giant string — the index can exceed 512 MB).
-  const header = JSON.stringify({ v: SYMINDEX_VERSION, built: now, files: totFiles, symbols: totSymbols, partial: failed > 0 || undefined, h: H });
+  const header = JSON.stringify({ v: SYMINDEX_VERSION, built: now, files: totFiles, symbols: totSymbols, maxMtime: _maxMtimeOf(H), partial: failed > 0 || undefined, h: H });
   const finalPath = symIndexPath(root);
   // GUARD (mirror of buildSymIndexSingle): refuse to clobber an EXISTING index with a 0-symbol build. Every
   // chunk yielding 0 symbols means the workers' tree-sitter grammar is unavailable/incompatible (a dylink /

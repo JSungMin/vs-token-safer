@@ -33,13 +33,26 @@ export function parseClangdMajor(versionText) {
   const m = /clangd version (\d+)/i.exec(String(versionText || ""));
   return m ? parseInt(m[1], 10) : null;
 }
-// Run `<cmd> --version` once and return the major version (or null if it can't be determined).
-let _clangdMajorCache;
+// Run `<cmd> --version` once and return the major version (or null if it can't be determined). The same
+// probe records spawnability (see clangdAvailable) — a missing binary throws → available=false; a present
+// clangd whose version string is unparseable is still available=true (only the major is null).
+let _clangdMajorCache, _clangdAvailCache;
 export function clangdMajor(cmd) {
   if (_clangdMajorCache !== undefined) return _clangdMajorCache;
-  try { _clangdMajorCache = parseClangdMajor(execFileSync(cmd, ["--version"], { encoding: "utf8", timeout: 10000 })); }
-  catch { _clangdMajorCache = null; }
+  try {
+    const out = execFileSync(cmd, ["--version"], { encoding: "utf8", timeout: 10000 });
+    _clangdAvailCache = true;
+    _clangdMajorCache = parseClangdMajor(out);
+  } catch { _clangdAvailCache = false; _clangdMajorCache = null; }
   return _clangdMajorCache;
+}
+// Is this clangd actually spawnable (present + executable on PATH)? Distinct from clangdMajor, which also
+// returns null when a present clangd's version string is unparseable. Used to PREFER the syntactic tier
+// when clangd is absent — so a C/C++ tree degrades to tree-sitter with a friendly nudge instead of routing
+// to clangd and hard-failing later at spawn (lsp.js). Cached via the shared version probe.
+export function clangdAvailable(cmd) {
+  if (_clangdAvailCache === undefined) clangdMajor(cmd); // populate the shared cache
+  return _clangdAvailCache === true;
 }
 // One-line advisory if the resolved clangd is older than recommended; "" otherwise. Best-effort: a
 // clangd we can't version-probe (null) is left alone rather than nagged.
@@ -48,6 +61,17 @@ export function clangdAdvisory(cmd) {
   if (major != null && major < MIN_CLANGD)
     return `⚠ clangd ${major}.x detected — clangd ≥ ${MIN_CLANGD} is recommended for large Unreal/C++ projects. Older clangd (e.g. the 19.1.x bundled with Visual Studio) can hang indexing UE translation units. Install the full LLVM release (https://github.com/llvm/llvm-project/releases — it bundles clangd-indexer too, which vts uses for instant pre-indexing) and point VTS_CLANGD_CMD at its clangd.`;
   return "";
+}
+// Friendly one-liner when a C/C++ tree wants clangd for a SEMANTIC op (goto/hover/rename/diagnostics) but
+// the binary isn't on PATH — replaces the raw `failed to spawn clangd` and always points at the syntactic
+// alternative so the flow never dead-ends.
+export function clangdMissingAdvisory() {
+  const how = process.platform === "win32"
+    ? "install LLVM (https://github.com/llvm/llvm-project/releases) and set VTS_CLANGD_CMD to its clangd.exe"
+    : process.platform === "darwin"
+    ? "brew install llvm, then set VTS_CLANGD_CMD to $(brew --prefix llvm)/bin/clangd"
+    : `install clangd ≥ ${MIN_CLANGD} via your package manager, or set VTS_CLANGD_CMD to a clangd ≥ ${MIN_CLANGD}`;
+  return `clangd (semantic C/C++) not found on PATH — ${how}. Locate still works now on the SYNTACTIC (tree-sitter) rung: search_symbol / read_symbol / find_references.`;
 }
 
 // Collect every file (up to `depth`) whose name matches `re` — used to open all .csproj for Roslyn.
