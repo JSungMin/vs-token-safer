@@ -29,6 +29,13 @@ process.env.VTS_TEE_DIR = TEE;
 const EDL = path.join(os.tmpdir(), `vts-eval-edl-${process.pid}.json`); // isolate the edit-adoption ledger
 process.env.VTS_EDIT_LEDGER = EDL; // so the symbolic-edit guards don't write the user's real adoption ledger
 process.env.VTS_LANG = "en"; // force English UI so message-marker assertions are deterministic regardless of OS locale
+// Pin the local-LLM ORCHESTRATOR off. Detection is ambient (a `qvts` on PATH, or ~/.vts-local/config.json), so a
+// maintainer who has the vts-local-orchestrator installed gets a DIFFERENT hook/tool behaviour than CI: the Bash
+// grep rewrite reroutes to `qvts` instead of the `vts` CLI these guards assert, and ~10 guards go red on their
+// machine only. Pinning it off makes the eval hermetic (CLAUDE.md tells every session to run it first, so it must
+// not depend on what else the developer has installed). The orchestrator-aware path deserves its OWN guard that
+// forces VTS_ORCHESTRATOR=1 rather than inheriting the ambient install.
+process.env.VTS_ORCHESTRATOR_AWARE = "0";
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -149,10 +156,18 @@ const hv = await runTool("hover", { path: someFile, line: 0, character: 0, backe
 // hover keeps the signature AND trims a pathological long line to ≤200 chars + "…" (per-line cap, not just
 // the ≤8-line cap) — a complex TS/C++ hover can be one multi-thousand-char type.
 const hoverOk = !hv.isError && /Foo/.test(hv.text) && /…/.test(hv.text) && !/T{250}/.test(hv.text);
+// Pin the SYNTACTIC PRE-EMPT off: this guard tests the BACKEND outline + its noise filter, and the pre-empt
+// (clangd + crawl-risk root + tree-sitter supports the file) would answer from tree-sitter instead — outlining
+// the REAL file rather than the mock's fixture symbols, so every assertion below silently tests the wrong path.
+// It only passed on CI because CI lacks the OPTIONAL tree-sitter deps; any dev machine with them went red.
+// The pre-empt itself is covered by guard 81; here it must be out of the way. (Same scoping as VTS_OUTLINE_RAW.)
+const spPrev = process.env.VTS_SYMBOL_PREEMPT;
+process.env.VTS_SYMBOL_PREEMPT = "0";
 const ds = await runTool("document_symbols", { path: someFile, backend: "clangd" });
 process.env.VTS_OUTLINE_RAW = "1";
 const dsRaw = await runTool("document_symbols", { path: someFile, backend: "clangd" });
 delete process.env.VTS_OUTLINE_RAW;
+if (spPrev === undefined) delete process.env.VTS_SYMBOL_PREEMPT; else process.env.VTS_SYMBOL_PREEMPT = spPrev;
 const docSymOk =
   !ds.isError && /Foo/.test(ds.text) && /:5/.test(ds.text) &&
   /keepMethod/.test(ds.text) &&                  // real method kept
