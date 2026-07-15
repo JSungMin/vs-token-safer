@@ -2017,7 +2017,7 @@ const policyOk = supGen && supDotGen && supNodeMod && supReal && supOff && digOk
 // 81) SYNTACTIC tier: tree-sitter declaration extraction (treesitter.js) + the committable symbol index
 // (symindex.js). The zero-setup fallback that works on any repo with no toolchain — a real AST decl, not a
 // literal usage grep. Skips gracefully if the optional tree-sitter deps aren't installed (CI without them).
-const { tsFileSymbols, tsFileReferences, tsSearchSymbols, tsSearchReferences, tsAvailable } = await import("../server/treesitter.js");
+const { tsFileSymbols, tsFileReferences, tsSearchSymbols, tsSearchReferences, tsAvailable, tsReadSymbol } = await import("../server/treesitter.js");
 const { buildSymIndex, loadSymIndex, searchSymIndex, hasSymIndex } = await import("../server/symindex.js");
 let tsTierOk = true;
 if (tsAvailable()) {
@@ -2139,21 +2139,60 @@ if (tsAvailable()) {
   const luaSyms = await tsFileSymbols(path.join(tsDir, "sub", "mod.lua"));
   fs.writeFileSync(path.join(tsDir, "sub", "Token.sol"), "contract Token { uint public supply; function transfer() public {} event Sent(uint a); }\n");
   const solSyms = await tsFileSymbols(path.join(tsDir, "sub", "Token.sol"));
+  // NOTE: the Lua fixture's `local M = {}` is MIS-PARSED by the bundled tree-sitter-lua (a table constructor
+  // becomes an unterminated string: ERROR + MISSING _string_end). A `local function helper() end` after it is
+  // recovered only by ERROR RECOVERY, whose outcome shifts with how many grammars are resident in the process
+  // (0-5 loaded → found; 7+ → dropped). The old assertion that `helper` extracts therefore passed by LUCK and
+  // was testing grammar-load order, not our code. It is replaced by the honest contract below (parseHealthOk):
+  // the decls that DO survive are still returned, and the answer is REPORTED degraded.
   const newLangOk =
     cMacroSyms.some((s) => s.name === "MAX_LEN" && s.kind === "macro") &&
     cMacroSyms.some((s) => s.name === "SQUARE" && s.kind === "macro") &&
     cMacroSyms.some((s) => s.name === "RED" && s.kind === "const") &&
     luaSyms.some((s) => /doThing/.test(s.name) && s.kind === "func") &&
-    luaSyms.some((s) => s.name === "helper" && s.kind === "func") &&
     solSyms.some((s) => s.name === "Token" && s.kind === "class") &&
     solSyms.some((s) => s.name === "transfer" && s.kind === "func") &&
     solSyms.some((s) => s.name === "supply" && s.kind === "field") &&
     solSyms.some((s) => s.name === "Sent" && s.kind === "event");
-  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && partialFallbackOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk && newLangOk;
+  // (j) HONEST PARSE ERRORS: tree-sitter RECOVERS rather than throwing, so a grammar that can't parse a file
+  // silently drops decls. tsFileSymbols now REPORTS that (.parseError), and the SPAN-producing functions
+  // REFUSE (null) — a span from a recovered tree feeds replace_symbol_body/safe_delete and would splice the
+  // wrong lines, i.e. corrupt source. Read-only lists report; span producers refuse.
+  // The healthy-path assertions deliberately use TypeScript, not Lua: the bundled Lua grammar errors on more
+  // than the table constructor (even `local x = 1` followed by a `local function` reports a bad parse), so a
+  // Lua "clean" fixture would be testing the grammar's luck again. Lua is used ONLY as the degraded case.
+  const luaBad = await tsFileSymbols(path.join(tsDir, "sub", "mod.lua"));   // `local M = {}` → ERROR + MISSING
+  fs.writeFileSync(path.join(tsDir, "sub", "clean.ts"), "export function goodClean(){ return 1; }\n");
+  const tsClean = await tsFileSymbols(path.join(tsDir, "sub", "clean.ts"));
+  fs.writeFileSync(path.join(tsDir, "sub", "broken.ts"), "export function good(){ return 1; }\nfunction ((( {\n");
+  const brokenSyms = await tsFileSymbols(path.join(tsDir, "sub", "broken.ts"));
+  const parseHealthOk =
+    luaBad.parseError === true &&                       // the mis-parse is REPORTED, not hidden
+    luaBad.some((s) => /doThing/.test(s.name)) &&       // …and the decls that DID survive are still returned
+    brokenSyms.parseError === true &&                   // language-agnostic: not a Lua special case
+    !tsClean.parseError &&                              // a cleanly-parsed file is NOT falsely degraded
+    tsClean.some((s) => s.name === "goodClean") &&
+    (await tsReadSymbol(path.join(tsDir, "sub", "broken.ts"), "good")) === null &&        // span producer REFUSES
+    (await tsChunkEnd(path.join(tsDir, "sub", "broken.ts"), 0, 1, 1)) === null &&
+    (await tsReadSymbol(path.join(tsDir, "sub", "clean.ts"), "goodClean")) !== null;      // …but still serves a clean parse
+  tsTierOk = fileExtractOk && searchOk && rankOk && idxPresent && idxLoadOk && idxSearchOk && multiWordOk && partialFallbackOk && refOk && noBackendRefOk && tagsTierOk && incrOk && htmlInjectOk && chunkOk && newLangOk && parseHealthOk;
   try { fs.rmSync(tsDir, { recursive: true, force: true }); } catch { /* ignore */ }
 } else {
   console.log("  (tree-sitter deps absent — syntactic tier guard skipped, treated as pass)");
 }
+// The DEGRADED honesty contract is a PURE render, so assert it OUTSIDE the tsAvailable() gate above — CI runs
+// this eval BEFORE `npm install` (test.yml), so everything inside that gate is skipped and printed as a pass.
+// This keeps the contract enforced on CI even there: a degraded syntactic answer must SAY decls are missing
+// and name the re-certify command; a healthy one must be unchanged (no cost on the good path).
+const { completenessCert: cCert } = await import("../server/core.js");
+const certDegraded = cCert({ syntactic: true, shown: 3, parseError: 1 });
+const certPlain = cCert({ syntactic: true, shown: 3 });
+const certDegradedOk =
+  /DEGRADED/.test(certDegraded) && /MISSING/.test(certDegraded) && /search_text/.test(certDegraded) &&
+  /NOT absence/.test(certDegraded) &&                                   // a short list must not read as "none exist"
+  /2 file\(s\)/.test(cCert({ syntactic: true, shown: 3, parseError: 2 })) && // plural count surfaces
+  /SYNTACTIC rung/.test(certPlain) && !/DEGRADED/.test(certPlain) &&    // healthy path untouched
+  !/DEGRADED/.test(cCert({ semantic: true, shown: 3, parseError: 1 })); // parseError only degrades the SYNTACTIC rung
 
 // 82) Roslyn dotnet-host path is OS-aware (Mac mini C# regression): VS Code's globalStorage dir differs per
 // platform; a Windows-only hardcode made the Roslyn .NET host miss on macOS/Linux → system dotnet (too old
@@ -2520,6 +2559,7 @@ const rows = [
   ["symbolic editing: replace/insert/safe_delete by name (preview+apply+ref-guard)", symEditOk, "true", symEditOk],
   ["edit-steer: search EDIT_STEER (toggle) + discover counts whole-decl Edit", editSteerOk, "true", editSteerOk],
   ["discover: agent-spawn accounting (exact totalTokens + fleet/heavy/advisory, toggle)", agentDiscOk, "true", agentDiscOk],
+  ["honest parse errors: SYNTACTIC · DEGRADED cert names the missing decls + re-certify cmd (pure, runs dep-free)", certDegradedOk, "true", certDegradedOk],
   ["edit-steer hook: L1 warn (replace/insert) + L2 safe-insert escalation", editHookOk, "true", editHookOk],
   ["per-file-language backend (.py→pyright in a clangd-rooted mixed repo)", backendPathOk, "true", backendPathOk],
   ["census fallback: path-less search_symbol retries OTHER backends present in the mixed repo (census-desc, gated)", censusFallbackOk, "true", censusFallbackOk],
