@@ -220,7 +220,8 @@ async function buildSymIndexSingle(
     symbols = 0,
     timedOut = false,
     reused = 0,
-    reparsed = 0;
+    reparsed = 0,
+    parseErrors = 0; // files whose grammar could not parse them — recorded, not skipped (see below)
   const newHashes = {};
   // Stream symbol records to a temp file as we walk. A full UE Engine tree has MILLIONS of symbols; buffering
   // them in an array and joining with "\n" at the end exhausted the V8 heap (Zone OOM) even at 16 GB. A write
@@ -269,11 +270,13 @@ async function buildSymIndexSingle(
       const mt = Math.round(st.mtimeMs),
         sz = st.size;
       const pri = priorHashes[rel];
-      let recs, h;
+      let recs, h, bad;
       if (pri && pri.mt === mt && pri.sz === sz) {
         // unchanged by stat → reuse, no read, no parse (the fast path)
         recs = priorByFile.get(rel) || [];
         h = pri.h;
+        bad = pri.e; // a bad parse is BAKED IN: the fast path reuses records verbatim until the bytes change,
+        //             so the flag must ride along with them or the index silently launders the defect.
         reused++;
       } else {
         // stat changed (or new file): read + hash. If the content hash still matches, reuse (mtime jitter).
@@ -286,6 +289,7 @@ async function buildSymIndexSingle(
         h = fnv1a(src);
         if (pri && pri.h === h) {
           recs = priorByFile.get(rel) || [];
+          bad = pri.e;
           reused++;
         } else {
           let syms;
@@ -295,10 +299,15 @@ async function buildSymIndexSingle(
             continue;
           }
           recs = syms.map((s) => ({ f: rel, n: s.name, k: s.kind, l: s.line }));
+          // RECORD, don't skip: a partial parse still yields useful decls, and dropping the file would lose
+          // them AND the evidence. (Deliberately NOT folded into the 0-symbol abort below — that guard exists
+          // for a DEGENERATE build clobbering a good index; a partial parse is not degenerate.)
+          bad = syms.parseError ? 1 : undefined;
+          if (bad) parseErrors++;
           reparsed++;
         }
       }
-      newHashes[rel] = { mt, sz, h }; // remember every seen file (incl. empty) so it isn't re-read next time
+      newHashes[rel] = { mt, sz, h, e: bad }; // remember every seen file (incl. empty) so it isn't re-read next time
       if (!recs.length) continue;
       files++;
       for (const r of recs) {
@@ -329,6 +338,7 @@ async function buildSymIndexSingle(
     symbols,
     maxMtime: _maxMtimeOf(newHashes), // freshness watermark (S3 staleness probe)
     partial: timedOut || undefined,
+    parseErrors: parseErrors || undefined, // grammar couldn't parse N file(s) → their decls are incomplete
     h: newHashes,
   });
   // Final file = header line + the streamed temp body, joined by PIPE (not read-into-a-string) so a
@@ -348,7 +358,7 @@ async function buildSymIndexSingle(
   } catch {
     /* temp already gone */
   }
-  return { files, symbols, path: finalPath, partial: timedOut, reused, reparsed };
+  return { files, symbols, path: finalPath, partial: timedOut, reused, reparsed, parseErrors };
 }
 
 // ── Chunked, multi-process builder ──────────────────────────────────────────────────────────────────────────
@@ -839,5 +849,14 @@ export function searchSymIndex(root, q, { max = 40 } = {}) {
   if (hits.length > max) sliced.truncated = "cap";
   sliced.fromIndex = true;
   sliced.meta = idx.meta;
+  // Degrade PER-HIT, not per-index: a repo with 3 unparsable files must not stamp every unrelated answer
+  // DEGRADED. Only when a RETURNED record came from a file the manifest flagged (e:1) is this answer's decl
+  // set actually suspect.
+  const h = idx.meta && idx.meta.h;
+  if (h) {
+    const badFiles = new Set();
+    for (const s of sliced) { const rel = path.relative(root, s.file).replace(/\\/g, "/"); if (h[rel] && h[rel].e) badFiles.add(rel); }
+    if (badFiles.size) sliced.parseErrorFiles = badFiles.size;
+  }
   return sliced;
 }

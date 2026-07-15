@@ -1340,8 +1340,16 @@ function climbCommandFor(name) {
 }
 // truncated: falsy | "cap" | "time" | "scan". semantic=true → a language-server index answered (authoritative
 // 0); false → a bounded lexical scan. shown/total optional (total null = unknown upper bound).
-function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false, fuzzy = false, section = false, stale = 0 } = {}) {
+function completenessCert({ shown = 0, total = null, truncated = null, semantic = false, scoped = false, syntactic = false, fuzzy = false, section = false, stale = 0, parseError = 0 } = {}) {
   if (!certOn()) return "";
+  // SYNTACTIC · DEGRADED — the grammar could not parse the source, so tree-sitter RECOVERED and the decl walk
+  // silently dropped whatever the error swallowed. Ranked ABOVE stale: stale means the positions may be off
+  // (recomputable), degraded means decls are MISSING (unnoticeable). Actionable like every cert — it names
+  // search_text, the literal rung BELOW, which no grammar can fool.
+  if (syntactic && parseError) {
+    const n = typeof parseError === "number" && parseError > 1 ? `${parseError} file(s)` : "this file";
+    return `\n[completeness: SYNTACTIC · DEGRADED — ${shown} decl(s); the grammar could not parse ${n}, so decls are MISSING (a short list is NOT absence). Re-certify: search_text q="<name>", or install a language server.]`;
+  }
   // SYNTACTIC · STALE — the committed index answered, but the freshness probe found source(s) changed since it
   // was built, so the file:line may be off (§4). Still returns the answer; the cert just downgrades honesty and
   // the caller pairs it with a `climb: vts index` ladder line. Takes precedence over the plain SYNTACTIC label.
@@ -3154,7 +3162,7 @@ export async function runTool(name, a = {}) {
           const capNote = tsyms.length > max ? `\n… ${tsyms.length - max} more — raise maxResults (now ${max}).` : "";
           let _base = tsyms; try { _base = fs.readFileSync(a.path, "utf8"); } catch { /* keep syms baseline */ }
           try { recordQueryResults(root, [a.path]); } catch { /* best-effort */ }
-          return finishOut(_base, `outline of ${a.path} (tree-sitter — clangd can't serve this tree fast):\n` + shown + capNote + completenessCert({ shown: Math.min(tsyms.length, max), total: tsyms.length, truncated: tsyms.length > max ? "cap" : null, syntactic: true }));
+          return finishOut(_base, `outline of ${a.path} (tree-sitter — clangd can't serve this tree fast):\n` + shown + capNote + completenessCert({ shown: Math.min(tsyms.length, max), total: tsyms.length, truncated: tsyms.length > max ? "cap" : null, syntactic: true, parseError: tsyms.parseError ? 1 : 0 }));
         }
       }
       c.didOpen(a.path, lang);
