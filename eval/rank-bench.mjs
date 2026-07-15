@@ -14,6 +14,15 @@
 // apart from a source edit). A committed synthetic corpus makes every metric attributable to a RANKING change
 // alone. Synthetic names only (charter: no real paths/symbols).
 //
+// SURPRISE RUNG ("lost if surprise", adapted from the gist-compression failure study arXiv:2412.17483). Gist/
+// context COMPRESSION loses the SURPRISING (rare, high-information) token first — in code that is exactly the
+// identifier you were hunting. vts does not compress (it OMITS bodies and returns addresses), but its fuzzy
+// GATES could still lose a rare decl: a df=1 token can't be expanded through (minCooc 2 / df >= 2) and can't
+// become a PRF feedback term (minDocs 2). Measured, not assumed — and it does NOT reproduce: a rare identifier
+// ranks #1 on a direct match (idf REWARDS the rarity) and #1 even against common-token competitors; only a PURE
+// synonym gap onto a df=1 term demotes it (rank 4) — demoted, still inside the K budget, not lost. Scored as its
+// OWN rung so it never moves the fuzzy MRR gate (fuzzy MRR is 0.848 with and without this corpus extension).
+//
 // Backend-free by construction: the fuzzy rung (concept_search) never uses an LSP; the syntactic rung is tested
 // by calling tsSearchSymbols DIRECTLY (not search_symbol -> the LSP backend, which would intercept a multi-word
 // query before the syntactic fallback and confound the metric — that path is guarded deterministically in
@@ -57,6 +66,20 @@ const GOLD = [
   { q: "remove old items from the cache", rung: "fuzzy", answers: ["evictEntry"] }, // remove~evict, old~stale; distractors clearCache/resizeCache
   { q: "log the user out", rung: "fuzzy", answers: ["logoutUser"] }, // direct
   { q: "renew an expired access token", rung: "fuzzy", answers: ["refreshToken"] }, // renew/expired~refresh
+  // --- surprise rung: "LOST IF SURPRISE" (the gist-compression failure mode, arXiv:2412.17483, adapted). A
+  // compressor loses the SURPRISING token first — in code that is exactly the rare identifier you were hunting.
+  // We don't compress (we omit bodies and return addresses), but our fuzzy GATES could still lose it: a df=1
+  // token can't be expanded through (minCooc 2 / df >= 2) and can't become a PRF feedback term (minDocs 2). So
+  // measure it directly, separately from the fuzzy MRR gate. auth/quarantine.ts holds the rare decls.
+  // (a) DIRECT: the rare token is IN the query -> idf should REWARD the rarity, not lose it.
+  { q: "quarantine a flagged credential", rung: "surprise", answers: ["quarantineCredential"] },
+  // (b) RARE-VS-COMMON: rare tokens compete with common-"token" decls (refreshToken/validateSession) -> does
+  // the high-idf rare decl still win the head of the list?
+  { q: "blocklist a compromised token", rung: "surprise", answers: ["revokeCompromisedToken"] },
+  // (c) BRIDGE: a PURE synonym gap onto a df=1 term (isolate~quarantine, suspicious~anomaly); only the common
+  // "credential" overlaps. Expansion CANNOT bridge it (the neighbour gates need df >= 2). This is the honest
+  // embedding-residual made measurable — a MISS here is a reported limit, not a regression.
+  { q: "isolate a suspicious credential", rung: "surprise", answers: ["quarantineCredential"] },
   // --- syntactic rung (tsSearchSymbols direct): exact + MULTI-WORD token coverage (the LocAgent capability) ---
   { q: "validateSession", rung: "syntactic", answers: ["validateSession"] },
   { q: "charge payment", rung: "syntactic", answers: ["chargePayment"] },
@@ -70,7 +93,7 @@ const SKIP = new Set(["node_modules", ".git"]);
 
 // Ordered list of result symbol NAMES for a gold query, per rung.
 async function resultNames(g) {
-  if (g.rung === "fuzzy") {
+  if (g.rung === "fuzzy" || g.rung === "surprise") {   // the surprise probes ride the same fuzzy path, scored apart
     const r = await runTool("concept_search", { q: g.q, projectPath: ROOT, maxResults: 20 });
     if (!r || r.isError) return [];
     return String(r.text)
@@ -106,6 +129,7 @@ function agg(items) {
 }
 const byRung = {
   fuzzy: agg(rows.filter((r) => r.rung === "fuzzy")),
+  surprise: agg(rows.filter((r) => r.rung === "surprise")),
   syntactic: agg(rows.filter((r) => r.rung === "syntactic")),
   all: agg(rows),
 };
@@ -113,7 +137,7 @@ const byRung = {
 const pct = (x) => (x * 100).toFixed(0).padStart(3) + "%";
 console.log(`\nrank-bench — frozen corpus eval/fixtures/rank-corpus (${rows.length} queries)\n`);
 console.log("rung        n   R@1   R@3   R@5  R@10   MRR   Cov");
-for (const k of ["fuzzy", "syntactic", "all"]) {
+for (const k of ["fuzzy", "surprise", "syntactic", "all"]) {
   const a = byRung[k];
   console.log(`${k.padEnd(10)} ${String(a.n).padStart(2)}  ${pct(a.recall[1])}  ${pct(a.recall[3])}  ${pct(a.recall[5])}  ${pct(a.recall[10])}  ${a.mrr.toFixed(3)}  ${pct(a.coverage)}`);
 }
