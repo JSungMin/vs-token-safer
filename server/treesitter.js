@@ -524,6 +524,11 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   } catch {
     return [];
   }
+  // A recovered (ERROR/MISSING) tree still yields decls, but silently DROPS others — report it rather than
+  // hide it. Carried as a property on the returned array: the array-with-extra-property idiom this module
+  // already uses (tsSearchSymbols carries .truncated/.filesParsed/.unavailable; searchSymIndex carries
+  // .fromIndex), so every existing caller keeps working unchanged and only the cert-aware ones read it.
+  const health = parseHealth(tree);
   // Tags-query tier: a file-driven .scm extracts declarations for languages without a hand-tuned node config.
   if (cfg.tags) {
     const q = await defTagsQueryFor(wasmBase);
@@ -539,7 +544,9 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
     } catch {
       /* ignore */
     }
-    return defs.slice(0, 5000);
+    const tagged = defs.slice(0, 5000);
+    if (health.bad) { tagged.parseError = true; tagged.parseMissing = health.missing; }
+    return tagged;
   }
   const out = [];
   const decl = cfg.decl,
@@ -572,7 +579,31 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   } catch {
     /* ignore */
   }
+  if (health.bad) { out.parseError = true; out.parseMissing = health.missing; }
   return out;
+}
+
+// PARSE HEALTH. tree-sitter never throws on input it can't parse — it RECOVERS, producing a tree with
+// ERROR/MISSING nodes, and a decl walk over that tree quietly returns whatever survived. That is a silently
+// incomplete answer with a confident label, the exact failure this project criticises grep for. Ask the
+// engine's own API instead: `hasError` covers ERROR and MISSING descendants; the bounded isMissing scan is
+// belt-and-braces for grammars where the flag doesn't propagate, and yields the `missing` count for the
+// message. Real case: the bundled tree-sitter-lua parses a table constructor `local M = {}` as an
+// unterminated string (ERROR + MISSING _string_end), and — because Lua's external scanner carries state in
+// wasm memory — the error RECOVERY shifts with how many grammars are resident, so a following decl is
+// dropped only sometimes. Not repairable from here (tree-sitter-wasms has no build past 0.1.13 and
+// web-tree-sitter 0.26 can't load those wasms at all), so the answer is honesty, not repair.
+function parseHealth(tree) {
+  const root = tree && tree.rootNode;
+  if (!root || !root.hasError) return { bad: false, missing: 0 };
+  let missing = 0, guard = 0;
+  const stack = [root];
+  while (stack.length && guard++ < 20000) {
+    const n = stack.pop();
+    if (n.isMissing) missing++;
+    for (let i = n.namedChildCount - 1; i >= 0; i--) stack.push(n.namedChild(i));
+  }
+  return { bad: true, missing };
 }
 
 // Resolve a symbol NAME to its FULL declaration span via tree-sitter — the read_symbol / edit twin of the
@@ -611,6 +642,12 @@ export async function tsReadSymbol(absPath, want, { line = null, maxBytes = 2_00
     return null;
   }
   try {
+    // REFUSE on a bad parse. This span is not a report — it feeds tsResolveForEdit → replace_symbol_body /
+    // safe_delete, which SPLICE THE FILE at it. A span computed from a recovered (wrong) tree overwrites the
+    // wrong lines, i.e. silently corrupts the user's source. A read-only decl list can be honestly degraded;
+    // a span cannot. Rule: read-only lists report, span-producing functions refuse. Null → the caller falls
+    // back to the LSP/other tiers exactly as it already does when tree-sitter is unavailable.
+    if (parseHealth(tree).bad) return null;
     const decl = cfg.decl, kindMap = cfg.kind || {};
     const hits = [];
     const stack = [tree.rootNode];
@@ -683,6 +720,10 @@ export async function tsChunkEnd(absPath, startRow, endRow, maxLines) {
     return null;
   }
   try {
+    // REFUSE on a bad parse — same rule as tsReadSymbol: this produces a SPAN, not a report. The whole point
+    // of a structural cut is that it lands on a complete child; computed from a recovered tree it can cut
+    // mid-statement, which is worse than the plain line-cap the caller falls back to on null.
+    if (parseHealth(tree).bad) return null;
     // Locate the declaration node: the smallest named node at the start position, climbed up to the largest
     // node that still begins at startRow and ends within the decl span (the function/class/etc. itself).
     let node = tree.rootNode.namedDescendantForPosition({ row: startRow, column: 0 });

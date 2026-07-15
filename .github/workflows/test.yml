@@ -32,6 +32,13 @@ jobs:
       - name: Install MCP server deps
         working-directory: server
         run: npm install --no-audit --no-fund
+      # The eval above runs BEFORE this install ON PURPOSE (it proves the core works dependency-free). But that
+      # means tree-sitter is absent there, so guard 81 — the whole SYNTACTIC tier, 36 languages — self-skips and
+      # prints a PASS. CI was therefore never testing that tier at all, which is how a grammar that silently
+      # drops declarations survived to 1.0. Run the eval a SECOND time now that the deps exist, so the tier is
+      # actually exercised. Cheap (mock LSP, no toolchain) and the only place it gets covered.
+      - name: Eval again WITH deps (exercises the tree-sitter SYNTACTIC tier the dep-free run skips)
+        run: node eval/run.mjs
       - name: MCP server boots + lists tools
         shell: bash
         run: node server/index.js < .github/smoke/mcp-init.jsonl
