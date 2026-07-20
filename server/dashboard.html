@@ -479,6 +479,7 @@ body.graph-focused .graph-kb-hint{display:block}
         <div class="seg" role="group" aria-label="Graph mode">
           <button class="seg-btn active" id="modeInclude" aria-pressed="true">Include graph</button>
           <button class="seg-btn" id="modeCall" aria-pressed="false">Call graph</button>
+          <button class="seg-btn" id="modeSymbol" aria-pressed="false" title="tree-sitter symbol graph — files + import edges, no language server (syntactic)">Symbol graph</button>
         </div>
 
         <!-- Call-graph controls (shown only in call mode) -->
@@ -2020,26 +2021,52 @@ roObserver=new ResizeObserver(()=>resizeRenderer());
 roObserver.observe(wrap);
 
 /* ── Mode toggle ──────────────────────────────────────────────────────── */
-let includeGraphData=null;
+let includeGraphData=null, symbolGraphData=null;
+const btnSymbol=document.getElementById("modeSymbol");
 function switchMode(mode){
   if(mode===currentMode&&nodeMeshes.length) return;
   btnInclude.classList.toggle("active",mode==="include");
   btnCall.classList.toggle("active",mode==="call");
+  btnSymbol.classList.toggle("active",mode==="symbol");
   btnInclude.setAttribute("aria-pressed",String(mode==="include"));
   btnCall.setAttribute("aria-pressed",String(mode==="call"));
+  btnSymbol.setAttribute("aria-pressed",String(mode==="symbol"));
   cgRow.classList.toggle("visible",mode==="call");
-  panelTitle.textContent=mode==="include"?"Include Graph · 3D":"Call Graph · 3D";
+  panelTitle.textContent=mode==="include"?"Include Graph · 3D":mode==="call"?"Call Graph · 3D":"Symbol Graph · 3D (tree-sitter, syntactic)";
   if(mode==="include"){
     currentMode="include";callMeta=null;
     cgErrEl.classList.remove("visible");cgStatusEl.textContent="";
     if(includeGraphData) loadGraph(includeGraphData,"include",null);
     else emptyMsg.style.display="flex";
+  }else if(mode==="symbol"){
+    currentMode="symbol";callMeta=null;
+    cgErrEl.classList.remove("visible");
+    loadSymbolGraph();
   }else{
     currentMode="call";
   }
 }
 btnInclude.addEventListener("click",()=>switchMode("include"));
 btnCall.addEventListener("click",()=>switchMode("call"));
+btnSymbol.addEventListener("click",()=>switchMode("symbol"));
+
+/* ── Symbol-graph fetch (tree-sitter; files + import edges, no language server) ── */
+function loadSymbolGraph(){
+  if(symbolGraphData){ loadGraph(symbolGraphData,"symbol",null); return; }
+  cgStatusEl.textContent="building symbol graph…";emptyMsg.style.display="none";
+  fetch("/symbolgraph"+(_serverRoot?"?projectPath="+encodeURIComponent(_serverRoot):""))
+    .then(r=>{if(!r.ok) throw new Error("HTTP "+r.status);return r.json();})
+    .then(data=>{
+      cgStatusEl.textContent="";
+      if(data.error||!data.nodes||!data.nodes.length){
+        cgErrEl.textContent=data.error||"No symbols found (tree-sitter grammars may be absent — run `npm i` in the plugin, or narrow the scope).";
+        cgErrEl.classList.add("visible");emptyMsg.style.display="flex";return;
+      }
+      symbolGraphData=data;
+      loadGraph(data,"symbol",null);
+    })
+    .catch(e=>{cgStatusEl.textContent="";cgErrEl.textContent="symbol graph failed: "+e.message;cgErrEl.classList.add("visible");});
+}
 
 /* ── Call-graph fetch ─────────────────────────────────────────────────── */
 function traceCallGraph(){

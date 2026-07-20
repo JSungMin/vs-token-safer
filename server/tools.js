@@ -241,6 +241,22 @@ export const TOOLS = [
     },
   },
   {
+    name: "detect_changes",
+    description:
+      "Review a diff by IMPACT: git diff → changed symbols → blast radius (callers) + LOW/MED/HIGH risk. → capped `[risk] symbol file:line`, no bodies (semantic blast + git co-change, nothing sent). Use before committing. staged=true (index) / base=\"<ref>\".",
+    inputSchema: {
+      type: "object",
+      properties: {
+        staged: { type: "boolean", description: "Staged index instead of the working tree." },
+        base: { type: "string", description: "Compare vs this git ref (e.g. main, HEAD~3)." },
+        depth: { type: "number", description: "Caller hops (default 2)." },
+        projectPath: ROOT,
+        backend: BACKEND,
+        maxResults: CAP,
+      },
+    },
+  },
+  {
     // vts_admin folds the 12 RARELY-reflexive admin/meta ops behind ONE schema to cut the fixed per-session
     // tool-definition cost (the hot search/nav/edit tools stay first-class so the model still reaches for them
     // over grep/Edit). index.js maps vts_admin{op,params} → runTool("vts_"+op, params); core.js + the CLI keep
