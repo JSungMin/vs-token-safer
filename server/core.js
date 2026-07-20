@@ -25,6 +25,7 @@ import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, impo
 import { cochangeNeighbors } from "./cochange.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
 import { analyzeDeadCode, reachabilityDeadCode, formatDce, dceWarmGate, reconcileRefs, parseRootsFile } from "./dce.js";
+import { parseDiffHunks, scoreRisk, isTestPath, summarize, formatDetectChanges } from "./detect-changes.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".vs-token-safer");
 export const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(CONFIG_DIR, "config.json");
@@ -1468,6 +1469,70 @@ function repoLabelFor(file) {
     _repoCache.set(dir, label);
     return label;
   } catch { return "external"; }
+}
+// TREE-SITTER SYMBOL GRAPH (dashboard mode) — a SYNTACTIC, zero-toolchain structural map of the repo:
+// nodes = code files (weight = declaration count, tooltip = top symbol names), edges = within-repo import
+// adjacency (importSpecifiers, text-based). The tree-sitter twin of the clangd include-graph, but for the
+// ~17 tree-sitter languages (JS/TS/Py/Go/Java/Rust/…), so a repo with NO compile DB / no language server
+// still gets a graph. SYNTACTIC by construction — import edges are textual and symbols are declarations only
+// (no overload/type/reference resolution) — labeled as such so it's never read as the semantic LSP call
+// graph. Scope-filtered + bounded (VTS_VIZ_MAX_NODES). Returns {nodes,links} shaped for the dashboard's
+// loadGraph (same node/link contract as the include + call graphs). Exported for serve.js + the eval.
+export async function buildSymbolGraph(a = {}) {
+  const root = resolveRoot(a);
+  const dirs = scopeDirsFor(root) || [];
+  const cap = envInt("VTS_VIZ_MAX_NODES", 200);
+  const fileCap = envInt("VTS_SYMBOLGRAPH_FILE_CAP", 1500);
+  const searchRoots = dirs.length ? dirs : [root];
+  const files = [];
+  for (const d of searchRoots) {
+    for (const f of codeFilesUnder(d, fileCap)) {
+      if (files.length >= fileCap) break;
+      const fs2 = f.replace(/\\/g, "/");
+      // Skip minified/vendored bundles — a one-line minified file parses to thousands of junk "symbols" that
+      // dominate the weight ranking, and nothing in-repo imports it by basename (no real edges). It's noise.
+      if (/\.min\.[a-z]+$|(^|\/)vendor\//i.test(fs2)) continue;
+      if (tsSupports(fs2) && (!dirs.length || inScope(fs2, dirs))) files.push(fs2);
+    }
+  }
+  // Per file: declaration count (node weight) + import specifiers (edge source). basename→files index lets an
+  // import target resolve to an in-repo file. All best-effort: an unreadable file / bad parse just contributes
+  // fewer symbols or edges, never throws (the whole graph degrades gracefully).
+  const symCount = new Map(), topNames = new Map(), fileSpecs = new Map(), byBase = new Map();
+  for (const f of files) {
+    const syms = (await tsFileSymbols(f)) || [];
+    symCount.set(f, syms.length);
+    topNames.set(f, syms.slice(0, 5).map((s) => s.name));
+    let text = ""; try { text = fs.readFileSync(f, "utf8"); } catch { /* unreadable → no import edges */ }
+    // importSpecifiers wants the extension WITHOUT the leading dot ("js", not ".js") — path.extname yields the
+    // dotted form, so strip it (a dotted ext silently returns [] → zero edges, dogfound live).
+    fileSpecs.set(f, importSpecifiers(text, path.extname(f).replace(/^\./, "")) || []);
+    const base = path.basename(f).replace(/\.[^.]+$/, "").toLowerCase();
+    if (!byBase.has(base)) byBase.set(base, []);
+    byBase.get(base).push(f);
+  }
+  // Import edges: file A imports basename b, b resolves to an in-repo file B → edge A→B (deduped, no self-loop).
+  const links = [], seen = new Set();
+  for (const [f, specs] of fileSpecs) {
+    for (const s of specs) {
+      const cands = byBase.get(String(s).toLowerCase());
+      if (!cands) continue;
+      for (const t of cands) {
+        if (t === f) continue;
+        const k = f + ">" + t;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        links.push({ source: f, target: t });
+      }
+    }
+  }
+  // Rank nodes by declaration count (the "biggest" files anchor the view), cap, then prune dangling links.
+  let nodes = files.map((f) => ({ id: f, label: path.basename(f), repo: repoLabelFor(f), weight: symCount.get(f) || 0, kind: "file", symbols: topNames.get(f) || [] }));
+  nodes.sort((x, y) => y.weight - x.weight);
+  const truncated = nodes.length > cap;
+  if (truncated) nodes = nodes.slice(0, cap);
+  const keep = new Set(nodes.map((n) => n.id));
+  return { root, mode: "symbol", nodes, links: links.filter((l) => keep.has(l.source) && keep.has(l.target)), files: files.length, truncated, syntactic: true };
 }
 // Anchor a call-hierarchy query ON the symbol NAME. workspace/symbol's location.range.start can land on a
 // leading keyword (e.g. `async`/`function`) rather than the identifier — textDocument/references tolerates
@@ -3284,6 +3349,99 @@ export async function runTool(name, a = {}) {
       }
       const fl = refs.length ? ` (force: ${refs.length} ref(s) ignored)` : "";
       return symbolEditResult(r.file, { range: rng, newText: "" }, apply, `safe_delete "${a.symbol}"${fl}${ambl}`, refs);
+    }
+    if (name === "detect_changes") {
+      // IMPACT RADIUS + RISK for a git diff — a SURFACE (new question), not a rung. Composed entirely from
+      // existing pieces, no persistent DB: git diff → changed symbols (document_symbols) → blast radius
+      // (buildCallGraph callers) → risk (detect-changes.js, 4 deterministic code-mined channels). Output is
+      // capped file:line + a per-symbol risk band, no bodies. The review reads "what does this touch, how risky"
+      // instead of eyeballing the raw diff and grepping for callers.
+      const root = resolveRoot(a);
+      // 1) Acquire the diff. Default = working tree vs HEAD; staged=true → index; base=<ref> → vs that ref.
+      // -U0 keeps hunks to exactly the changed lines (tighter symbol attribution); --no-color for clean parse.
+      const diffArgs = ["diff", "--no-color", "-U0"];
+      let baseLabel = "working tree";
+      if (a.staged === true || a.staged === "true") { diffArgs.push("--staged"); baseLabel = "staged changes"; }
+      else if (a.base) { diffArgs.push(String(a.base)); baseLabel = `vs ${a.base}`; }
+      const dr = runExternal("git", diffArgs, root);
+      if (dr.code !== 0 && !dr.out) return err(`detect_changes: \`git ${diffArgs.join(" ")}\` failed in ${root}${dr.err ? " — " + dr.err.split("\n")[0] : ""}. Is this a git repo? (staged=true for the index, base="<ref>" to compare against a ref.)`);
+      const hunkFiles = parseDiffHunks(dr.out);
+      if (!hunkFiles.length) return finishOut({}, `detect_changes (${baseLabel}): no textual code changes found.`);
+      // 2) Co-change map (git history) → the coupling channel: partners that USUALLY move with a changed file
+      // but are ABSENT from this diff. Absent → possible "forgot the other half" risk. Graceful empty on non-git.
+      let coch = new Map();
+      try { coch = cochangeNeighbors(root); } catch { /* non-git or no history → no coupling signal */ }
+      const norm = (p) => path.resolve(root, p).replace(/\\/g, "/");
+      const changedAbs = new Set(hunkFiles.map((f) => norm(f.file)));
+      // 3) Per changed file: outline it, attribute each changed line to the INNERMOST enclosing declaration,
+      // then measure each changed symbol's blast radius. Bound the symbol budget so a huge diff can't fan out
+      // into hundreds of call-graph probes.
+      const symCap = envInt("VTS_DETECT_MAX_SYMBOLS", 40);
+      const depth = Math.max(1, Math.min(Number(a.depth) || 2, envInt("VTS_TRACE_MAX_DEPTH", 5)));
+      const rows = [];
+      let anySyntactic = false, anySemantic = false, budgetHit = false;
+      for (const hf of hunkFiles) {
+        if (rows.length >= symCap) { budgetHit = true; break; }
+        const abs = norm(hf.file);
+        const bk = preferBackend(a.backend, backendForPath(hf.file), BACKEND) || pickBackend(root);
+        // Flatten the outline (hierarchical documentSymbol) → {name, start, end} spans (1-based). Prefer the
+        // semantic LSP; fall back to tree-sitter (syntactic) so a doc/unindexed/no-toolchain file still resolves
+        // its changed symbols — the blast radius then just can't be computed (semantic-only), stated honestly.
+        const flat = [];
+        let semanticFile = false;
+        if (bk) {
+          try {
+            const c = await getClient(root, bk);
+            c.didOpen(abs, langIdForPath(abs, bk));
+            const syms = (await c.documentSymbol(abs)) || [];
+            const walk = (arr) => { for (const s of arr || []) { flat.push({ name: s.name, start: (s.range?.start?.line ?? 0) + 1, end: (s.range?.end?.line ?? s.range?.start?.line ?? 0) + 1 }); if (s.children) walk(s.children); } };
+            walk(syms);
+            if (flat.length) { semanticFile = true; anySemantic = true; }
+          } catch { /* backend failed → syntactic fallback below */ }
+        }
+        if (!flat.length && tsSupports(abs)) {
+          const ts = (await tsFileSymbols(abs)) || [];
+          for (const s of ts) flat.push({ name: s.name, start: s.line, end: s.line });
+          if (flat.length) anySyntactic = true;
+        }
+        if (!flat.length) continue; // nothing resolvable in this file (binary, unsupported, empty outline)
+        // coupling gap for this file (same for every symbol in it): historical partners not in this diff.
+        const neigh = coch.get(abs) || new Set();
+        let couplingGap = 0;
+        for (const n of neigh) if (!changedAbs.has(String(n).replace(/\\/g, "/"))) couplingGap++;
+        // Attribute each changed hunk to the innermost (smallest-span) declaration enclosing its anchor line.
+        const changed = new Map(); // name:start → span
+        for (const rng of hf.ranges) {
+          let best = null;
+          for (const s of flat) if (rng.start >= s.start && rng.start <= s.end && (!best || s.end - s.start < best.end - best.start)) best = s;
+          if (best) changed.set(`${best.name}:${best.start}`, best);
+        }
+        for (const [, sym] of changed) {
+          if (rows.length >= symCap) { budgetHit = true; break; }
+          let callers = 0, cgDepth = 1, testReached = false;
+          if (semanticFile) {
+            try {
+              const cg = await buildCallGraph({ symbol: sym.name, direction: "callers", depth, projectPath: root, backend: bk });
+              if (cg && !cg.error) {
+                callers = (cg.nodes || []).filter((n) => !n.focus).length;
+                cgDepth = cg.depth || 1;
+                testReached = (cg.nodes || []).some((n) => n.file && isTestPath(n.file));
+              }
+            } catch { /* call graph unavailable for this symbol → blast stays 0 */ }
+          }
+          const risk = scoreRisk({ blast: callers, depth: cgDepth, couplingGap, testReach: testReached ? 1 : 0 });
+          rows.push({ symbol: sym.name, file: hf.file, line: sym.start, callers, depth: cgDepth, couplingGap, testReached, risk });
+        }
+      }
+      const summary = summarize(rows);
+      // Cert: EXACT when the blast radius came from the semantic LSP; SYNTACTIC when any file fell back to
+      // tree-sitter (its blast radius is unknown, not zero — say so). A syntactic-only run is honestly labeled.
+      const cert = anySyntactic && !anySemantic
+        ? completenessCert({ shown: rows.length, syntactic: true })
+        : completenessCert({ shown: rows.length, total: budgetHit ? rows.length + 1 : null, truncated: budgetHit ? "cap" : null, semantic: true });
+      const capNote = budgetHit ? `\n  (symbol budget ${symCap} reached — raise VTS_DETECT_MAX_SYMBOLS; showing the first ${rows.length})` : "";
+      const syntacticNote = anySyntactic && !anySemantic ? "\n  (no language server — symbols via tree-sitter; blast radius unavailable, risk from co-change only)" : "";
+      return finishOut({ rows, summary }, formatDetectChanges({ rows, summary, base: baseLabel, cert: null }, max) + capNote + syntacticNote + (cert || ""));
     }
     return err(`Unknown tool: ${name}`);
   } catch (e) {

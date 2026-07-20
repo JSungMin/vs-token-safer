@@ -51,6 +51,11 @@ Commands:
                  is computed forward from those entry points (Go-deadcode/RTA style), so a missing caller can't
                  cause a false DEAD — only incomplete roots can (the reference verify catches that).
                  [--seed <name> | --seeds A,B,C --projectPath <dir> [--entry main,init --roots main,RunTests --maxNodes N --build --allowCold]]
+  detect-changes Review a diff by IMPACT: git diff, then changed symbols, then their blast radius (callers)
+                 plus a LOW/MED/HIGH risk band per symbol (blast radius, git co-change coupling gap, test
+                 reach). Capped '[risk] symbol file:line', no bodies. Default = working tree; --staged for
+                 the index, --base <ref> vs a ref. Nothing transmitted.
+                 [--staged | --base <ref>] [--depth N (caller hops, default 2)] [--projectPath <dir>]
   files          Find files by name (substring or glob). [--q <pattern> --projectPath <dir>]
   text           Raw text/regex search (token-capped). [--q <pattern> --projectPath <dir> --path <file> --glob <pat> --docs]
                  --path <file> / --glob <pat> target a file/glob and auto-include its extension (e.g. a .md);
@@ -98,7 +103,7 @@ Backends (auto-detected from the root, or set --backend / VTS_BACKEND):
 Settings precedence: env (VTS_*) > ~/.vs-token-safer/config.json > default.`;
 
 const LIST_FLAGS = new Set(["seeds", "entry", "roots"]);
-const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability", "detail", "agents"]);
+const BOOL_FLAGS = new Set(["includeDeclaration", "apply", "graph", "daily", "history", "all", "learn", "inTree", "force", "signatureOnly", "stop", "open", "static", "docs", "status", "flow", "allowCold", "build", "thorough", "reachability", "detail", "agents", "staged"]);
 
 function parseArgs(argv) {
   const a = {};
@@ -114,7 +119,7 @@ function parseArgs(argv) {
   }
   return a;
 }
-const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", dce: "vts_dce", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", concept: "concept_search", "gen-compile-db": "vts_gen_compile_db" };
+const COMMANDS = { symbol: "search_symbol", references: "find_references", definition: "goto_definition", "trace-calls": "find_references", hover: "hover", symbols: "document_symbols", "read-symbol": "read_symbol", diagnostics: "diagnostics", rename: "rename", "replace-symbol": "replace_symbol_body", insert: "insert_symbol", "insert-after": "insert_symbol", "insert-before": "insert_symbol", "safe-delete": "safe_delete", dce: "vts_dce", "detect-changes": "detect_changes", files: "find_files", text: "search_text", git: "vts_git", p4: "vts_p4", setup: "vts_setup", config: "vts_config", savings: "vts_savings", "savings-reset": "vts_savings_reset", discover: "vts_discover", warmup: "vts_warmup", preindex: "vts_preindex", scope: "vts_scope", index: "vts_index", concept: "concept_search", "gen-compile-db": "vts_gen_compile_db" };
 
 const [, , rawCmd, ...rest] = process.argv;
 if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { console.log(HELP); process.exit(rawCmd ? 0 : 1); }

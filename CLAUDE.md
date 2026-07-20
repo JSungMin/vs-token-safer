@@ -218,7 +218,16 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   `applyEditsToText` (`symbolEditResult` shared preview/apply, reuses the rename read-only/Perforce note).
   `safe_delete` refuses while the symbol is still referenced (refs at the name) unless `force=true`. Token win:
   edit by naming a symbol instead of Read-ing the whole file + line-counting for an exact-match Edit. Eval guard
-  52; `find_files`, `search_text`
+  52. `detect_changes` (REVIEW BY IMPACT — a SURFACE not a rung: `git diff` [working tree / `staged` / `base=<ref>`,
+  via `runExternal`] → `parseDiffHunks` changed line ranges → innermost enclosing decl per hunk [`documentSymbol`,
+  tree-sitter fallback] → blast radius [`buildCallGraph` callers, depth-bounded] + a DETERMINISTIC risk band
+  [`server/detect-changes.js` `scoreRisk`: 4 code-mined channels — blast / cascade-depth / git co-change
+  coupling-GAP (`cochangeNeighbors`: partners historically co-changed but ABSENT from this diff) / test-reach
+  dampener; fixed weights, NO learned artifact, no click-feedback, hand-recomputable]; EXACT rung when the blast
+  came from the LSP, SYNTACTIC when a file fell back to tree-sitter [blast unknown, said so]; capped
+  `[risk] symbol file:line`, no bodies. The charter-pure answer to code-review-graph — official LSP for the blast,
+  your own git history for coupling, no persistent DB, no embeddings. `VTS_DETECT_MAX_SYMBOLS`/`VTS_RISK_*`; CLI
+  `vts detect-changes`; eval guard 93); `find_files`, `search_text`
   (filesystem — sanctioned `find`/`grep` replacements, no backend needed; `search_text` TARGETING: `path=<file>`
   searches one named file / `glob=<pat>` matching files — naming it AUTO-INCLUDES that extension (a `.md` etc),
   no docs flag; `docs=true` (no path/glob) widens the project-wide sweep to README/docs/config exts — default
@@ -305,8 +314,12 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   the cbm-parity "call graph" view our charter allows; nodes carry `calls`/`calledBy`/`repo`, edges a call-site
   `count` [fromRanges], + `totalCallSites`) · `/symbols?q=`→JSON (`core.js listSymbols` = workspace/symbol
   autocomplete for the search box) · `/vendor/<allowlisted file>`. `core.js repoLabelFor` (findProjectRoot →
-  basename) tags every node with its repository. The 3D viz: two modes (include / call-graph-by-symbol with live
-  symbol autocomplete dropdown), **spherical-SHELL layout** (radius ∝ node count+footprint, radius-aware collision
+  basename) tags every node with its repository. `/symbolgraph`→JSON (`core.js buildSymbolGraph` = TREE-SITTER
+  symbol graph: nodes=code files (weight=decl count), edges=within-repo import adjacency [`importSpecifiers`,
+  text-based; ext WITHOUT the leading dot], SYNTACTIC + scope-filtered + bounded [VTS_VIZ_MAX_NODES], min.js/
+  vendor excluded, labeled syntactic so it's never read as the semantic call graph — the zero-toolchain viz twin
+  of the clangd include-graph, works on any of the 17 tree-sitter langs; eval guard 94). The 3D viz: THREE modes
+  (include / call-graph-by-symbol with live symbol autocomplete dropdown / tree-sitter symbol-graph), **spherical-SHELL layout** (radius ∝ node count+footprint, radius-aware collision
   so orbs don't clump/overlap), `color:` **groups** (union-find connected components) / **repo** (per-repository
   hue + legend) / **heat**, **click-to-drill-into-a-group** (Esc/Backspace pops out), focus/maximize + keyboard
   camera (WASD/arrows/+-/R/Esc), distance-scaled labels, highlight filter, metrics overlay (incl. call counts). OPT-IN + CLI-ONLY: started only by
