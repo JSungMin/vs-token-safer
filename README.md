@@ -46,7 +46,7 @@ $ replace_symbol_body symbol="createSession" body="…"        # preview; apply=
 
 <p align="center">
   <img src="docs/vts-dashboard.gif" alt="The vs-token-safer local dashboard — the indexed repo as a live, rotating 3D graph (Three.js, served on 127.0.0.1)" width="640"><br>
-  <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1.</sub>
+  <sub>The built-in dashboard (<code>vts serve</code>) — your indexed repo as a live 3D graph, all on 127.0.0.1. Three modes: <b>include</b> graph (clangd), <b>call</b> graph (live LSP call hierarchy by symbol), and <b>symbol</b> graph — a tree-sitter map of files + import edges that needs <b>no language server</b>, so it renders on any of the 17 tree-sitter languages with zero setup.</sub>
 </p>
 
 ## Why
@@ -54,6 +54,7 @@ $ replace_symbol_body symbol="createSession" body="…"        # preview; apply=
 - **Keep the context lean.** `grep` on a large repo — a TypeScript/Python monorepo, a C#/.NET solution, even a 26k-TU Unreal C++ tree — floods the context. The language-server index stays token-capped — ~97–99% smaller ([benchmarks](#performance)).
 - **Claude keeps reaching for `grep`.** The hook doesn't just block it — it **rewrites the command to the indexed query in place**, so the search still runs and the flow never breaks.
 - **Edit by symbol, not by line.** Replace/insert-around/delete a declaration by *naming* it — the index supplies the span, so you skip reading the whole file into context.
+- **Review a diff by its blast radius, not by eye.** `detect_changes` maps a `git diff` to the symbols it changed, walks each one's callers, and scores the risk **LOW/MED/HIGH** — from the blast radius, the caller-cascade depth, and which historically co-changed files this diff *left out*. A review starts from "what does this actually touch," capped to `file:line`, nothing uploaded. It's the code-review-context idea done the vs-token-safer way: **the official language server for the blast radius and your own git history for the coupling — no persistent graph database, no embeddings.**
 - **You can't tell how much grep still slips through.** `vts discover` reads your recent sessions and reports exactly which searches bypassed the index and what they cost.
 - The language server runs **headlessly** — no editor open, unlike an IDE-proxy approach.
 

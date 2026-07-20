@@ -1422,15 +1422,15 @@ const adminTool = TOOL_DEFS.find((t) => t.name === "vts_admin");
 // cheapest to actually invoke (no backend/filesystem) — proves the dispatch target resolves.
 const cfgViaOp = await runTool("vts_" + "config", {});
 const toolsBudgetOk =
-  TOOL_DEFS.length === 15 && // hot search/nav/edit (incl. read_symbol + concept_search) + diagnostics + vts_admin
-  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol", "concept_search"].every((n) => toolNames.includes(n)) && // hot tools first-class
+  TOOL_DEFS.length === 16 && // hot search/nav/edit (incl. read_symbol + concept_search + detect_changes) + diagnostics + vts_admin
+  ["search_symbol", "find_references", "goto_definition", "search_text", "find_files", "replace_symbol_body", "read_symbol", "concept_search", "detect_changes"].every((n) => toolNames.includes(n)) && // hot tools first-class
   toolNames.includes("vts_admin") &&
   !["vts_setup", "vts_git", "vts_p4", "vts_savings", "vts_savings_reset", "vts_discover", "vts_warmup", "vts_config", "vts_gen_compile_db", "trace_calls"].some((n) => toolNames.includes(n)) && // cold tools folded away; trace_calls folded INTO find_references (direction param), not a new tool
   TOOL_DEFS.every((t) => t.name && (t.description || "").length > 10 && t.inputSchema) && // routing signal intact
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
   ["replace_symbol_body", "safe_delete", "read_symbol"].every((n) => /INSTEAD OF/.test(TOOL_DEFS.find((t) => t.name === n)?.description || "")) && // 2602.20426 adoption lever: the symbol-edit/read tools front-load the "use INSTEAD OF Read/Edit" selection cue so the model picks them over Read+Edit (the 135k-tok/wk leak)
-  toolsTok <= 2900; // ~2723 (15 tools) after the v0.37.2 schema slim (common-param descriptions stripped). Cap blocks prose creep.
+  toolsTok <= 2950; // ~2931 (16 tools) — detect_changes added one first-class hot tool (+~135 tok, terse). Cap blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -2502,6 +2502,51 @@ const structOk = outlineOk && resolveOk && structToolOk && htmlStructOk && cssSt
 
 await disposeClients(); // guard 75's read_symbol spawned a backend AFTER the earlier teardown — dispose it so node exits
 
+// 93) detect_changes RISK MODEL (detect-changes.js) — a SURFACE, not a rung: git diff → changed symbols →
+// blast radius + a DETERMINISTIC, inspectable risk band (4 code-mined channels, fixed weights, NO learned
+// artifact, no click-feedback). Pure functions, canned input (no toolchain): parse a unified diff into
+// changed line ranges (binary excluded), score a leaf edit LOW vs a widely-called + coupling-gapped symbol
+// HIGH (test reach dampens), summarize to the worst band. Charter: capped file:line, nothing transmitted.
+const dc = await import("../server/detect-changes.js");
+const dcDiff = "diff --git a/src/a.js b/src/a.js\n@@ -10,2 +10,3 @@\n+x\n@@ -40,0 +41,2 @@\n+y\ndiff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ";
+const dcHunks = dc.parseDiffHunks(dcDiff);
+const dcLow = dc.scoreRisk({ blast: 0, depth: 1, couplingGap: 0, testReach: 0 });
+const dcHigh = dc.scoreRisk({ blast: 40, depth: 5, couplingGap: 8, testReach: 0 });
+const dcTested = dc.scoreRisk({ blast: 40, depth: 5, couplingGap: 8, testReach: 1 });
+const dcSum = dc.summarize([{ file: "a.js", callers: 40, risk: dcHigh }, { file: "a.js", callers: 0, risk: dcLow }]);
+const detectRiskOk =
+  dcHunks.length === 1 &&                                               // the binary file is excluded
+  dcHunks[0].ranges.length === 2 && dcHunks[0].ranges[0].start === 10 && // new-side changed ranges parsed
+  dcLow.band === "LOW" && dcHigh.band === "HIGH" &&                     // leaf edit LOW, widely-called HIGH
+  dcTested.score < dcHigh.score &&                                      // test reach dampens the risk
+  dc.isTestPath("src/__tests__/x.test.js") === true && dc.isTestPath("src/x.js") === false &&
+  dc.lineInSpan(15, 10, 20) === true && dc.lineInSpan(25, 10, 20) === false &&
+  dcSum.band === "HIGH" && dcSum.symbols === 2 && dcSum.files === 1;    // worst-band summary over the rows
+
+// 94) TREE-SITTER SYMBOL GRAPH (buildSymbolGraph) — the dashboard's zero-toolchain structural map: nodes =
+// code files (weight = decl count), edges = within-repo import adjacency (text-based). SYNTACTIC by
+// construction and labeled so (never mistaken for the semantic LSP call graph). Needs the tree-sitter
+// grammars, so gate on tsAvailable like the syntactic-tier guard — build the graph over server/ and assert
+// the dashboard's loadGraph node/link CONTRACT holds (unique ids, no dangling links, syntactic flag, minified
+// bundles excluded). Dep-absent → skipped-pass (the dep-free CI run exercises it after npm install).
+let symbolGraphOk = true;
+try {
+  const { tsAvailable } = await import("../server/treesitter.js");
+  if (await tsAvailable()) {
+    const { buildSymbolGraph } = await import("../server/core.js");
+    const sg = await buildSymbolGraph({ projectPath: process.cwd() + "/server" });
+    const ids = new Set(sg.nodes.map((n) => n.id));
+    symbolGraphOk =
+      sg.syntactic === true && sg.mode === "symbol" &&
+      sg.nodes.length > 0 && sg.links.length > 0 &&                              // real nodes + import edges
+      sg.nodes.every((n) => n.id && n.label && typeof n.weight === "number") &&  // node contract
+      sg.links.every((l) => ids.has(l.source) && ids.has(l.target)) &&           // no dangling edge
+      !sg.nodes.some((n) => /\.min\./.test(n.label));                            // minified bundles excluded
+  } else {
+    console.log("  (guard 94 symbol graph — tree-sitter deps absent, skipped, treated as pass)");
+  }
+} catch (e) { symbolGraphOk = false; console.log("  guard 94 symbol graph FAILED:", e && e.message); }
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -2596,6 +2641,8 @@ const rows = [
   ["git co-change signal (M1): parseCoChange pair weights (both dirs) + mega-commit skip + graceful non-git", cochangeOk, "true", cochangeOk],
   ["preview-only DCE: caller-cascade + reachability(mark-sweep from roots) + reference-verify + warm gate (safe_delete backstop)", dceOk, "true", dceOk],
   ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
+  ["detect_changes risk model: diff→hunks (binary excluded) + 4-channel deterministic risk (leaf LOW/widely-called HIGH, test dampens) + worst-band summary (pure)", detectRiskOk, "true", detectRiskOk],
+  ["tree-sitter symbol graph: buildSymbolGraph files+import edges, loadGraph contract (unique ids, no dangling, syntactic, min.js excluded)", symbolGraphOk, "true", symbolGraphOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
