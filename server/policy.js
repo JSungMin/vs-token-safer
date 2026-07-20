@@ -243,6 +243,18 @@ export function topLevelDeclNames(text, file, max = 8) {
   return out;
 }
 
+// PURE staleness line for the SessionStart digest: when the committed tree-sitter index (.vts-index) has gone
+// STALE, point the user at the one-command refresh. Takes the freshness object from symindex.indexFreshness
+// (the hook does the fs/config read and passes it in — policy.js stays pure/testable). Returns "" when fresh
+// (or no freshness signal), so the digest only mentions it when a rebuild is actually worth it.
+export function stalenessLine(fresh, { ko = false } = {}) {
+  if (!fresh || !fresh.stale) return "";
+  const n = fresh.changed > 0 ? `${fresh.changed} file(s)` : "source";
+  return ko
+    ? `[vs-token-safer] 커밋된 인덱스(.vts-index)가 오래됐습니다 — 빌드 후 ${n} 변경됨(심볼 검색이 옛 위치를 가리킬 수 있음). 갱신: /vs-token-safer:update (증분 재인덱싱 — 바뀐 파일만 재파싱). 이후 .vts-index 커밋.`
+    : `[vs-token-safer] the committed index (.vts-index) is STALE — ${n} changed since it was built (symbol search may point at old locations). Refresh: /vs-token-safer:update (incremental — re-parses only changed files). Commit .vts-index after.`;
+}
+
 // The single routing digest. Always emits the decision tree (the integrative guidance); appends the live
 // adoption posture + adaptive-controller state when there is enough data.
 export function routingDigest(o = readEditLedger()) {

@@ -2547,6 +2547,19 @@ try {
   }
 } catch (e) { symbolGraphOk = false; console.log("  guard 94 symbol graph FAILED:", e && e.message); }
 
+// 95) INDEX-STALENESS SessionStart cue (policy.stalenessLine) — when the committed .vts-index has gone stale,
+// the SessionStart digest (hooks/edit-report.js, independent of the adoption gate) points the user at the
+// one-command refresh `/vs-token-safer:update`. PURE line formatter (the hook does the fs/config read + calls
+// symindex.indexFreshness): fresh/null → "" (silent), stale → names the changed-file count + the command; en/ko.
+const { stalenessLine: stLine } = await import("../server/policy.js");
+const stalenessOk =
+  stLine({ stale: false, changed: 0 }) === "" &&                          // fresh → silent (no nag)
+  stLine(null) === "" &&                                                  // no freshness signal → silent
+  /STALE/.test(stLine({ stale: true, changed: 5 })) &&                    // stale → flags it
+  /5 file\(s\)/.test(stLine({ stale: true, changed: 5 })) &&              // names the changed-file count
+  /\/vs-token-safer:update/.test(stLine({ stale: true, changed: 5 })) &&  // points at the one-command refresh
+  /오래됐/.test(stLine({ stale: true, changed: 3 }, { ko: true }));       // ko localization
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -2643,6 +2656,7 @@ const rows = [
   ["structure tier: section outline/read/edit for md/toml/yaml/html/css/scss/… via the symbol tools (no backend, by heading/selector/rule/function)", structOk, "true", structOk],
   ["detect_changes risk model: diff→hunks (binary excluded) + 4-channel deterministic risk (leaf LOW/widely-called HIGH, test dampens) + worst-band summary (pure)", detectRiskOk, "true", detectRiskOk],
   ["tree-sitter symbol graph: buildSymbolGraph files+import edges, loadGraph contract (unique ids, no dangling, syntactic, min.js excluded)", symbolGraphOk, "true", symbolGraphOk],
+  ["index-staleness SessionStart cue: stalenessLine silent-when-fresh + names changed count + /vs-token-safer:update refresh (en/ko)", stalenessOk, "true", stalenessOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

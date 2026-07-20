@@ -1356,7 +1356,7 @@ function completenessCert({ shown = 0, total = null, truncated = null, semantic 
   // the caller pairs it with a `climb: vts index` ladder line. Takes precedence over the plain SYNTACTIC label.
   if (syntactic && stale) {
     const n = typeof stale === "number" && stale > 0 ? `${stale} file(s) changed` : "source changed";
-    return `\n[completeness: SYNTACTIC · STALE — ${shown} decl(s), but ${n} since the index was built (positions may be off); rebuild: vts index.]`;
+    return `\n[completeness: SYNTACTIC · STALE — ${shown} decl(s), but ${n} since the index was built (positions may be off); refresh: /vs-token-safer:update (incremental — re-parses only changed files), or vts index.]`;
   }
   // ONE label names BOTH which precision RUNG answered AND how complete the set is (the unified precision
   // label). The four ladder rungs — exact (semantic LSP) / syntactic (tree-sitter) / fuzzy (concept dictionary)

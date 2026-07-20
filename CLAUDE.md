@@ -391,7 +391,12 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   ("re-run with the vts tool matching the intent" + the concrete call), with a brief human-facing reassurance
   that the red box is a redirect ("hold on"), not a failure — the hook output is consumed by the MODEL, which
   is the one that re-runs, not a human picking from a menu.
-- `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings}.md`.
+- `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings,update}.md`. `commands/update.md` = `/vs-token-safer:update`
+  — one-command REFRESH of a STALE committable `.vts-index` (op `vts_admin{op:index}` = incremental `buildSymIndex`,
+  re-parses only stat/hash-changed files). Surfaced two ways: the `SYNTACTIC · STALE` cert (core.js) now names
+  `/vs-token-safer:update`, and `hooks/edit-report.js` (SessionStart) emits a `policy.js stalenessLine(indexFreshness(root))`
+  cue INDEPENDENT of the adoption gate (a stale index matters on a fresh session too; en/ko; only when a
+  committable index exists + it's stale). Eval guard 95. `VTS_STALE_CHECK=0` off.
 - `eval/run.mjs` + `eval/_mock-lsp.mjs` — mock-LSP eval (no toolchain). Add a guard for every new path.
 - Config dir `~/.vs-token-safer`, env prefix `VTS_`. MCP server name `vs-search`.
 
