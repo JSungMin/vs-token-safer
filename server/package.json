@@ -61,7 +61,7 @@
     "test": "node ../eval/run.mjs"
   },
   "dependencies": {
-    "web-tree-sitter": "^0.25.10",
+    "web-tree-sitter": "^0.26.11",
     "tree-sitter-wasms": "^0.1.13"
   },
   "optionalDependencies": {
