@@ -207,6 +207,16 @@ export function altSymbols(q) {
   if (!branches.some((b) => /[a-z][A-Z]|[a-z0-9]_[a-z]/.test(b))) return null;  // no CamelCase/snake cue → keyword alternation, leave it
   return [...new Set(branches)];
 }
+// PURE staleness suffix for `vts index --status` — mirrors what the SYNTACTIC · STALE cert reports (same
+// indexFreshness), so `--status` tells you exactly what `/vs-token-safer:update` would act on. That command's
+// step 1 documented this; the handler only printed the build date, so this closes the doc-vs-behavior gap.
+// Takes the {stale,changed} object (the handler does the fs read + try/catch); "" only on a null/absent signal.
+export function indexStatusStaleNote(fresh) {
+  if (!fresh) return "";
+  return fresh.stale
+    ? `\n  — STALE: ${fresh.changed} file(s) changed since it was built; refresh: /vs-token-safer:update (incremental — re-parses only changed files).`
+    : "\n  — current (no files changed since it was built).";
+}
 const textSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_TEXT_STEER ?? "1"));
 // Build the one-line steer, or "" — fires only on a clear symbol hunt that would actually benefit: the
 // scan was TRUNCATED (completeness now matters) OR the query carries a `<>`/`::` code cue. A bare CamelCase
@@ -2396,7 +2406,12 @@ export async function runTool(name, a = {}) {
         const idx = loadSymIndex(root);
         if (!idx) return out(`No committed symbol index at ${symIndexPath(root)}. Build one: vts index  (commit .vts-index/ to share it with the team / speed cold starts).`);
         const built = idx.meta.built ? new Date(idx.meta.built).toISOString() : "unknown";
-        return out(`Committed symbol index: ${symIndexPath(root)}\n  ${idx.entries.length} symbol(s) over ${idx.meta.files ?? "?"} file(s), built ${built}${idx.meta.partial ? " (PARTIAL — time-boxed; rebuild for full coverage)" : ""}.\n  Used as the instant cold-start tier for search_symbol when no language server has indexed yet.`);
+        // Staleness: the same indexFreshness the SYNTACTIC · STALE cert keys off, so `--status` reports what
+        // /vs-token-safer:update would act on (the command's step 1 promised this). fs walk → guarded; a
+        // hiccup just drops the note, never breaks status.
+        let staleNote = "";
+        try { staleNote = indexStatusStaleNote(indexFreshness(root)); } catch { /* freshness unavailable → omit */ }
+        return out(`Committed symbol index: ${symIndexPath(root)}\n  ${idx.entries.length} symbol(s) over ${idx.meta.files ?? "?"} file(s), built ${built}${idx.meta.partial ? " (PARTIAL — time-boxed; rebuild for full coverage)" : ""}.${staleNote}\n  Used as the instant cold-start tier for search_symbol when no language server has indexed yet.`);
       }
       if (!tsAvailable()) return err(`vts index needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms). They install with the plugin; if missing, run \`npm install\` in the server dir.`);
       const dirs = scopeDirsFor(root);
