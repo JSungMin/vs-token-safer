@@ -2560,6 +2560,17 @@ const stalenessOk =
   /\/vs-token-safer:update/.test(stLine({ stale: true, changed: 5 })) &&  // points at the one-command refresh
   /오래됐/.test(stLine({ stale: true, changed: 3 }, { ko: true }));       // ko localization
 
+// 96) `vts index --status` STALENESS note (core.indexStatusStaleNote) — closes the v1.1.1 doc gap: the
+// /vs-token-safer:update command's step 1 promised `status` reports staleness, but the handler printed only the
+// build date. PURE suffix from the SAME indexFreshness the STALE cert uses: null → "" (no signal), fresh →
+// "current (no files changed)", stale → names the changed-file count + the /vs-token-safer:update refresh.
+const { indexStatusStaleNote: stNote } = await import("../server/core.js");
+const statusStaleOk =
+  stNote(null) === "" &&                                                  // no freshness signal → silent
+  /current \(no files changed/.test(stNote({ stale: false, changed: 0 })) && // fresh → "current"
+  /STALE: 7 file\(s\)/.test(stNote({ stale: true, changed: 7 })) &&       // stale → names the count
+  /\/vs-token-safer:update/.test(stNote({ stale: true, changed: 7 }));    // → points at the refresh command
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -2657,6 +2668,7 @@ const rows = [
   ["detect_changes risk model: diff→hunks (binary excluded) + 4-channel deterministic risk (leaf LOW/widely-called HIGH, test dampens) + worst-band summary (pure)", detectRiskOk, "true", detectRiskOk],
   ["tree-sitter symbol graph: buildSymbolGraph files+import edges, loadGraph contract (unique ids, no dangling, syntactic, min.js excluded)", symbolGraphOk, "true", symbolGraphOk],
   ["index-staleness SessionStart cue: stalenessLine silent-when-fresh + names changed count + /vs-token-safer:update refresh (en/ko)", stalenessOk, "true", stalenessOk],
+  ["vts index --status staleness note (indexStatusStaleNote): null→silent, fresh→current, stale→N files + /vs-token-safer:update", statusStaleOk, "true", statusStaleOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
