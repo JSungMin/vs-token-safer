@@ -33,7 +33,7 @@ try {
   // Deps grew (typescript + typescript-language-server + pyright ≈ 50 MB), so a stalled registry could
   // otherwise block this SessionStart hook indefinitely. Bound it; on timeout the catch drops the marker
   // so the next session retries.
-  execSync(`${npm} install --no-audit --no-fund --loglevel=error`, { cwd: DATA, stdio: "ignore", timeout: 300000 });
+  execSync(`${npm} install --no-audit --no-fund --loglevel=error`, { cwd: DATA, stdio: "ignore", timeout: 300000, windowsHide: true });
 } catch (e) {
   // Surface the reason on stderr (visible in hook logs) instead of failing completely silently;
   // the MCP server self-heals at spawn, but a logged cause speeds diagnosis when even that can't.

@@ -100,7 +100,7 @@ function addOrder(rank, order) {
 // git: recently-touched files (most recent first). Empty if not a git repo / no git.
 function gitRecent(root, rank) {
   try {
-    const out = execFileSync("git", ["-C", root, "log", "--name-only", "--format=", "-n", "80"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const out = execFileSync("git", ["-C", root, "log", "--name-only", "--format=", "-n", "80"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     const order = []; const seen = new Set();
     for (const line of out.split(/\r?\n/)) {
       const t = line.trim();
@@ -116,7 +116,7 @@ function gitRecent(root, rank) {
 function workingFiles(root) {
   const set = new Set();
   try {
-    const out = execFileSync("git", ["-C", root, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const out = execFileSync("git", ["-C", root, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     for (const line of out.split(/\r?\n/)) {
       let t = line.slice(3).trim(); // drop the 2-char XY status + space
       if (!t) continue;
@@ -125,7 +125,7 @@ function workingFiles(root) {
     }
   } catch { /* no git */ }
   try {
-    const out = execFileSync("p4", ["-ztag", "opened", "-m", "500"], { cwd: root, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const out = execFileSync("p4", ["-ztag", "opened", "-m", "500"], { cwd: root, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     for (const line of out.split(/\r?\n/)) {
       const m = /^\.\.\. clientFile (.+)$/.exec(line.trim());
       if (m) set.add(norm(m[1]));

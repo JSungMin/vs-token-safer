@@ -109,7 +109,7 @@ export function openBrowser(url) {
   try {
     const cmd = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
     const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-    const c = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    const c = spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
     c.on("error", () => {}); c.unref();
   } catch { /* best-effort */ }
 }

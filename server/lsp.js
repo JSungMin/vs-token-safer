@@ -87,7 +87,10 @@ export class LspClient {
     // user override with spaces should quote inside VTS_TS_CMD/VTS_PY_CMD.
     const cmd = this.shell ? [this.cmd, ...this.args].join(" ") : this.cmd;
     const args = this.shell ? [] : this.args;
-    this.proc = spawn(cmd, args, { cwd: this.cwd, env: this.env, stdio: ["pipe", "pipe", "pipe"], shell: this.shell });
+    // windowsHide: the MCP server is launched by the host with NO console of its own, so on Windows every child
+    // it spawns gets a brand-new console allocated (conhost, handed off to Windows Terminal as a window/tab).
+    // Language servers are long-lived, so this is one stray window per backend per session.
+    this.proc = spawn(cmd, args, { cwd: this.cwd, env: this.env, stdio: ["pipe", "pipe", "pipe"], shell: this.shell, windowsHide: true });
     this.proc.stdout.on("data", (d) => this._onData(d));
     this.proc.stderr.on("data", (d) => { this.stderr += d.toString(); if (this.stderr.length > 20000) this.stderr = this.stderr.slice(-20000); });
     this.proc.on("error", (e) => this._failAll(new Error(this.friendlyMissing || `failed to spawn ${this.cmd}: ${e.message}`)));
