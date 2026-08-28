@@ -2571,6 +2571,64 @@ const statusStaleOk =
   /STALE: 7 file\(s\)/.test(stNote({ stale: true, changed: 7 })) &&       // stale → names the count
   /\/vs-token-safer:update/.test(stNote({ stale: true, changed: 7 }));    // → points at the refresh command
 
+// ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
+// ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
+// big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
+// chunk build nobody asked for, which then outlived the session that triggered it. These pin the three bounds.
+// No process is spawned here: every assertion takes a path that returns BEFORE the spawn.
+const autoIndexBoundsOk = await (async () => {
+  const { autoIndexSize, ensureAutoIndex, stopAutoIndex, autoIndexStatus } = await import("../server/symindex.js");
+  // A DISPOSABLE tree, never the repo: if the ceiling ever regresses, the assertion below spawns a real build
+  // on whatever it points at. An earlier version pointed at server/ and the broken run left a .vts-index there,
+  // which then made the RESTORED code fail too (ensureAutoIndex short-circuits on "exists" before the size
+  // check) — a guard that poisons the next run is its own bug.
+  const tmpTree = path.join(os.tmpdir(), `vts-eval-autoindex-tree-${process.pid}`);
+  fs.mkdirSync(tmpTree, { recursive: true });
+  for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(tmpTree, `f${i}.js`), `export function f${i}() { return ${i}; }\n`);
+  const tmpLock = path.join(os.tmpdir(), `vts-eval-autoindex-${process.pid}.lock`);
+  const save = { max: process.env.VTS_AUTOINDEX_MAX_FILES, lock: process.env.VTS_AUTOINDEX_LOCK };
+  try {
+    process.env.VTS_AUTOINDEX_LOCK = tmpLock;
+
+    // ① CEILING — a tree over the cap is refused, and refusal is reported as such (not as a silent no-op).
+    process.env.VTS_AUTOINDEX_MAX_FILES = "1";
+    const big = ensureAutoIndex(tmpTree);
+    const ceilingOk = big.started === false && big.reason === "too-large" && big.files > 1;
+    // …and a tree under a generous cap is NOT refused for size. A SECOND tree, because the size verdict is
+    // cached per resolved root and ① already cached this one as too-large (path.join(t, ".") normalises to t,
+    // so it is not a distinct key — that subtlety is what made an earlier version of this guard fail green).
+    process.env.VTS_AUTOINDEX_MAX_FILES = "1000000";
+    const tmpTree2 = tmpTree + "-under";
+    fs.mkdirSync(tmpTree2, { recursive: true });
+    for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(tmpTree2, `g${i}.js`), `export function g${i}() { return ${i}; }\n`);
+    const sized = autoIndexSize(tmpTree2);
+    const underOk = sized.tooLarge === false && sized.files === 3;
+    try { fs.rmSync(tmpTree2, { recursive: true, force: true }); } catch { /* best-effort */ }
+
+    // ② LIVENESS LOCK — a record whose builder is ALIVE holds; one whose builder is DEAD does not. Keyed on a
+    // path that does not exist, so the only thing under test is the lock decision (size scan finds 0 files).
+    const fakeRoot = path.resolve(path.join(os.tmpdir(), "vts-eval-no-such-tree"));
+    fs.writeFileSync(tmpLock, JSON.stringify({ [fakeRoot]: { at: Date.now(), pid: process.pid } }));
+    const heldByLive = ensureAutoIndex(fakeRoot).reason === "locked";
+    fs.writeFileSync(tmpLock, JSON.stringify({ [fakeRoot]: { at: Date.now(), pid: 0x7ffffff0 } })); // no such pid
+    const notHeldByDead = ensureAutoIndex(fakeRoot).reason !== "locked";
+
+    // ③ STOPPABLE — status/stop read the same lock, and stopping a record whose pid is gone is a clean no-op
+    // (it must not report a phantom kill).
+    fs.writeFileSync(tmpLock, JSON.stringify({ [fakeRoot]: { at: Date.now(), pid: 0x7ffffff0 } }));
+    const stoppedDead = stopAutoIndex(fakeRoot);
+    const statusHidesDead = autoIndexStatus().length === 0;
+    const stopOk = stoppedDead.stopped.length === 0 && stoppedDead.failed.length === 0 && statusHidesDead;
+
+    return ceilingOk && underOk && heldByLive && notHeldByDead && stopOk;
+  } finally {
+    if (save.max === undefined) delete process.env.VTS_AUTOINDEX_MAX_FILES; else process.env.VTS_AUTOINDEX_MAX_FILES = save.max;
+    if (save.lock === undefined) delete process.env.VTS_AUTOINDEX_LOCK; else process.env.VTS_AUTOINDEX_LOCK = save.lock;
+    try { fs.rmSync(tmpLock, { force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(tmpTree, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── Windows console storm: no child process of ours may pop a console ────────────────────────────────────
 // The MCP server (host-launched) and the detached auto-index builder have NO console of their own, so on
 // Windows every child they spawn gets a FRESH console allocated — a conhost, which Win11 hands to Windows
@@ -2711,6 +2769,7 @@ const rows = [
   ["index-staleness SessionStart cue: stalenessLine silent-when-fresh + names changed count + /vs-token-safer:update refresh (en/ko)", stalenessOk, "true", stalenessOk],
   ["vts index --status staleness note (indexStatusStaleNote): null→silent, fresh→current, stale→N files + /vs-token-safer:update", statusStaleOk, "true", statusStaleOk],
   ["no Windows console storm: every child-process spawn sets windowsHide (console-less MCP / detached indexer → a console+terminal window per child)", noConsoleWindowOk, "true", noConsoleWindowOk],
+  ["auto-index bounds: size ceiling refuses an unattended build on a huge tree, lock held by pid LIVENESS (not a TTL), stop/status are honest", autoIndexBoundsOk, "true", autoIndexBoundsOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

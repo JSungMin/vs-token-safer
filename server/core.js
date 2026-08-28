@@ -20,7 +20,7 @@ import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, co
 import { recordEditEvent } from "./edit-ledger.js";
 import { compactGit, compactP4 } from "./compact.js";
 import { tsSearchSymbols, tsSearchReferences, tsFileDeclDocs, tsSupports, tsAvailable, htmlEmbeddedDecls, tsChunkEnd, tsReadSymbol, tsFileSymbols } from "./treesitter.js";
-import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex, hasSymIndex, indexFreshness, ensureAutoIndex } from "./symindex.js";
+import { searchSymIndex, buildSymIndex, symIndexPath, loadSymIndex, hasSymIndex, indexFreshness, ensureAutoIndex, autoIndexStatus, stopAutoIndex } from "./symindex.js";
 import { splitIdent, tokenize, buildConceptModel, expandQuery, scoreSymbol, importSpecifiers, parseSynonyms, anchorConfident, prfTerms, parseConceptQuery } from "./concept.js";
 import { cochangeNeighbors } from "./cochange.js";
 import { isStructFile, structOutlineInjected, resolveInOutline, fmtOutline } from "./textstruct.js";
@@ -1038,12 +1038,31 @@ function autoIndexTreeLikely(root) {
 // cold start answers from tree-sitter instantly instead of waiting on the language server's cold index).
 // Silent: ensureAutoIndex never blocks and its build output never reaches a response; the degrade paths still
 // emit their own one-time "building .vts-index" ladder note. Gated by VTS_AUTO_INDEX + the existing dedupe/lock.
+// Returns ensureAutoIndex's result so a caller can surface the one-time note — including the "too-large" case,
+// where nothing was started and the user needs to know WHY there is no index and what to run instead.
 function kickAutoIndex(root) {
   try {
-    if (hasSymIndex(root)) return;
-    if (!autoIndexTreeLikely(root)) return;
-    ensureAutoIndex(root);
-  } catch { /* best-effort, never surfaces */ }
+    if (hasSymIndex(root)) return { started: false, reason: "exists" };
+    if (!autoIndexTreeLikely(root)) return { started: false, reason: "too-small" };
+    return ensureAutoIndex(root);
+  } catch { return { started: false, reason: "error" }; /* best-effort, never surfaces */ }
+}
+// The one-time note for a kickAutoIndex outcome, or "" when there is nothing worth saying. Two outcomes speak:
+// a build that STARTED (so the user knows why the next cold start is fast, and that the artifact is committable)
+// and a build REFUSED as too large (so an absent index reads as a deliberate limit, not a silent failure — and
+// names the two deliberate moves: build it yourself, or narrow the tree first).
+function autoIndexNote(root, ai) {
+  if (!ai || _autoIndexNoted.has(root)) return "";
+  if (ai.started) {
+    _autoIndexNoted.add(root);
+    return `\n↪ Building .vts-index/ in the background (one-time) — later queries get instant + complete; commit it to share: git add .vts-index (never auto-committed). Stop it: vts index --stop`;
+  }
+  if (ai.reason === "too-large") {
+    _autoIndexNoted.add(root);
+    const size = ai.truncated ? `> ${ai.max.toLocaleString()} files (scan budget)` : `${ai.files.toLocaleString()} files`;
+    return `\n↪ No .vts-index/ and NOT auto-building — tree too large for an unattended build (${size}). Narrow it first: vts setup --scope <module>, then vts index. (Ceiling: VTS_AUTOINDEX_MAX_FILES.)`;
+  }
+  return "";
 }
 export function clangdIndexAdvisory(backendName, root, targetPath) {
   if (backendName !== "clangd") return "";
@@ -2402,16 +2421,33 @@ export async function runTool(name, a = {}) {
       // declaration; a later search_symbol on a toolchain-less machine (or before clangd's index is built)
       // answers from it instantly. status=true just reports the current file; otherwise it (re)builds.
       const root = resolveRoot(a);
+      // stop=true: kill a BACKGROUND build. The auto-build is detached so it survives the session that started
+      // it — which is the point (the next cold start is instant) but leaves the user no handle on a build that
+      // is running longer than they want. This is that handle.
+      if (a.stop === true || a.stop === "true") {
+        const all = a.all === true || a.all === "true";
+        const r = stopAutoIndex(all ? undefined : root);
+        if (!r.stopped.length && !r.failed.length) return out(`No background index build is running${all ? "" : ` for ${root}`}.`);
+        const okLine = r.stopped.map((s) => `  stopped pid ${s.pid} — ${s.root}`).join("\n");
+        const badLine = r.failed.map((s) => `  FAILED pid ${s.pid} — ${s.root}: ${s.error}`).join("\n");
+        return out(`Background index build:\n${[okLine, badLine].filter(Boolean).join("\n")}\n  Partial .vts-index/.parts are discarded on the next build (it starts fresh).`);
+      }
+      // A build in flight is reported by every path below — an index that "isn't there yet" and one that is
+      // being built right now are different states, and only one of them means you should run anything.
+      const building = (() => {
+        try { return autoIndexStatus().find((b) => path.resolve(b.root) === path.resolve(root)); } catch { return null; }
+      })();
+      const buildingNote = building ? `\n  BUILDING NOW in the background (pid ${building.pid}, ${Math.round(building.ageMs / 1000)}s elapsed). Stop it: vts index --stop` : "";
       if (a.status === true || a.status === "true") {
         const idx = loadSymIndex(root);
-        if (!idx) return out(`No committed symbol index at ${symIndexPath(root)}. Build one: vts index  (commit .vts-index/ to share it with the team / speed cold starts).`);
+        if (!idx) return out(`No committed symbol index at ${symIndexPath(root)}.${buildingNote || " Build one: vts index  (commit .vts-index/ to share it with the team / speed cold starts)."}`);
         const built = idx.meta.built ? new Date(idx.meta.built).toISOString() : "unknown";
         // Staleness: the same indexFreshness the SYNTACTIC · STALE cert keys off, so `--status` reports what
         // /vs-token-safer:update would act on (the command's step 1 promised this). fs walk → guarded; a
         // hiccup just drops the note, never breaks status.
         let staleNote = "";
         try { staleNote = indexStatusStaleNote(indexFreshness(root)); } catch { /* freshness unavailable → omit */ }
-        return out(`Committed symbol index: ${symIndexPath(root)}\n  ${idx.entries.length} symbol(s) over ${idx.meta.files ?? "?"} file(s), built ${built}${idx.meta.partial ? " (PARTIAL — time-boxed; rebuild for full coverage)" : ""}.${staleNote}\n  Used as the instant cold-start tier for search_symbol when no language server has indexed yet.`);
+        return out(`Committed symbol index: ${symIndexPath(root)}\n  ${idx.entries.length} symbol(s) over ${idx.meta.files ?? "?"} file(s), built ${built}${idx.meta.partial ? " (PARTIAL — time-boxed; rebuild for full coverage)" : ""}.${staleNote}${buildingNote}\n  Used as the instant cold-start tier for search_symbol when no language server has indexed yet.`);
       }
       if (!tsAvailable()) return err(`vts index needs the tree-sitter grammars (web-tree-sitter + tree-sitter-wasms). They install with the plugin; if missing, run \`npm install\` in the server dir.`);
       const dirs = scopeDirsFor(root);
@@ -2899,10 +2935,7 @@ export async function runTool(name, a = {}) {
           // S2/S3: no committed index yet → kick off `vts index` DETACHED (output never enters a response) so
           // the next cold start is instant. The nudge (incl. "git add .vts-index to share") fires ONCE per root.
           let autoNote = "";
-          if (!hasIdx) {
-            const ai = ensureAutoIndex(root);
-            if (ai.started && !_autoIndexNoted.has(root)) { _autoIndexNoted.add(root); autoNote = `\n↪ Building .vts-index/ in the background (one-time) — later queries get instant + complete; commit it to share: git add .vts-index (never auto-committed).`; }
-          }
+          if (!hasIdx) autoNote = autoIndexNote(root, kickAutoIndex(root));
           // ONE unified ladder line supersedes the old multi-line buildHint (net shorter). Reason names WHY it
           // degraded; climb is the single next move (install / re-query / build the index). Legacy buildHint is
           // kept ONLY when the ladder line is switched off, so VTS_LADDER_LINE=0 preserves the prior output.
@@ -3030,10 +3063,7 @@ export async function runTool(name, a = {}) {
           const declLine = syn && syn.lines.length ? `Declaration (committed index): ${syn.lines[0]}\n` : "";
           // S2/S3 background build (one-time nudge per root) — same detached path as the symbol pre-empt.
           let rAutoNote = "";
-          if (!fs.existsSync(symIndexPath(root))) {
-            const ai = ensureAutoIndex(root);
-            if (ai.started && !_autoIndexNoted.has(root)) { _autoIndexNoted.add(root); rAutoNote = `\n↪ Building .vts-index/ in the background (one-time) — later queries get instant + complete; commit it to share: git add .vts-index (never auto-committed).`; }
-          }
+          if (!fs.existsSync(symIndexPath(root))) rAutoNote = autoIndexNote(root, kickAutoIndex(root));
           // Unified ladder line: WHY it degraded + the one climb (install / re-query / rebuild for SEMANTIC refs).
           // §9.1: cold clangd → the committed syntactic answer is the instant primary, EXACT follows on re-query.
           const rRung = rCold ? "SYNTACTIC (instant)" : "SYNTACTIC";
