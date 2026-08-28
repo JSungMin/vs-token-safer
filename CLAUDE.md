@@ -407,13 +407,23 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   scan tree + git log before any push. Eval/docs use synthetic names only.
 - **Security/local-only.** No network calls; nothing transmitted. PRIVACY.md says so.
 - **No console windows (Windows).** EVERY `spawn`/`execFile*`/`execSync` in `server/` MUST pass `windowsHide: true`.
-  The MCP server (host-launched) and the DETACHED auto-index builder (`symindex.js maybeAutoIndex`) have no
+  The MCP server (host-launched) and the DETACHED auto-index builder (`symindex.js ensureAutoIndex`) have no
   console of their own, so Windows allocates a FRESH console per child — a conhost that Win11 hands to Windows
   Terminal as a window/tab. The chunked index spawns one worker PER CHUNK, so on a UE-size tree that was a
   terminal window every ~0.8s for a 10-minute build (reported by two users; reproduced with a forced-chunk
   orphan launch: 44 console/terminal processes per run without the flag, 0 with it). Eval guard 96 scans every
   spawn site — it under-detected at first because quote-blanking mis-paired on a regex literal like `/^"|"$/`,
   so it now blanks only comments + template literals. Verify a guard FAILS before trusting it.
+- **Unattended work stays bounded, deduped and stoppable.** `ensureAutoIndex` (symindex.js) starts a DETACHED
+  `vts index` on any locate over an un-indexed tree — deliberately outliving the session so the next cold start
+  is instant. It had a FLOOR (`autoIndexTreeLikely`, ≥`VTS_AUTOINDEX_MIN_FILES` 400) but no CEILING, so a UE
+  depot got a tens-of-minutes build nobody asked for. Now: (a) `autoIndexSize` refuses above
+  `VTS_AUTOINDEX_MAX_FILES` (25000) OR when the tree can't be enumerated inside `VTS_AUTOINDEX_SCAN_MS` (1500)
+  — a tree that slow IS the depot case; `core.js autoIndexNote` then says so once and names `vts setup --scope`;
+  (b) the lock record is `{at, pid}` and is held by pid LIVENESS, not a TTL (a long build is never duplicated, a
+  crashed one is retryable immediately); (c) `vts index --stop [--all]` tree-kills it and `--status` shows a
+  build in flight. Judge a kill by the RESULT, not the exit code — `taskkill /T` exits non-zero when a worker
+  already finished. Eval guard 97; `VTS_AUTOINDEX_LOCK` overrides the lock path for tests.
 - **Release/branch workflow — gitflow.** Branches: **`main`** = production (tagged releases ONLY, always
   shippable) · **`dev`** = develop/integration · **`feature/<slug>`** (off `dev`) · **`hotfix/<slug>`** (off
   `main`) · optional **`release/<x.y>`** (stabilize before a big minor/major). **Bump level is decided by

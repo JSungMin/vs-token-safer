@@ -66,7 +66,10 @@ Commands:
   p4             Run a READ-ONLY Perforce command and COMPACT its output (opened/status/changes/reconcile -n).
                  Pass-through: 'vts p4 opened', 'vts p4 changes -m 50'. reconcile is forced to preview (-n).
   index          Build the committable .vts-index/symbols.jsonl (tree-sitter; instant cold-start symbol tier,
-                 no toolchain needed — commit it to share with the team). [--projectPath --status (show current)]
+                 no toolchain needed — commit it to share with the team). A tree over VTS_AUTOINDEX_MAX_FILES
+                 is never auto-built in the background; build it here deliberately, or scope it first.
+                 [--projectPath --status (show current + any build in flight) --stop (kill the background build,
+                 --all for every tree)]
   concept        FUZZY search for a concept/intent you can't name exactly ("auth login flow"). Mines a concept
                  dictionary from the repo's OWN identifier+comment co-occurrence (no embeddings, nothing sent)
                  and ranks declarations; --flow also expands the top hit along the call graph.

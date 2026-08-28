@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { once } from "node:events";
-import { execFile, execSync, spawn } from "node:child_process";
+import { execFile, execFileSync, execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { tsFileSymbols, tsSupports } from "./treesitter.js";
@@ -149,21 +149,65 @@ export function indexFreshness(root) {
 // output into a tool response. Deduped by an in-process Set AND a cross-process lock file (a fresh lock younger
 // than the TTL means another process is already building). VTS_AUTO_INDEX=0 disables. Returns { started, reason }.
 const _autoIndexInflight = new Set();
-function _autoIndexLock() { return path.join(os.homedir(), ".vts-local", "autoindex.lock"); }
+// VTS_AUTOINDEX_LOCK overrides the path so a test can drive the lock without touching the real one.
+function _autoIndexLock() { return process.env.VTS_AUTOINDEX_LOCK || path.join(os.homedir(), ".vts-local", "autoindex.lock"); }
+
+// Is that pid still running? EPERM means it exists but belongs to someone else — still alive.
+function pidAlive(pid) {
+  if (!pid || !Number.isFinite(Number(pid))) return false;
+  try { process.kill(Number(pid), 0); return true; } catch (e) { return !!(e && e.code === "EPERM"); }
+}
+
+// SIZE CEILING for the unattended build. `autoIndexTreeLikely` (core.js) is the FLOOR — "big enough to be worth
+// indexing". This is the ceiling — "small enough to index without asking". A UE-size depot ran tens of minutes,
+// one worker process per chunk, and outlived the session that triggered it; nobody asked for that. Above the
+// ceiling we do not auto-start, and the caller surfaces a one-time note naming the deliberate command.
+// A tree we cannot even ENUMERATE inside the scan budget counts as too large — that IS the depot case, and
+// guessing "probably small" on a tree that slow is how the unattended build got started in the first place.
+const _autoIndexSizeCache = new Map(); // resolved root → { tooLarge, files, truncated, max }
+export function autoIndexSize(root) {
+  const key = path.resolve(root);
+  const hit = _autoIndexSizeCache.get(key);
+  if (hit) return hit;
+  const max = Number(process.env.VTS_AUTOINDEX_MAX_FILES || 25000);
+  const budgetMs = Number(process.env.VTS_AUTOINDEX_SCAN_MS || 1500);
+  const t0 = Date.now();
+  let files = 0;
+  let truncated = false;
+  const stack = [key];
+  outer: while (stack.length) {
+    if (Date.now() - t0 > budgetMs) { truncated = true; break; }
+    const d = stack.pop();
+    let es;
+    try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of es) {
+      if (e.isDirectory()) { if (!defaultSkipDir(e.name) && e.name !== DIR) stack.push(path.join(d, e.name)); }
+      else if (isIndexable(e.name) && ++files > max) break outer;
+    }
+  }
+  const res = { tooLarge: files > max || truncated, files, truncated, max };
+  _autoIndexSizeCache.set(key, res);
+  return res;
+}
 export function ensureAutoIndex(root) {
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_AUTO_INDEX ?? "1"))) return { started: false, reason: "disabled" };
   const key = path.resolve(root);
   if (_autoIndexInflight.has(key)) return { started: false, reason: "inflight" };
   if (hasSymIndex(root)) return { started: false, reason: "exists" };
+  const size = autoIndexSize(root);
+  if (size.tooLarge) return { started: false, reason: "too-large", ...size };
   const ttlMs = Number(process.env.VTS_AUTOINDEX_LOCK_TTL_MS || 30 * 60 * 1000);
   const lockPath = _autoIndexLock();
-  // Cross-process dedupe: the lock file holds one {root: startedMs} record per active build. Skip if a FRESH
-  // record for this root exists (another vts process is building it). Prune stale/expired records opportunistically.
+  // Cross-process dedupe: the lock file holds one {at, pid} record per active build (older files hold a bare
+  // startedMs — still honoured via the TTL). LIVENESS beats the TTL in both directions: while the recorded
+  // builder is alive we never start a second one (a big build outlives any fixed TTL), and the moment it dies
+  // the lock is stale even if the TTL has not expired (a crashed build should be retryable now, not in 30 min).
   let locks = {};
   try { locks = JSON.parse(fs.readFileSync(lockPath, "utf8")) || {}; } catch { /* absent/corrupt → fresh map */ }
   const now = Date.now();
-  for (const k in locks) if (!(now - (locks[k] || 0) < ttlMs)) delete locks[k]; // drop expired
-  if (locks[key] && now - locks[key] < ttlMs) { _autoIndexInflight.add(key); return { started: false, reason: "locked" }; }
+  const held = (rec) => (rec && typeof rec === "object" ? pidAlive(rec.pid) : now - (rec || 0) < ttlMs);
+  for (const k in locks) if (!held(locks[k])) delete locks[k]; // drop finished/crashed/expired
+  if (locks[key] && held(locks[key])) { _autoIndexInflight.add(key); return { started: false, reason: "locked" }; }
   // Detached spawn: `node <cli.js> index --projectPath <root>`, all output to a log file (NEVER a response).
   try {
     const dir = path.dirname(lockPath);
@@ -179,13 +223,64 @@ export function ensureAutoIndex(root) {
     });
     child.unref();
     try { fs.closeSync(out); } catch { /* fd handed to child */ }
-    locks[key] = now;
+    // Record the PID, not just the time: it is what makes the lock liveness-checked above, and it is the only
+    // handle anyone has on a detached build — without it `vts index --stop` could not reach it.
+    locks[key] = { at: now, pid: child.pid };
     try { fs.writeFileSync(lockPath, JSON.stringify(locks)); } catch { /* best-effort lock */ }
     _autoIndexInflight.add(key);
-    return { started: true, reason: "spawned", log: logPath };
+    return { started: true, reason: "spawned", log: logPath, pid: child.pid };
   } catch (e) {
     return { started: false, reason: "error", error: String((e && e.message) || e) };
   }
+}
+
+// What background builds are running right now, per the lock file: [{ root, pid, at, ageMs }]. Records whose
+// builder is gone are not reported (and are pruned on the next ensureAutoIndex). Read-only.
+export function autoIndexStatus() {
+  let locks;
+  try { locks = JSON.parse(fs.readFileSync(_autoIndexLock(), "utf8")) || {}; } catch { return []; }
+  const now = Date.now();
+  const live = [];
+  for (const root in locks) {
+    const rec = locks[root];
+    const pid = rec && typeof rec === "object" ? rec.pid : null;
+    if (!pidAlive(pid)) continue; // a bare-timestamp (pre-pid) record has no pid to check → not reportable
+    live.push({ root, pid, at: rec.at, ageMs: now - (rec.at || now) });
+  }
+  return live;
+}
+
+// Stop background index build(s) — the escape hatch for a build that is running longer than the user wants.
+// A detached builder owns a pool of worker processes, so this is a TREE kill (taskkill /T on Windows; on POSIX
+// the builder is its own process-group leader thanks to detached:true, so the group gets the signal). `root`
+// limits it to that tree; omit to stop every recorded build. Returns { stopped: [{root, pid}], failed: [...] }.
+export function stopAutoIndex(root) {
+  const lockPath = _autoIndexLock();
+  let locks;
+  try { locks = JSON.parse(fs.readFileSync(lockPath, "utf8")) || {}; } catch { return { stopped: [], failed: [] }; }
+  const want = root ? path.resolve(root) : null;
+  const stopped = [];
+  const failed = [];
+  for (const k in locks) {
+    if (want && k !== want) continue;
+    const rec = locks[k];
+    const pid = rec && typeof rec === "object" ? rec.pid : null;
+    delete locks[k]; // clear the record either way — a pid we cannot reach is not worth re-checking forever
+    if (!pidAlive(pid)) continue;
+    // Judge by the RESULT, not the exit code: taskkill /T exits non-zero when any member of the tree already
+    // finished on its own (a worker between chunks), which is the normal case here — it reported "failed" on a
+    // build it had in fact killed. SIGKILL rather than SIGTERM on POSIX for the same reason: this is an explicit
+    // user stop and the partial .parts are discarded anyway, so there is nothing for a graceful exit to save.
+    try {
+      if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 10000, windowsHide: true });
+      else process.kill(-pid, "SIGKILL");
+    } catch { /* fell through to the liveness check below */ }
+    if (!pidAlive(pid)) stopped.push({ root: k, pid });
+    else failed.push({ root: k, pid, error: "still running after kill" });
+  }
+  try { fs.writeFileSync(lockPath, JSON.stringify(locks)); } catch { /* best-effort */ }
+  for (const s of stopped) _autoIndexInflight.delete(s.root);
+  return { stopped, failed };
 }
 
 // Build the index by walking `root` (bounded to `dirs` when scope is set) and tree-sitter-extracting every
