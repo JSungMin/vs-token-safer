@@ -40,7 +40,7 @@ let _clangdMajorCache, _clangdAvailCache;
 export function clangdMajor(cmd) {
   if (_clangdMajorCache !== undefined) return _clangdMajorCache;
   try {
-    const out = execFileSync(cmd, ["--version"], { encoding: "utf8", timeout: 10000 });
+    const out = execFileSync(cmd, ["--version"], { encoding: "utf8", timeout: 10000, windowsHide: true });
     _clangdAvailCache = true;
     _clangdMajorCache = parseClangdMajor(out);
   } catch { _clangdAvailCache = false; _clangdMajorCache = null; }
@@ -214,7 +214,7 @@ let _indexerOk;
 export function hasClangdIndexer() {
   if (!indexerEnabled()) return false; // explicit kill switch — don't even probe
   if (_indexerOk !== undefined) return _indexerOk;
-  try { execFileSync(clangdIndexerCmd(), ["--help"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "ignore", "ignore"] }); _indexerOk = true; }
+  try { execFileSync(clangdIndexerCmd(), ["--help"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "ignore", "ignore"], windowsHide: true }); _indexerOk = true; }
   catch { _indexerOk = false; }
   return _indexerOk;
 }
@@ -238,7 +238,7 @@ export function buildStaticIndex(root) {
   try {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     // clangd-indexer writes the index to stdout; capture it to the file. all-TUs = index every entry in the DB.
-    const buf = execFileSync(clangdIndexerCmd(), [`--executor=all-TUs`, cc], { maxBuffer: 1 << 30, timeout: envInt("VTS_INDEXER_TIMEOUT_MS", 1800000) });
+    const buf = execFileSync(clangdIndexerCmd(), [`--executor=all-TUs`, cc], { maxBuffer: 1 << 30, timeout: envInt("VTS_INDEXER_TIMEOUT_MS", 1800000), windowsHide: true });
     fs.writeFileSync(out, buf);
   } catch (e) { return { error: `clangd-indexer failed: ${e.message}` }; }
   return { ok: true, path: out, tus, ms: Date.now() - t0 };

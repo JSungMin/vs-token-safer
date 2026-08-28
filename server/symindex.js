@@ -476,7 +476,11 @@ export async function buildSymIndexChunked(
     new Promise((resolve) => {
       const symsPath = path.join(partDir, `part-${i}.jsonl`);
       const args = [`--max-old-space-size=${heapMb}`, WORKER_PATH, root, c.dir, symsPath, c.shallow ? "1" : "0"];
-      execFile(process.execPath, args, { maxBuffer: 512 * 1024 * 1024 }, (err, stdout) => {
+      // windowsHide: when the BUILDER itself has no console (a detached / background / orphaned `vts index`),
+      // Windows gives every child its OWN console — one conhost per chunk, which Win11 hands off to Windows
+      // Terminal, so a big tree pops a window per chunk for the whole build. Measured on a forced-chunk repro:
+      // console-parented builder → 0 consoles for 12 workers; detached builder → 24 consoles for 24 workers.
+      execFile(process.execPath, args, { maxBuffer: 512 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
         done++;
         // A worker can finish ALL its parsing (valid JSON already flushed to stdout) and still exit non-zero —
         // e.g. a libuv teardown assertion crash on process.exit() after tree-sitter WASM cleanup (observed on
@@ -592,7 +596,7 @@ function ensureGrammar() {
   const npm = fs.existsSync(local) ? `"${local}"` : "npm";
   process.stderr.write("[vts index] tree-sitter grammar missing or incompatible — installing web-tree-sitter@^0.25 + tree-sitter-wasms (one-time)…\n");
   try {
-    execSync(`${npm} install web-tree-sitter@^0.25 tree-sitter-wasms --no-audit --no-fund --no-save --loglevel=error`, { cwd: here, stdio: "ignore", timeout: 300000 });
+    execSync(`${npm} install web-tree-sitter@^0.25 tree-sitter-wasms --no-audit --no-fund --no-save --loglevel=error`, { cwd: here, stdio: "ignore", timeout: 300000, windowsHide: true });
   } catch (e) {
     process.stderr.write(`[vts index] grammar auto-install failed (${e && e.message}). Run manually in ${here}: npm i web-tree-sitter@^0.25 tree-sitter-wasms\n`);
   }

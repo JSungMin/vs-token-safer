@@ -2571,6 +2571,47 @@ const statusStaleOk =
   /STALE: 7 file\(s\)/.test(stNote({ stale: true, changed: 7 })) &&       // stale → names the count
   /\/vs-token-safer:update/.test(stNote({ stale: true, changed: 7 }));    // → points at the refresh command
 
+// ── Windows console storm: no child process of ours may pop a console ────────────────────────────────────
+// The MCP server (host-launched) and the detached auto-index builder have NO console of their own, so on
+// Windows every child they spawn gets a FRESH console allocated — a conhost, which Win11 hands to Windows
+// Terminal as a window/tab. The chunked index spawns one worker per chunk, so on a big tree that was a
+// terminal window every ~0.8s for the whole build (measured on a forced-chunk orphan repro: 44 console/
+// terminal processes per run without windowsHide, 0 with it). Guard EVERY spawn site so a new one can't
+// reintroduce it — the failure is invisible in CI (it only shows on Windows, from a console-less parent).
+const spawnSitesMissingHide = (() => {
+  const dir = new URL("../server/", import.meta.url);
+  const files = [
+    ...fs.readdirSync(dir).filter((f) => /\.(js|mjs)$/.test(f)),
+    ...fs
+      .readdirSync(new URL("backends/", dir))
+      .filter((f) => /\.js$/.test(f))
+      .map((f) => "backends/" + f),
+  ];
+  const blank = (m) => m.replace(/[^\n]/g, " "); // keep line numbering while removing content
+  const bad = [];
+  for (const f of files) {
+    // Blank comments and TEMPLATE literals only, so prose like `${n} spawn(s)` is not read as a call site.
+    // Deliberately NOT quote-blanking: a quote inside a regex literal (`/^"|"$/`) mis-pairs the scan and
+    // silently blanks the rest of the file — the first version of this guard did exactly that and went blind
+    // to warmset.js and half of core.js while still printing a pass. Under-detection is the failure mode to
+    // design against here, so keep the lexing minimal and let a stray quoted "spawn(" be a loud false alarm.
+    const src = fs
+      .readFileSync(new URL(f, dir), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, blank)
+      .replace(/\/\/[^\n]*/g, blank)
+      .replace(/`(?:\\.|[^`\\])*`/g, blank);
+    const lines = src.split("\n");
+    lines.forEach((l, i) => {
+      if (!/(?:^|[^.\w])(spawn|spawnSync|execFile|execFileSync|execSync)\s*\(/.test(l)) return;
+      // Look behind too: a call may pass a shared options object declared just above (core.js's UBT opts).
+      if (!/windowsHide\s*:\s*true/.test(lines.slice(Math.max(0, i - 6), i + 12).join(" "))) bad.push(`${f}:${i + 1}`);
+    });
+  }
+  return bad;
+})();
+const noConsoleWindowOk = spawnSitesMissingHide.length === 0;
+if (!noConsoleWindowOk) console.error(`  spawn sites missing windowsHide: ${spawnSitesMissingHide.join(", ")}`);
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -2669,6 +2710,7 @@ const rows = [
   ["tree-sitter symbol graph: buildSymbolGraph files+import edges, loadGraph contract (unique ids, no dangling, syntactic, min.js excluded)", symbolGraphOk, "true", symbolGraphOk],
   ["index-staleness SessionStart cue: stalenessLine silent-when-fresh + names changed count + /vs-token-safer:update refresh (en/ko)", stalenessOk, "true", stalenessOk],
   ["vts index --status staleness note (indexStatusStaleNote): null→silent, fresh→current, stale→N files + /vs-token-safer:update", statusStaleOk, "true", statusStaleOk],
+  ["no Windows console storm: every child-process spawn sets windowsHide (console-less MCP / detached indexer → a console+terminal window per child)", noConsoleWindowOk, "true", noConsoleWindowOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

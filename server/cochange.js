@@ -58,11 +58,11 @@ export function parseCoChange(logText, { maxFilesPerCommit = 30, boundary = SEP 
 export function cochangeNeighbors(root, { maxCommits = 500, maxFilesPerCommit = 30, minWeight = 2 } = {}) {
   let top, out;
   try {
-    top = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    top = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     out = execFileSync(
       "git",
       ["-C", root, "log", "--name-only", "--no-renames", `--pretty=format:${SEP}`, "-n", String(maxCommits)],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
     );
   } catch {
     return new Map(); // no git / not a repo → no co-change edges (graceful)

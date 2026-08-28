@@ -136,7 +136,7 @@ export function ensureWritableForEdit(file) {
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_P4_EDIT ?? "1"))) return "";
   const p4 = process.env.VTS_P4_CMD || "p4";
   try {
-    execSync(`${p4} edit ${JSON.stringify(file)}`, { stdio: "ignore", timeout: envInt("VTS_P4_TIMEOUT_MS", 15000), cwd: path.dirname(file) });
+    execSync(`${p4} edit ${JSON.stringify(file)}`, { stdio: "ignore", timeout: envInt("VTS_P4_TIMEOUT_MS", 15000), cwd: path.dirname(file), windowsHide: true });
     fs.accessSync(file, fs.constants.W_OK); // only claim success if the file is now writable
     return " (p4 edit'd for checkout)";
   } catch { return ""; }
@@ -1125,9 +1125,9 @@ export function ensureDbIgnored(root, patterns = DB_IGNORES) {
   const probe = (patterns[0] || ".cache/").replace(/\/$/, ""); // a representative entry for check-ignore
   // git: inside a work tree and the artifact not ignored → append to the project-root .gitignore.
   try {
-    execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore", timeout: 5000 });
+    execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore", timeout: 5000, windowsHide: true });
     let ignored = true;
-    try { execFileSync("git", ["-C", root, "check-ignore", "-q", probe], { stdio: "ignore", timeout: 5000 }); }
+    try { execFileSync("git", ["-C", root, "check-ignore", "-q", probe], { stdio: "ignore", timeout: 5000, windowsHide: true }); }
     catch { ignored = false; }
     if (ignored) notes.push(`git: ${probe} already ignored.`);
     else {
@@ -2439,7 +2439,7 @@ export async function runTool(name, a = {}) {
         // RunUBT is a .bat on Windows — Node refuses to spawn .bat/.cmd directly (EINVAL, CVE-2024-27980
         // hardening), so that path goes through the shell using the already-quoted cmdline. The .sh path
         // (and any direct binary) keeps the safer no-shell execFileSync.
-        const opts = { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000) };
+        const opts = { stdio: "ignore", timeout: envInt("VTS_UBT_TIMEOUT_MS", 1800000), windowsHide: true };
         if (/\.(bat|cmd)$/i.test(plan.runUbt)) execSync(plan.cmdline, opts);
         else execFileSync(plan.runUbt, plan.args, opts);
         // UBT writes compile_commands.json to the engine root; our clangd backend looks under the project
