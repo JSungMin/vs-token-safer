@@ -15,6 +15,7 @@ import { pickBackend, BACKENDS, clangdAdvisory, clangdAvailable, clangdMissingAd
 import { scopeStats, inScope } from "./scope.js";
 import { recordQueryResults, languageCensus, histRank } from "./warmset.js";
 import { splitSegments } from "./shell-split.js";
+import { classifyPowerShellSearch } from "./psearch.js";
 import { classifyDeclEdit } from "./edit-detect.js";
 import { counterfactualOn, relateSets, recordCounterfactual, grepKey, locKey, counterfactualReport } from "./counterfactual.js";
 import { recordEditEvent } from "./edit-ledger.js";
@@ -175,6 +176,37 @@ const EMPTY_HINT =
   " Empty can mean: JUST-edited (index lags the save — retry or search_text), a DEFINITIONS-only match " +
   "(not every reference), or a LOG (not indexed — use gamedev-log).";
 const LOG_EMPTY_HINT = " Looking for something in a LOG? Logs aren't indexed for code search — use gamedev-log for log content.";
+// A miss whose real cause is a TOO-NARROW configured root reads exactly like "the symbol does not exist", and
+// that is the failure that makes an agent abandon the plugin: `projectPath` pinned at <depot>/TSGame, the
+// symbol living in <depot>/Engine, every by-name query empty forever (a path-less query keeps the configured
+// root by design — only a query carrying a `path` can resolve elsewhere). Measured: `search_symbol
+// FConeConstraint` empty at the module root, 5 correct hits one level up. So when an enclosing project root
+// EXISTS above the one we searched, say so and name the command that widens it. Text only, no behaviour
+// change; silent when the searched root is already the outermost project. VTS_WIDEN_HINT=0 hides it.
+export function widenRootHint(root) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_WIDEN_HINT ?? "1"))) return "";
+  try {
+    const here = path.resolve(String(root || ""));
+    const parent = path.dirname(here);
+    if (!parent || parent === here) return "";
+    const up = findProjectRoot(parent);
+    if (!up || path.resolve(up) === here) return "";
+    // Only name a parent that is a PROJECT, not merely a directory that happens to be under version control.
+    // findProjectRoot stops at `.git` as a repo-boundary fallback, and a `.git` alone climbs into things like a
+    // notes vault or a checkout-of-checkouts holding unrelated siblings — pointing the user at THAT would widen
+    // the search across foreign repos, void a relative `scope` (scopeDirs resolves against root → missing → the
+    // whole tree), and orphan the existing clangd index (dbDirFor is keyed by root). Require a real build/
+    // project marker up there before suggesting it.
+    const STRONG = [/\.sln$/i, /\.uproject$/i, /\.csproj$/i, /^compile_commands\.json$/i, /^package\.json$/i, /^pyproject\.toml$/i, /^CMakeLists\.txt$/i, /^go\.mod$/i, /^Cargo\.toml$/i];
+    let names = [];
+    try { names = fs.readdirSync(up, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name); } catch { return ""; }
+    if (!names.some((n) => STRONG.some((re) => re.test(n)))) return "";
+    // Lead with the PER-CALL widening: it is reversible and scoped to this question. A `vts setup` re-pin is
+    // permanent and has side effects (it repoints the compile-DB directory and drops a relative scope), so it
+    // is offered second, as the deliberate choice it is.
+    return `\n↪ Only ${here} was searched (the configured projectPath). The enclosing project is ${up} — a symbol outside this module (engine, vendored deps, a sibling module) can never match here. Try it on this call: projectPath="${up}". To make it permanent: vts setup --projectPath "${up}" (re-pins the compile-DB dir and drops a relative scope).`;
+  } catch { return ""; /* best-effort hint — never break a result */ }
+}
 // search_text → symbol steer (dogfood-found): a TEXT query that is really a SYMBOL/CLASS usage hunt — a
 // template arg `Foo<Bar>`, a `::` scope, or a dominant CamelCase/snake identifier — is answered better by
 // find_references / search_symbol: the LSP index is COMPLETE (no 4s time-box) and ~10–20× smaller. The
@@ -469,6 +501,14 @@ function matchBypass(name, input) {
       }
     }
     return null;
+  }
+  // The OTHER shell tool. It was absent from this matcher AND from the hook's PreToolUse matcher, so a
+  // PowerShell `Select-String` over source was neither enforced nor COUNTED — which is worse than it sounds:
+  // discover's headline ("share of search tokens routed through vts") was computed over a channel set that
+  // excluded the channel some users search with, so the number read high for a reason that was not adoption.
+  if (name === "PowerShell" || name === "Powershell") {
+    const ps = classifyPowerShellSearch(String(input.command || ""));
+    return ps ? { tool: ps.kind === "files" ? "Get-ChildItem" : "Select-String", q: cleanQ(input.command || "") } : null;
   }
   if (name === "Grep") {
     const glob = String(input.glob || "").toLowerCase();
@@ -2879,7 +2919,7 @@ export async function runTool(name, a = {}) {
       if (syn) { const scopeTag = syn.scoped ? ` in ${syn.scoped}` : ""; return finishOut(syn.lines, `No language-server backend for ${root} — ${syn.source} declaration matches for "${a.q}"${scopeTag}:\n` + syn.lines.join("\n") + symScopeNote(syn, a.q) + completenessCert({ shown: syn.lines.length, total: syn.total, truncated: syn.truncated, syntactic: true })); }
       const hits = scanTextUnder(root, String(a.q), Math.min(max, 60));
       if (hits.length) return finishOut(hits, `No language-server backend resolved for ${root} — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n"));
-      return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT);
+      return finishOut([], `No backend resolved and no text match for "${a.q}" under ${root}.` + EMPTY_HINT + widenRootHint(root));
     }
     // find_references with NO backend (a Go/Rust/… repo we have no language server for): the SYNTACTIC
     // reference fallback (tree-sitter call sites, then a literal scan) — the SAME tier search_symbol uses
@@ -2897,7 +2937,7 @@ export async function runTool(name, a = {}) {
       }
       const hits = scanTextUnder(root, want, fmax);
       if (hits.length) return finishOut(hits, `No language-server backend for ${root} — literal usage matches for "${want}" (file:line of the name, not semantic references):\n` + hits.join("\n"));
-      return finishOut([], `No backend resolved and no tree-sitter/text reference for "${want}" under ${root}.` + EMPTY_HINT);
+      return finishOut([], `No backend resolved and no tree-sitter/text reference for "${want}" under ${root}.` + EMPTY_HINT + widenRootHint(root));
     }
     if (!backendName) return err(`No backend resolved. Pass backend=clangd|roslyn|typescript|pyright, set VTS_BACKEND, or ensure the project root has compile_commands.json (C++), a .sln/.csproj (C#), a tsconfig/package.json (JS/TS), or a pyproject.toml/*.py (Python).`);
     const max = Number(a.maxResults) || MAX_RESULTS;
@@ -2965,7 +3005,7 @@ export async function runTool(name, a = {}) {
             : ladder;
           const hits = scanTextUnder(root, String(a.q), Math.min(pmax, 60));
           if (hits.length) return finishOut(hits, `clangd can't serve this tree fast (${why}) — literal text matches for "${a.q}" (file:line, not a semantic decl):\n` + hits.join("\n") + buildHint + autoNote + descend);
-          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + autoNote + descend + EMPTY_HINT);
+          return finishOut([], `clangd can't serve this tree fast (${why}) and no syntactic/text match for "${a.q}" under ${root}.` + buildHint + autoNote + descend + EMPTY_HINT + widenRootHint(root));
         }
       }
       // Render a successful symbol hit set — shared by the primary path and the census fallback below, so a
@@ -3041,7 +3081,7 @@ export async function runTool(name, a = {}) {
         const intentSteer = process.env.VTS_CONCEPT_STEER !== "0" && /\S\s+\S/.test(String(a.q).trim())
           ? `\n[ladder: that reads like an INTENT, not a symbol name. Descend to the fuzzy rung — concept_search q="${a.q}" (repo-mined concept dictionary, no embeddings, still file:line).]`
           : "";
-        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert + intentSteer);
+        return finishOut([], adv + `No symbols matching "${a.q}" (backend: ${backendName}).` + EMPTY_HINT + clangdIndexAdvisory(backendName, root, null) + emptyCert + intentSteer + widenRootHint(root));
       }
       // confidence-adaptive focus + steers + cert (shared with the census fallback above).
       return renderFoundSymbols(syms, backendName, adv);

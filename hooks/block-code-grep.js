@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 // inside quotes is part of a grep pattern — `grep "FooA|FooB" src/x.cpp` used to split into two
 // non-matching segments and sail through the hook entirely (the top bypass `vts discover` surfaced).
 import { splitSegments } from "../server/shell-split.js";
+import { classifyPowerShellSearch } from "../server/psearch.js";
 // Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
@@ -799,6 +800,44 @@ process.stdin.on("end", () => {
       }
       if (s) emitWarn(s + setup);
     }
+    process.exit(0);
+  }
+
+  // PowerShell — the OTHER shell tool. This environment exposes it alongside Bash, and it was missing from the
+  // PreToolUse matcher entirely, so `Select-String -Path <src> -Pattern "A|B|C"` ran completely unenforced (and
+  // uncounted by `vts discover`, which quietly inflated the reported share of search routed through vts).
+  // Unlike the Bash path this NEVER rewrites the command — see the header of server/psearch.js: a naive
+  // PowerShell parser would silently rewrite into a DIFFERENT search, which is worse than not intervening. So
+  // it classifies and hands back a ready call for the model to run itself.
+  if (toolName === "PowerShell" || toolName === "Powershell") {
+    const ps = classifyPowerShellSearch(ti.command || "");
+    if (!ps) process.exit(0);
+    if (ORCH) {
+      const task = ps.kind === "files" ? `find file named ${ps.pattern}` : `find ${ps.pattern} in code`;
+      process.stderr.write(orchMsg(task, ps.target) + "\n");
+      process.exit(2);
+    }
+    const call = ps.kind === "files"
+      ? `find_files q="${ps.pattern}"`
+      : ps.symbol
+        ? `search_symbol q="${ps.symbol}"`
+        : `search_text q="${clip(ps.pattern, 60)}"`;
+    const msg = KO
+      ? `✨ vs-token-safer: PowerShell 코드검색 감지 — \`${clip(ti.command || "", 70)}\`\n→ 대신 ${call} 로 다시 실행하세요 — file:line로 토큰캡(보통 ~90%↓), grep 거짓양성 없음.\n(PowerShell은 자동 변환하지 않습니다 — 잘못된 변환이 다른 결과를 조용히 되돌려주기 때문. 끄기: VTS_ENFORCE=0)`
+      : `✨ vs-token-safer: PowerShell code search detected — \`${clip(ti.command || "", 70)}\`\n→ re-run as ${call} — token-capped to file:line (~90% smaller), no grep false positives.\n(PowerShell is never auto-rewritten — a wrong rewrite would silently return a different result. Disable: VTS_ENFORCE=0)`;
+    // WARN-ONLY BY DEFAULT for the first release of this channel (VTS_PS_BLOCK=1 opts into blocking a named-
+    // symbol hunt, the way the Grep tool already does). Reasoning: for a user whose language server is not set
+    // up, a block is a wall with less behind it than what it blocked, and this project already learned that
+    // shape — VTS_EDIT_BLOCK_AFTER defaults to 0 because a wall the agent cannot satisfy makes it fight rather
+    // than switch. The channel was invisible until now, so there is no conversion data yet; warn first, let
+    // `vts discover` measure the newly-visible channel, then decide on evidence. (With the local orchestrator
+    // installed the block above still applies — there a working alternative demonstrably exists.)
+    const psBlock = /^(1|true|on|yes)$/i.test(String(process.env.VTS_PS_BLOCK || ""));
+    if (psBlock && grepBlockOn() && ps.kind === "content" && ps.symbol) {
+      process.stderr.write(msg + setup + "\n");
+      process.exit(2);
+    }
+    emitWarn(msg + setup);
     process.exit(0);
   }
 

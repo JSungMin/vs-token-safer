@@ -2571,6 +2571,115 @@ const statusStaleOk =
   /STALE: 7 file\(s\)/.test(stNote({ stale: true, changed: 7 })) &&       // stale → names the count
   /\/vs-token-safer:update/.test(stNote({ stale: true, changed: 7 }));    // → points at the refresh command
 
+// ── PowerShell is an enforced, counted search channel ─────────────────────────────────────────────────────
+// This environment exposes a `PowerShell` tool ALONGSIDE `Bash`. The PreToolUse matcher listed only
+// Bash|Grep|Glob|Edit|MultiEdit|Read, so `Select-String -Path <src> -Pattern "A|B|C"` ran completely
+// unenforced — and `vts discover` could not count it either, so the reported share of search routed through
+// vts was computed over a channel set that excluded it. TWO halves must hold: the classifier must be right,
+// AND the hook must actually be WIRED to the tool (the wiring is the half that failed silently, and no
+// behavioural test can see it — hence the static matcher assertion).
+const psearchOk = await (async () => {
+  const { classifyPowerShellSearch, symbolIn } = await import("../server/psearch.js");
+  const kind = (c) => { const r = classifyPowerShellSearch(c); return r ? r.kind : null; };
+  // Real bypasses (shapes observed live on an Unreal tree) must be caught…
+  const caught =
+    kind(String.raw`$d="G:\p\Engine\Source\Runtime\Engine\Classes\PhysicsEngine"; Select-String -Path "$d\ShapeElem.h" -Pattern "GetName|SetName|EAggCollisionShape"`) === "content" &&
+    kind(String.raw`Select-String -Path "$d\ConstraintTypes.h","$d\ConstraintDrives.h" -Pattern "struct FConeConstraint" -ErrorAction SilentlyContinue`) === "content" &&
+    kind(String.raw`sls -Pat "FConeConstraint" -Path src\Physics.cpp`) === "content" &&   // alias + abbreviated param
+    kind(String.raw`Get-ChildItem -Recurse "C:\repo\Source" -Filter "*.h"`) === "files" &&
+    kind(String.raw`gci -Recurse -Include *.cpp C:\repo\Source`) === "files";
+  // …and every NON-search shape must stay silent. A false positive here blocks real work, so these matter
+  // more than the catches: piped filtering of another command's output, logs/docs, a plain listing, and any
+  // command whose file list feeds a file OPERATION (steering that to a token-capped list would drop files).
+  const quiet =
+    kind(`git log --oneline | Select-String "fix"`) === null &&
+    kind(`Get-Content build.log | sls "error"`) === null &&
+    kind(String.raw`Select-String -Path "Saved\Logs\App.log" -Pattern "Error"`) === null &&
+    kind(String.raw`Select-String -Path "README.md" -Pattern "install"`) === null &&
+    kind(String.raw`Get-ChildItem "C:\repo\Source"`) === null &&
+    kind(`ls`) === null &&
+    kind(String.raw`Get-ChildItem -Recurse -Filter "*.cpp" C:\repo | Copy-Item -Destination D:\backup`) === null &&
+    kind(String.raw`Get-ChildItem -Recurse -Filter "*.cpp" C:\repo\Intermediate`) === null &&
+    kind(`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' }`) === null &&
+    kind(`Select-String -Pattern "foo"`) === null &&
+    // The shapes a review of 1,170 real PowerShell commands surfaced as false positives. Each is a SCRIPTED
+    // VALUE or an inverted match, never a search whose bulk output would reach the model — so there are no
+    // tokens to save, no vts tool returns a value into a PowerShell variable, and speaking up only breaks a
+    // working script (or, for -NotMatch, offers a call returning the COMPLEMENT of what was asked).
+    kind(String.raw`Select-String -Path src\a.cpp -Pattern "myVar" -NotMatch`) === null &&
+    kind(String.raw`Select-String -Path src\a.cpp -Pattern "Foo" -Quiet`) === null &&
+    kind(String.raw`$n = (Select-String -Path src\a.cpp -Pattern "Foo").LineNumber`) === null &&
+    kind(String.raw`(Select-String -Path src\a.cpp -Pattern "Foo").Count`) === null &&
+    kind(String.raw`if (Test-Path $f) { Select-String -Path src\a.cpp -Pattern "Foo" }`) === null;
+  // The symbol cue admits the Unreal prefix convention (FFoo/UBar/ATest) and rejects keyword alternations —
+  // and the pattern must BE a symbol, not merely CONTAIN one: `"// TODO: FixMe later"` is prose, and offering
+  // search_symbol q="FixMe" for it answers a different question than the one asked.
+  const symOk =
+    symbolIn("struct FConeConstraint") === "FConeConstraint" &&
+    symbolIn("GetName|SetName") === "GetName" &&
+    symbolIn("TODO|FIXME") === "" &&
+    symbolIn("// TODO: FixMe later") === "" &&
+    symbolIn("float Limit;") === "";
+  // A non-Unreal, non-Windows shape must classify too — every other positive fixture here is a UE/drive-letter
+  // path, so a regression that only broke ordinary repos would otherwise pass.
+  const portableOk =
+    kind(String.raw`Select-String -Path "/home/me/app/src/handlers.py" -Pattern "parse_request"`) === "content" &&
+    kind(String.raw`Get-ChildItem -Recurse ./src -Filter "*.ts"`) === "files";
+  // WIRING: the hook is useless if the tool never reaches it.
+  const hooksJson = JSON.parse(fs.readFileSync(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
+  const matchers = (hooksJson.hooks?.PreToolUse || []).map((h) => String(h.matcher || ""));
+  const wired = matchers.some((m) => /\bPowerShell\b/.test(m) && /\bBash\b/.test(m));
+  // MEASUREMENT: discover must know the channel too, or adoption keeps reading high for the wrong reason.
+  const coreSrc = fs.readFileSync(new URL("../server/core.js", import.meta.url), "utf8");
+  const counted = /classifyPowerShellSearch/.test(coreSrc) && /name === "PowerShell"/.test(coreSrc);
+  return caught && quiet && symOk && portableOk && wired && counted;
+})();
+
+// ── widen-root hint: a too-narrow configured root must not read as "the symbol does not exist" ─────────────
+// The reported failure was a `projectPath` pinned to a module inside a bigger tree: every by-name query for a
+// symbol outside that module came back empty forever (path-less queries keep the configured root by design),
+// which reads as "vts can't find things" and sends an agent back to raw grep. The hint is TEXT ONLY — it must
+// fire when a real enclosing PROJECT exists, stay silent when the searched root is already outermost, and
+// stay silent when the only thing above is a version-controlled container of unrelated repos (naming THAT
+// would widen across foreign projects, void a relative scope, and orphan the compile-DB dir).
+const widenHintOk = await (async () => {
+  const { widenRootHint } = await import("../server/core.js");
+  const base = path.join(os.tmpdir(), `vts-eval-widen-${process.pid}`);
+  const mk = (p) => fs.mkdirSync(p, { recursive: true });
+  const save = process.env.VTS_WIDEN_HINT;
+  try {
+    // (a) module inside a real project → fires and names the parent
+    const proj = path.join(base, "proj");
+    const mod = path.join(proj, "Module");
+    mk(mod);
+    fs.writeFileSync(path.join(proj, "App.sln"), "");
+    fs.writeFileSync(path.join(mod, "package.json"), "{}");
+    const fires = widenRootHint(mod);
+    const firesOk = fires.includes(proj) && /projectPath=/.test(fires);
+    // (b) the parent is only a VCS container of unrelated things → silent
+    const vault = path.join(base, "vault");
+    const solo = path.join(vault, "solo");
+    mk(path.join(vault, ".git"));
+    mk(solo);
+    fs.writeFileSync(path.join(solo, "package.json"), "{}");
+    const vaultQuiet = widenRootHint(solo) === "";
+    // (c) already outermost → silent
+    const top = path.join(base, "top");
+    mk(top);
+    fs.writeFileSync(path.join(top, "package.json"), "{}");
+    const topQuiet = widenRootHint(top) === "";
+    // (d) kill switch
+    process.env.VTS_WIDEN_HINT = "0";
+    const offQuiet = widenRootHint(mod) === "";
+    return firesOk && vaultQuiet && topQuiet && offQuiet;
+  } catch {
+    return false;
+  } finally {
+    if (save === undefined) delete process.env.VTS_WIDEN_HINT; else process.env.VTS_WIDEN_HINT = save;
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
 // ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
 // big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
@@ -2770,6 +2879,8 @@ const rows = [
   ["vts index --status staleness note (indexStatusStaleNote): null→silent, fresh→current, stale→N files + /vs-token-safer:update", statusStaleOk, "true", statusStaleOk],
   ["no Windows console storm: every child-process spawn sets windowsHide (console-less MCP / detached indexer → a console+terminal window per child)", noConsoleWindowOk, "true", noConsoleWindowOk],
   ["auto-index bounds: size ceiling refuses an unattended build on a huge tree, lock held by pid LIVENESS (not a TTL), stop/status are honest", autoIndexBoundsOk, "true", autoIndexBoundsOk],
+  ["PowerShell search channel: Select-String/Get-ChildItem classified (aliases, abbreviated params, non-Windows paths), scripted-value/-NotMatch/prose shapes silent, hook WIRED to the tool, counted by discover", psearchOk, "true", psearchOk],
+  ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
