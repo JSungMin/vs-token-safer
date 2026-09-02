@@ -498,6 +498,11 @@ export function pickBackend(root) {
 const ROOT_FILE_MARKERS = [
   "compile_commands.json", "tsconfig.json", "jsconfig.json", "package.json",
   "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile",
+  // Unreal / Perforce depot roots. A UE source depot carries `UE5.sln` only AFTER GenerateProjectFiles has
+  // run, and a Perforce workspace has no `.git` to fall back on — so a freshly-synced depot matched NOTHING
+  // and a path under Engine/Source/… climbed to the filesystem root and resolved to null. These are the
+  // files that sit at a depot root by construction.
+  "GenerateProjectFiles.bat", "GenerateProjectFiles.sh", "Setup.bat", "Setup.sh", ".p4config",
 ];
 const ROOT_GLOB_MARKERS = [/\.uproject$/i, /\.sln$/i, /\.csproj$/i];
 export function findProjectRoot(startPath) {

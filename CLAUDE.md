@@ -352,6 +352,29 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   clamped `[base,VTS_WARM_CAP_MAX]`; explicit `VTS_*_OPEN_CAP` wins), and `prewarmBackends(root,picked)`
   (`VTS_PREWARM_BACKENDS` auto→[dominant] / `all`→every detected lang dominant-first / comma-list). `index.js`
   boot warms each selected backend with its adaptive cap → a multi-lang repo warms in language proportion.
+- `server/psearch.js` + the `PowerShell` matcher entry — THE SECOND SHELL. This environment exposes a
+  `PowerShell` tool ALONGSIDE `Bash`; the PreToolUse matcher listed only `Bash|Grep|Glob|Edit|MultiEdit|Read`,
+  so `Select-String -Path <src> -Pattern "A|B|C"` ran fully unenforced AND uncounted (discover's "share routed
+  through vts" was computed over a channel set that excluded it — it read high for the wrong reason). Found
+  live on a UE tree. `classifyPowerShellSearch(cmd)` is PURE (shared by the hook and `matchBypass`, like
+  `shell-split.js`) → `null | {kind:"content"|"files", pattern, target, symbol}`. It **never rewrites** — a
+  naive PowerShell parser (backtick escapes, `$d` interpolation, `-Pat` prefix binding, positional args) would
+  silently rewrite into a DIFFERENT search, which is worse than not intervening; the hook emits a READY
+  `search_symbol`/`search_text`/`find_files` call instead. Quiet by construction: a piped `… | Select-String`
+  (filtering another command's output), a log/doc/config target, any mutating cmdlet in the command
+  (Copy-Item/Remove-Item/… — a file list feeding a file-op must never be steered to a CAPPED list), a
+  non-recursive `Get-ChildItem`, `-NotMatch` (an inverted match — any call we suggest would return the
+  COMPLEMENT of what was asked), and every SCRIPTED-VALUE shape (`-Quiet`, `.LineNumber`/`.Count`,
+  `$x = (Select-String …)`, an `if (…)` test) — those put no bulk text in context, so there is nothing to save,
+  and no vts tool can return a value into a PowerShell variable. The pattern must BE a symbol, not merely
+  CONTAIN one (`"// TODO: FixMe later"` is prose; `symbolIn` requires every `|` alternative to be a whole
+  identifier / `Foo::Bar` / `struct Foo`) — the Grep tool's whole-pattern rule. **WARN-ONLY by default**
+  (`VTS_PS_BLOCK=1` opts into blocking a symbol hunt): the channel was invisible until now so there is no
+  conversion data, and this project already learned that a wall the agent can't satisfy makes it fight rather
+  than switch (`VTS_EDIT_BLOCK_AFTER` defaults to 0 for the same reason). With qvts installed it still blocks —
+  there a working alternative demonstrably exists. Eval guard 98 asserts BOTH halves — the classifier AND that
+  hooks.json is actually wired to the tool (the wiring is the half that failed silently and no behavioural test
+  sees it). Known, accepted: `Get-Content F.cpp | Select-String X` is piped, so ignored by design.
 - `hooks/block-code-grep.js` + `hooks.json` — grep-block. A Bash code search (grep/rg/ack/ag/findstr/
   `git grep`/`find -name`) that is a SINGLE safe segment is REWRITTEN to the equivalent `vts` CLI command via
   PreToolUse `updatedInput` (token-capped, flow unbroken); anything ambiguous (pipeline, unsafe pattern,
@@ -414,6 +437,26 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   orphan launch: 44 console/terminal processes per run without the flag, 0 with it). Eval guard 96 scans every
   spawn site — it under-detected at first because quote-blanking mis-paired on a regex literal like `/^"|"$/`,
   so it now blanks only comments + template literals. Verify a guard FAILS before trusting it.
+- **A miss must never look like an absence.** A path-less query keeps the CONFIGURED root by design (only a
+  query carrying a `path` resolves elsewhere), so a `projectPath` pinned at `<depot>/TSGame` makes every symbol
+  living in `<depot>/Engine` empty FOREVER — which reads as "vts can't find things" and is exactly what sends
+  an agent back to raw grep (live: `search_symbol FConeConstraint` empty at the module root, 5 correct hits one
+  level up). `core.js widenRootHint(root)` appends one line to an empty symbol result naming the enclosing
+  project root (`findProjectRoot(dirname(root))`), leading with the PER-CALL `projectPath=` (reversible) and
+  offering the permanent `vts setup --projectPath` second (it repoints `dbDirFor` and drops a relative scope).
+  GATED: the parent must carry a real project marker (`.sln`/`.uproject`/`compile_commands.json`/`package.json`/
+  …), never merely a `.git` — findProjectRoot falls back to a repo boundary, which climbs into a notes vault or
+  a checkout-of-checkouts, and pointing there would widen across foreign repos. Silent when already outermost.
+  `VTS_WIDEN_HINT=0`. Eval guard 99. Also added UE/P4 depot markers to `ROOT_FILE_MARKERS`
+  (`GenerateProjectFiles.bat|.sh`, `Setup.bat|.sh`, `.p4config`): a freshly-synced Perforce depot has no `.git`
+  and no `UE5.sln` until GenerateProjectFiles has run, so a path under `Engine/Source/…` resolved to null.
+  **REJECTED (do not re-propose): retrying an empty path-less `search_symbol` at the enclosing root.** Critic-
+  verified against source: `getClient` keys on `${backend}|${root}`, so the retry spawns a SECOND clangd at a
+  root with no compile DB; `VTS_MAX_BACKENDS` (2) can then LRU-evict the WARM one; the new client has no
+  persisted index so `symbolReady` takes the COLD blocking path (the 369s problem); and `scopeDirs` resolves a
+  relative `scope` against the NEW root → `[]` → whole-tree, silently voiding a deliberate narrowing. All that
+  to re-answer queries whose empty result was already CORRECT (typos, DCE reachability, `safe_delete`'s
+  reference guard). The information deficit is fixed with text, not behaviour.
 - **Unattended work stays bounded, deduped and stoppable.** `ensureAutoIndex` (symindex.js) starts a DETACHED
   `vts index` on any locate over an un-indexed tree — deliberately outliving the session so the next cold start
   is instant. It had a FLOOR (`autoIndexTreeLikely`, ≥`VTS_AUTOINDEX_MIN_FILES` 400) but no CEILING, so a UE
