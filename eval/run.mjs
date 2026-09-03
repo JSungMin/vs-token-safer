@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import { fileURLToPath } from "node:url";
 
 process.env.VTS_CLANGD_CMD = process.execPath;
 process.env.VTS_CLANGD_ARGS = new URL("./_mock-lsp.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
@@ -2680,6 +2681,51 @@ const widenHintOk = await (async () => {
   }
 })();
 
+// ── orchestrator redirect must not WIDEN a call that is already scoped ────────────────────────────────────
+// With qvts installed, a vs-search locate is redirected to it. But `taskFor` renders a natural-language task
+// that carried the ROOT and not the FILE, so `search_text q=X path=<one header>` — which answers instantly and
+// COMPLETE — was handed back as `qvts -p <depot root> --json "find X in code"`, a whole-tree scan replacing a
+// single-header read. The Bash and Glob paths already stay native for a scoped call for exactly this reason;
+// the MCP redirect never got the rule. A named FILE is exempt outright; a named DIR still delegates but must
+// carry its scope into the task.
+const orchScopeOk = await (async () => {
+  const hook = fileURLToPath(new URL("../hooks/orchestrator-redirect.js", import.meta.url));
+  const base = path.join(os.tmpdir(), `vts-eval-orch-${process.pid}`);
+  const dir = path.join(base, "Components");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "ActorComponent.h");
+  fs.writeFileSync(file, "bool bIsEditorOnly;\n");
+  const seen = path.join(base, "seen.json");
+  const run = (suffix, input) => {
+    try { fs.rmSync(seen, { force: true }); } catch { /* fresh */ }
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: `mcp__plugin_vs-token-safer_vs-search__${suffix}`, tool_input: input }),
+      encoding: "utf8",
+      // The eval sets VTS_ORCHESTRATOR_AWARE=0 for hermeticity (so the maintainer's real qvts install cannot
+      // leak into results). orchestratorPresent() checks that kill switch FIRST, so the child must re-enable
+      // it or the redirect never engages and every assertion below trivially "passes" the wrong way.
+      env: { ...process.env, VTS_ORCHESTRATOR_AWARE: "1", VTS_ORCHESTRATOR: "1", VTS_ENFORCE: "1", VTS_ORCH_BLOCK: "1", VTS_ORCH_SEEN_FILE: seen },
+    });
+    return { status: r.status, out: (r.stderr || "") + (r.stdout || "") };
+  };
+  try {
+    const f = run("search_text", { q: "bIsEditorOnly", path: file });
+    const d = run("document_symbols", { path: file });
+    const g = run("search_text", { q: "bIsEditorOnly", path: dir });
+    const n = run("search_symbol", { q: "bIsEditorOnly" });
+    return (
+      f.status === 0 && !/qvts -p/.test(f.out) &&   // a named FILE passes through, silently
+      d.status === 0 && !/qvts -p/.test(d.out) &&
+      g.status === 2 && /under /.test(g.out) &&      // a named DIR delegates WITH its scope
+      n.status === 2                                  // a path-less locate still delegates
+    );
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
 // ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
 // big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
@@ -2881,6 +2927,7 @@ const rows = [
   ["auto-index bounds: size ceiling refuses an unattended build on a huge tree, lock held by pid LIVENESS (not a TTL), stop/status are honest", autoIndexBoundsOk, "true", autoIndexBoundsOk],
   ["PowerShell search channel: Select-String/Get-ChildItem classified (aliases, abbreviated params, non-Windows paths), scripted-value/-NotMatch/prose shapes silent, hook WIRED to the tool, counted by discover", psearchOk, "true", psearchOk],
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
+  ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
