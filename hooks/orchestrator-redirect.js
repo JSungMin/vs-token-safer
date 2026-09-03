@@ -68,6 +68,10 @@ function taskFor(suffix, ti) {
   const q = String(ti.q ?? ti.query ?? "").trim();
   const sym = String(ti.symbol ?? ti.name ?? q).trim();
   const p = String(ti.path ?? ti.file ?? "").trim();
+  // Carry a DIRECTORY scope into the task. A file target never reaches here (those are exempted from the
+  // redirect entirely), but a dir-scoped call still must not silently widen to the whole root — the same
+  // scope-loss the Bash path fixed by folding the grep's own file/dir operand into the delegated task.
+  const scope = p && !/\.[A-Za-z0-9]{1,6}$/.test(p) ? ` under ${p}` : "";
   switch (suffix) {
     case "search_symbol": return `where is symbol ${q || sym} declared`;
     case "def_search": return `where is ${sym || q} defined`;
@@ -77,14 +81,16 @@ function taskFor(suffix, ti) {
     case "document_symbols": return `outline / list the symbols declared in ${p || "this file"}`;
     case "concept_search": return q || sym;
     case "search_text":
-    default: return `find ${q || sym} in code`;
+    default: return `find ${q || sym}${scope || " in code"}`;
   }
 }
 
 const blockOn = () => !off(process.env.VTS_ORCH_BLOCK ?? "1");
 
 // One-time-per-query state so a post-delegation fallback retry isn't blocked again.
-const SEEN_FILE = path.join(os.homedir(), ".vs-token-safer", "orch-seen.json");
+// VTS_ORCH_SEEN_FILE overrides the one-shot dedupe store so a test can drive the block without touching the
+// user's real state (and without its result depending on what they searched five minutes ago).
+const SEEN_FILE = process.env.VTS_ORCH_SEEN_FILE || path.join(os.homedir(), ".vs-token-safer", "orch-seen.json");
 const TTL_MS = (() => { const n = Number(process.env.VTS_ORCH_TTL_MS); return Number.isFinite(n) && n > 0 ? n : 180000; })();
 function seenRecently(key) {
   let m = {};
@@ -142,6 +148,22 @@ process.stdin.on("end", () => {
   if (!orchestratorPresent()) process.exit(0);             // standalone vts → unchanged behavior
 
   const ti = j.tool_input || {};
+
+  // A call that NAMES AN EXISTING FILE is already scoped to that one file — the cheapest, most precise form of
+  // the query. Delegating it LOSES that scope: `taskFor` renders a natural-language task ("find X in code") that
+  // carries the root but not the file, so qvts re-runs it across the whole tree. Live: `search_text
+  // q="bIsEditorOnly" path=".../ActorComponent.h"` answered 4 matches instantly and COMPLETE, while the handed
+  // back command was `qvts -p "<depot root>" --json "find bIsEditorOnly in code"` — a whole-depot scan replacing
+  // a single-header read. This is the same rule the Bash and Glob paths already apply (a `find <subdir> -name X`
+  // and a subdir-scoped Glob stay native precisely because delegating would widen them). The token mandate is
+  // about keeping BULK output out of context, and a file-scoped, token-capped answer already does that.
+  const named = String(ti.path ?? ti.file ?? "").trim();
+  if (named) {
+    let isFile = false;
+    try { isFile = fs.statSync(named).isFile(); } catch { /* missing/unreadable → not a file, fall through */ }
+    if (isFile) process.exit(0); // already minimal and correctly scoped → let it through, silently
+  }
+
   const root = rootFor(ti);
   const task = taskFor(suffix, ti).replace(/"/g, "'");     // keep the handed-back command shell-safe
   const safeRoot = String(root).replace(/"/g, "'");

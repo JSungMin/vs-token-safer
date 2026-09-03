@@ -437,6 +437,15 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   orphan launch: 44 console/terminal processes per run without the flag, 0 with it). Eval guard 96 scans every
   spawn site — it under-detected at first because quote-blanking mis-paired on a regex literal like `/^"|"$/`,
   so it now blanks only comments + template literals. Verify a guard FAILS before trusting it.
+- **Never WIDEN a call that is already scoped.** The Bash path lets a `find <subdir> -name X` run natively and
+  the Glob path lets a subdir-scoped glob through, because delegating them LOSES the scope. `hooks/
+  orchestrator-redirect.js` never got that rule: `rootFor` lifted the root out of a `path` but `taskFor`
+  rendered `find X in code`, so `search_text q=X path=<one header>` — instant and COMPLETE — was handed back as
+  `qvts -p <depot root> --json "find X in code"`, a whole-tree scan replacing a single-header read. Now a call
+  naming an existing FILE is exempt from the redirect outright (silent pass-through), and a call naming a DIR
+  still delegates but carries `under <dir>` into the task. The token mandate is about keeping BULK output out
+  of context — a file-scoped, token-capped answer already does that. Eval guard 100; `VTS_ORCH_SEEN_FILE`
+  overrides the one-shot dedupe store for tests.
 - **A miss must never look like an absence.** A path-less query keeps the CONFIGURED root by design (only a
   query carrying a `path` resolves elsewhere), so a `projectPath` pinned at `<depot>/TSGame` makes every symbol
   living in `<depot>/Engine` empty FOREVER — which reads as "vts can't find things" and is exactly what sends
