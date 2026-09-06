@@ -175,9 +175,9 @@ function roslynHostCanRun(dll, host) {
   if (env("VTS_ROSLYN_CMD")) return true;   // the user picked the launcher; trust it
   const need = roslynRequiredMajor(dll);
   if (!need) return true;
-  let out = "";
+  let out;
   try { out = execFileSync(host, ["--list-runtimes"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] }); }
-  catch { out = ""; }
+  catch { out = ""; }   // no host at all → same answer as "wrong host": csharp-ls
   const ok = hostHasRuntime(out, need);
   if (!ok) console.error(`[vs-token-safer] Roslyn LSP dll needs .NET ${need}.x but "${host}" has no such runtime — falling back to csharp-ls (set VTS_ROSLYN_CMD/roslynCmd, or install the runtime, to use the MS engine).`);
   return ok;
