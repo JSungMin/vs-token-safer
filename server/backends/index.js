@@ -94,8 +94,11 @@ function findAllShallow(root, re, depth = 2) {
 // Dev Kit use), bundled with the VS Code C# extension. Highest extension version wins. This is the
 // preferred C# engine; csharp-ls is the fallback when it's absent. Override with VTS_ROSLYN_CMD/ARGS.
 function findRoslynMsDll() {
-  const override = env("VTS_ROSLYN_DLL");
-  if (override) return fs.existsSync(override) ? override : null;
+  // Env or the `roslynDll` config key (persisted by `vts setup --roslynDll <path|off>`). A path that does not
+  // exist (or the literal "off") disables the MS engine on purpose — e.g. a Unity project on a machine whose
+  // only .NET is older than the one the bundled dll targets, where csharp-ls is the engine that actually runs.
+  const override = cfgCmd("VTS_ROSLYN_DLL", "roslynDll", "");
+  if (override) return override !== "off" && fs.existsSync(override) ? override : null;
   const extRoot = path.join(os.homedir(), ".vscode", "extensions");
   let dirs;
   try { dirs = fs.readdirSync(extRoot).filter((n) => n.startsWith("ms-dotnettools.csharp-")); } catch { return null; }
@@ -106,7 +109,29 @@ function findRoslynMsDll() {
   }
   return null;
 }
-const ROSLYN_MS_DLL = findRoslynMsDll();
+const ROSLYN_MS_DLL_FOUND = findRoslynMsDll();
+
+// The MS dll declares the runtime it needs in its runtimeconfig.json ("framework": {"version": "10.0.0"}).
+// Read the major so the host preflight below can tell "wrong host" from "no host".
+function roslynRequiredMajor(dll) {
+  try {
+    const rc = JSON.parse(fs.readFileSync(dll.replace(/\.dll$/i, ".runtimeconfig.json"), "utf8"));
+    const v = String(rc?.runtimeOptions?.framework?.version || "");
+    const m = v.match(/^(\d+)/);
+    return m ? Number(m[1]) : 0;
+  } catch { return 0; }
+}
+
+// Does `dotnet --list-runtimes` output list a Microsoft.NETCore.App of the required major (or newer —
+// the dll's runtimeconfig says rollForward: Major)? Pure so the eval can pin it.
+export function hostHasRuntime(listRuntimesOutput, requiredMajor) {
+  if (!requiredMajor) return true;
+  for (const line of String(listRuntimesOutput || "").split(/\r?\n/)) {
+    const m = line.match(/^Microsoft\.NETCore\.App\s+(\d+)\./);
+    if (m && Number(m[1]) >= requiredMajor) return true;
+  }
+  return false;
+}
 
 // VS Code's per-user data dir (where globalStorage lives) is OS-specific: Windows %APPDATA%\Code,
 // macOS ~/Library/Application Support/Code, Linux ~/.config/Code. Hardcoding the Windows path made the
@@ -138,7 +163,26 @@ function findRoslynDotnetHost() {
   }
   return "dotnet";
 }
-const ROSLYN_DOTNET = ROSLYN_MS_DLL ? findRoslynDotnetHost() : "dotnet";
+const ROSLYN_DOTNET = ROSLYN_MS_DLL_FOUND ? findRoslynDotnetHost() : "dotnet";
+
+// **Preflight the host before committing to the MS engine.** Finding the dll is not enough: if the host we
+// would launch it with lacks the runtime the dll targets (net10 dll, only a .NET 9 SDK on the box), the
+// server exits with "You must install .NET" — and worse, the csharp-ls fallback never got a chance because
+// the dll's presence also switched `args()` to MS-style flags, which csharp-ls rejects with its usage text.
+// So: dll found AND host can run it → MS engine; otherwise → csharp-ls with `--solution`, logged once.
+function roslynHostCanRun(dll, host) {
+  if (!dll) return false;
+  if (env("VTS_ROSLYN_CMD")) return true;   // the user picked the launcher; trust it
+  const need = roslynRequiredMajor(dll);
+  if (!need) return true;
+  let out = "";
+  try { out = execFileSync(host, ["--list-runtimes"], { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] }); }
+  catch { out = ""; }
+  const ok = hostHasRuntime(out, need);
+  if (!ok) console.error(`[vs-token-safer] Roslyn LSP dll needs .NET ${need}.x but "${host}" has no such runtime — falling back to csharp-ls (set VTS_ROSLYN_CMD/roslynCmd, or install the runtime, to use the MS engine).`);
+  return ok;
+}
+const ROSLYN_MS_DLL = roslynHostCanRun(ROSLYN_MS_DLL_FOUND, ROSLYN_DOTNET) ? ROSLYN_MS_DLL_FOUND : null;
 
 const exists = (root, ...names) => names.some((n) => {
   try { return fs.existsSync(path.join(root, n)); } catch { return false; }
@@ -427,7 +471,7 @@ export const BACKENDS = {
   // via the `afterInit` hook (a `solution/open` / `project/open` notification), then we wait for
   // `workspace/projectInitializationComplete` before the first query.
   roslyn: {
-    cmd: env("VTS_ROSLYN_CMD", ROSLYN_MS_DLL ? ROSLYN_DOTNET : "csharp-ls"),
+    cmd: cfgCmd("VTS_ROSLYN_CMD", "roslynCmd", ROSLYN_MS_DLL ? ROSLYN_DOTNET : "csharp-ls"),
     args: (root) => {
       const ov = splitArgs(env("VTS_ROSLYN_ARGS"));
       if (ov) return ov;
@@ -447,7 +491,14 @@ export const BACKENDS = {
           }
           await client.waitForNotification("workspace/projectInitializationComplete", 180000);
         }
-      : null,
+      // csharp-ls: it streams `$/progress` begin/end around "Loading solution …". Block on the end (bounded by
+      // VTS_LSP_INDEX_WAIT_MS) so the FIRST workspace/symbol doesn't race the load and come back empty — a
+      // fresh process (CLI, or the first MCP query after a cold start) answered 0 symbols on a solution that
+      // loads in ~2s, and "COMPLETE (0)" looked like a real answer.
+      : async (client) => {
+          await client.waitForNotification("$/progress", envInt("VTS_LSP_INDEX_WAIT_MS", 120000),
+            (p) => p && p.value && p.value.kind === "end");
+        },
   },
   // JS/TS via typescript-language-server (wraps the official tsserver). Shipped as an npm dep in
   // server/package.json → auto-installed for every user (no manual `npm i -g`); we resolve its bundled
