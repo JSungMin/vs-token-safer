@@ -172,7 +172,10 @@ const ROSLYN_DOTNET = ROSLYN_MS_DLL_FOUND ? findRoslynDotnetHost() : "dotnet";
 // So: dll found AND host can run it → MS engine; otherwise → csharp-ls with `--solution`, logged once.
 function roslynHostCanRun(dll, host) {
   if (!dll) return false;
-  if (env("VTS_ROSLYN_CMD")) return true;   // the user picked the launcher; trust it
+  // A user-set launcher is preflighted too — with THAT launcher. If it is a dotnet host it lists the
+  // runtimes and the MS engine proceeds; if it is csharp-ls (or a wrapper around it) `--list-runtimes`
+  // is not a thing it answers, so we correctly take the csharp-ls path with `--solution` instead of
+  // handing it MS-style flags (which it rejects with its usage text).
   const need = roslynRequiredMajor(dll);
   if (!need) return true;
   let out;
@@ -182,7 +185,7 @@ function roslynHostCanRun(dll, host) {
   if (!ok) console.error(`[vs-token-safer] Roslyn LSP dll needs .NET ${need}.x but "${host}" has no such runtime — falling back to csharp-ls (set VTS_ROSLYN_CMD/roslynCmd, or install the runtime, to use the MS engine).`);
   return ok;
 }
-const ROSLYN_MS_DLL = roslynHostCanRun(ROSLYN_MS_DLL_FOUND, ROSLYN_DOTNET) ? ROSLYN_MS_DLL_FOUND : null;
+const ROSLYN_MS_DLL = roslynHostCanRun(ROSLYN_MS_DLL_FOUND, cfgCmd("VTS_ROSLYN_CMD", "roslynCmd", ROSLYN_DOTNET)) ? ROSLYN_MS_DLL_FOUND : null;
 
 const exists = (root, ...names) => names.some((n) => {
   try { return fs.existsSync(path.join(root, n)); } catch { return false; }
