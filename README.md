@@ -394,7 +394,8 @@ searches hit into the warm-up set, so each session leaves the index warmer.
 
 - **Node.js ≥ 18** on PATH.
 - **C/C++ → clangd ≥ 22** ([releases](https://github.com/clangd/clangd/releases)). The clangd 19.1.x bundled with Visual Studio **deadlocks** indexing real Unreal TUs in server mode; vts warns on an older one. Needs a `compile_commands.json`. Prefer the **full LLVM release** — it bundles `clangd-indexer` alongside `clangd`, which `vts preindex` uses for an instant static index (see *Big trees: scope &amp; pre-index*).
-- **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) — vts auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its runtime from the bundle. Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`.
+- **C#/.NET → a Roslyn LSP.** Install the VS Code C# extension (`ms-dotnettools.csharp`) — vts auto-detects `Microsoft.CodeAnalysis.LanguageServer` and its runtime from the bundle. Fallback: `dotnet tool install --global csharp-ls`. Needs a `.sln`/`.csproj`. vts preflights the host: if the bundled dll targets a newer .NET than any runtime on the box, it says so on stderr and uses `csharp-ls` instead of failing silently.
+  - **Unity projects:** Unity writes several `.csproj` but no `.sln` — csharp-ls opens only one, so make a solution once (`dotnet new sln && dotnet sln add *.csproj`; keep it gitignored). If `dotnet` isn't on the PATH the MCP host inherits, persist a launcher: `vts setup --roslynCmd <script that exports DOTNET_ROOT and execs csharp-ls>` (or set `VTS_ROSLYN_CMD`).
 - **JS/TS → typescript-language-server, Python → pyright.** Ship as plugin deps, install automatically on the first session (one-time ~50 MB; JS/TS wants Node 20+, skipped on 18).
 - **Mixed repo?** A query that targets a file uses that file's own language backend — a `.py`/`.ts` inside a C++/C# (clangd/roslyn-rooted) tree gets pyright/typescript automatically, so vts works in a UE tree with a Python tooling dir without a manual `backend=`. This even **overrides a pinned `backend` / `VTS_BACKEND`** when they conflict: one global server serves every repo you touch, so a `backend:"clangd"` set for a C++ project never sends another repo's `.js`/`.cs`/`.py` to clangd (which would answer `-32001 invalid AST`). A query with no file target (e.g. `search_symbol` by name) keeps the pinned backend.
 
@@ -459,8 +460,8 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | — | `VTS_MAX_BACKENDS` | `2` | Max concurrently-live language servers (LRU-evict past the cap). |
 | — | `VTS_BACKEND_IDLE_MS` | `300000` | Idle language server shut down after this (`0` = off). |
 | `clangdCmd` | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd executable (persist via `vts setup --clangdCmd <path>` — VS-bundled 19.1.x deadlocks UE, use ≥ 22) / args. |
-| — | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll`. |
-| — | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | Override the C# LSP. |
+| `roslynDll` | `VTS_ROSLYN_DLL` | auto | Path to a specific `Microsoft.CodeAnalysis.LanguageServer.dll`; `off` (or a non-existent path) disables the MS engine → `csharp-ls`. |
+| `roslynCmd` | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | Override the C# LSP launcher (persist via `vts setup --roslynCmd <path>`) / args. |
 | — | `VTS_TS_CMD` / `VTS_PY_CMD` (+ `_ARGS`) | bundled | Override the JS/TS / Python LSP. |
 | — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | Files the JS/TS / Python warm-up opens. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | Per-request LSP timeout. Raise for a cold, large index. |
@@ -525,6 +526,7 @@ Precedence: **`VTS_*` env > `~/.vs-token-safer/config.json` > default.**
 | `GenerateClangDatabase` fails: "Unable to find valid C++ toolchain for Clang x64" | Targets build with clang-cl | Add **`-Compiler=VisualCpp`** to the UBT command. |
 | clangd resolves only header-free symbols | Compile DB has no include dirs | Use a UBT-generated DB (it includes the paths). |
 | No C# results / "No backend resolved" | Roslyn engine not found | Install the VS Code C# extension, or `csharp-ls`; or set `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD`. |
+| C# answers `COMPLETE (0)` for a symbol that exists | csharp-ls was queried before its solution finished loading, or the MS dll's runtime is missing | Update to ≥ 1.1.7 (vts now waits for csharp-ls's load-complete and preflights the runtime); check stderr for the "falling back to csharp-ls" line; on Unity trees add a `.sln` (see *Unity projects*). |
 | No JS/TS or Python results | Bundled LSP didn't install (offline first run) | Re-run the session, or set `VTS_TS_CMD` / `VTS_PY_CMD`. |
 | Code search blocked when you wanted plain grep | The hook is steering you to the index | `VTS_ENFORCE=0` lets grep through. |
 | Locate / grep redirected to `qvts` | A local orchestrator (qvts / vts-local-orchestrator) is on PATH, so the LOCATE tools + Bash/Grep code-search are delegated to it | Run the suggested `qvts` command (returns a compact `file:line`), or set `VTS_ORCH_BLOCK=0` for warn-only. |

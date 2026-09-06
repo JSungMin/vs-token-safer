@@ -79,6 +79,7 @@ Commands:
                  [--genCompileDb dry|apply] — also generate the C++ compile DB in this step (dry-run prints
                  the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
                  [--clangdCmd <path>] — persist the clangd ≥ 22 binary path (VS-bundled 19.1.x deadlocks UE).
+                 [--roslynCmd <path>] [--roslynDll <path|off>] — persist the C# launcher / pin or disable the MS Roslyn dll.
   serve          Start the local dashboard (127.0.0.1 only, nothing transmitted) — savings trend, language
                  mix, per-tool savings, and the include-graph fan-in as an interactive 3D force graph (Three.js,
                  vendored locally — no CDN). [--port N (default 8731) --projectPath <dir> --open (launch browser)]
