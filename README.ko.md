@@ -453,7 +453,9 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | — | `VTS_BACKEND_IDLE_MS` | `300000` | 이만큼 유휴인 언어 서버는 종료 (`0`이면 끔). |
 | `clangdCmd` | `VTS_CLANGD_CMD` / `VTS_CLANGD_ARGS` | `clangd` | clangd 실행 파일 (`vts setup --clangdCmd <경로>`로 영속 — VS 번들 19.1.x는 UE에서 교착, ≥ 22 권장) / 인자. |
 | `roslynDll` | `VTS_ROSLYN_DLL` | auto | 특정 `Microsoft.CodeAnalysis.LanguageServer.dll` 경로. `off`(또는 없는 경로)면 MS 엔진을 끄고 `csharp-ls` 를 쓴다. |
-| `roslynCmd` | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | C# LSP 실행 파일(`vts setup --roslynCmd <path>` 로 저장) / 인자. |
+| `roslynCmd` | `VTS_ROSLYN_CMD` / `VTS_ROSLYN_ARGS` | auto → `csharp-ls` | C# LSP 실행 파일(`vts setup --roslynCmd <path>` 로 저장, 또는 `vts setup --csharp apply` 가 써 준다) / 인자. |
+| `hookNoise` | `VTS_HOOK_NOISE` | `full` | `quiet` 면 호출마다 붙는 안내(읽기·편집 지도, 오케스트레이터 우회)를 끈다. 차단·재작성은 그대로. 안내 하나가 60~120 토큰이라 긴 세션에서는 절약보다 클 수 있다. |
+| `lang` | `VTS_LANG` | OS 로케일 | 안내·차단 문구 언어 `ko` \| `en`. |
 | — | `VTS_TS_CMD` / `VTS_PY_CMD` (+ `_ARGS`) | 번들 | JS/TS · Python LSP 오버라이드. |
 | — | `VTS_TS_OPEN_CAP` / `VTS_PY_OPEN_CAP` | `60` | JS/TS · Python 워밍업이 여는 파일 수. |
 | — | `VTS_LSP_TIMEOUT_MS` | `30000` | LSP 요청별 타임아웃. 차갑고 큰 인덱스면 올리세요. |
@@ -518,7 +520,7 @@ cd vs-token-safer/server && npm install && npm link   # `vts` 제공
 | `GenerateClangDatabase` 실패: "Unable to find valid C++ toolchain for Clang x64" | 타깃이 clang-cl로 빌드 | UBT 명령에 **`-Compiler=VisualCpp`** 추가. |
 | clangd가 헤더 없는 심볼만 해석 | 컴파일 DB에 include 경로 없음 | UBT 생성 DB 사용(경로 포함). |
 | C# 결과 없음 / "No backend resolved" | Roslyn 엔진 못 찾음 | VS Code C# 확장 설치, 또는 `csharp-ls`; 또는 `VTS_ROSLYN_DLL` / `VTS_ROSLYN_CMD` 설정. |
-| 있는 심볼인데 C# 가 `COMPLETE (0)` | csharp-ls 가 솔루션 로딩 전에 질의됐거나, MS dll 이 요구하는 .NET 런타임이 없음 | ≥ 1.1.7 로 갱신(로딩 완료를 기다리고 런타임을 사전 점검한다) · stderr 의 "falling back to csharp-ls" 확인 · Unity 트리는 `.sln` 을 만든다(`dotnet new sln && dotnet sln add *.csproj`) · `dotnet` 이 PATH 에 없으면 `vts setup --roslynCmd <DOTNET_ROOT 를 싣는 래퍼>`. |
+| 있는 심볼인데 C# 가 `COMPLETE (0)` | csharp-ls 가 솔루션 로딩 전에 질의됐거나, MS dll 이 요구하는 .NET 런타임이 없음 | ≥ 1.1.7 로 갱신 · stderr 의 "falling back to csharp-ls" 확인 · **`vts setup --csharp apply`** 가 Unity 트리의 `.sln` 과 DOTNET_ROOT 래퍼(roslynCmd)를 써 준다 (1.1.9). |
 | JS/TS·Python 결과 없음 | 번들 LSP 미설치(오프라인 첫 실행) | 세션 재실행, 또는 `VTS_TS_CMD` / `VTS_PY_CMD` 설정. |
 | 그냥 grep을 원했는데 코드 검색이 차단됨 | 훅이 인덱스로 유도 | `VTS_ENFORCE=0`이면 grep 통과. |
 | locate / grep이 `qvts`로 리다이렉트됨 | 로컬 오케스트레이터(qvts / vts-local-orchestrator)가 PATH에 있어 LOCATE 도구 + Bash/Grep 코드검색이 위임됨 | 안내된 `qvts` 명령 실행(압축 `file:line` 반환), 또는 `VTS_ORCH_BLOCK=0`으로 경고만. |
