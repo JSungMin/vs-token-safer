@@ -20,11 +20,32 @@ import path from "node:path";
 // locate/read to it WHEN PRESENT — without changing guidance for standalone vts users. Opt out with
 // VTS_ORCHESTRATOR_AWARE=0; force on with VTS_ORCHESTRATOR=1. Detection: qvts on PATH, or the orchestrator's
 // global config (~/.vts-local/config.json). Cached for the process.
+// ---- hook noise level ----
+// The PreToolUse hooks add "additional context" nudges (read-steer, edit-steer, orchestrator redirect) to
+// MOST Bash/Edit calls. Each is ~60-120 tokens; over a long session that overhead can rival the tokens the
+// plugin saved. `hookNoise` = "full" (default, nudges on) | "quiet" (blocks/rewrites stay, nudges off).
+// Precedence: VTS_HOOK_NOISE > config `hookNoise` > "full". The per-nudge env switches (VTS_READ_STEER,
+// VTS_EDIT_WARN, VTS_ORCHESTRATOR_AWARE) still win when set explicitly — quiet is the one-knob default.
+export function parseHookNoise(v) {
+  return String(v ?? "").trim().toLowerCase() === "quiet" ? "quiet" : "full";
+}
+let _noiseCache;
+export function hookNoise() {
+  if (_noiseCache !== undefined) return _noiseCache;
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json"), "utf8")) || {}; } catch { /* none */ }
+  _noiseCache = parseHookNoise(process.env.VTS_HOOK_NOISE || cfg.hookNoise);
+  return _noiseCache;
+}
+
 let _orchCache;
 export function orchestratorPresent() {
   if (_orchCache !== undefined) return _orchCache;
   _orchCache = (() => {
     if (/^(0|false|off|no)$/i.test(process.env.VTS_ORCHESTRATOR_AWARE || "")) return false;
+    // quiet mode: the redirect nudge is exactly the kind of per-call text quiet turns off (a forced
+    // VTS_ORCHESTRATOR=1 still wins below).
+    if (hookNoise() === "quiet" && !/^(1|true|on|yes)$/i.test(process.env.VTS_ORCHESTRATOR || "")) return false;
     if (/^(1|true|on|yes)$/i.test(process.env.VTS_ORCHESTRATOR || "")) return true;
     const exts = process.platform === "win32" ? ["", ".cmd", ".exe", ".ps1"] : [""];
     for (const d of (process.env.PATH || "").split(path.delimiter)) {

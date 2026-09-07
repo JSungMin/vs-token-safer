@@ -43,7 +43,7 @@ export const PROJECT_PATH = cfg("VTS_PROJECT_PATH", "projectPath", "");
 export const BACKEND = cfg("VTS_BACKEND", "backend", ""); // "clangd" | "roslyn" | "" (auto)
 export const MAX_RESULTS = parseInt(cfg("VTS_MAX_RESULTS", "maxResults", "60"), 10) || 60;
 export const PREWARM_BACKENDS = cfg("VTS_PREWARM_BACKENDS", "prewarmBackends", ""); // "" | auto | all | comma-list
-const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd", "scope", "clangdIndexer", "roslynCmd", "roslynDll"];
+const CONFIG_KEYS = ["projectPath", "backend", "maxResults", "prewarmBackends", "tee", "excludeCommands", "usdPerMtok", "clangdCmd", "scope", "clangdIndexer", "roslynCmd", "roslynDll", "hookNoise", "lang"];
 
 // ---- per-call project root resolution ----
 // The MCP server is ONE long-lived process serving every repo a session touches, so a single configured
@@ -2387,7 +2387,28 @@ export async function runTool(name, a = {}) {
           genLine = `\n\n── compile_commands.json (${apply ? "apply" : "dry-run"}) ──\n${g.text}`;
         } catch (e) { genLine = `\n\n(compile-DB step failed: ${e.message} — run vts_gen_compile_db directly)`; }
       }
-      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}` + genLine);
+      // C# / Unity provisioning — the three things a C# tree needs before the engine answers anything
+      // (engine present, a dotnet the engine can find, one .sln that opens the whole tree). Reported whenever
+      // the census sees C# or `csharp` is passed; written only with csharp="apply" (launcher → roslynCmd,
+      // generated .sln). See server/csharp-setup.js.
+      let csLine = "";
+      try {
+        const root = a.projectPath || current.projectPath || PROJECT_PATH || process.cwd();
+        const wantsCs = !!a.csharp || (languageCensus(root).roslyn > 0);
+        if (wantsCs) {
+          const { csharpPlan, applyCSharp } = await import("./csharp-setup.js");
+          const plan = csharpPlan(root);
+          csLine = `\n\n── C# (${a.csharp === "apply" ? "apply" : "dry-run"}) ──\n${plan.report}`;
+          if (a.csharp === "apply") {
+            const r = applyCSharp(plan, { genSln: a.genSln !== false && a.genSln !== "false" });
+            csLine += `\n${r.report}`;
+            if (r.roslynCmd) { applySetup({ roslynCmd: r.roslynCmd }); current.roslynCmd = r.roslynCmd; if (!changed.includes("roslynCmd")) changed.push("roslynCmd"); }
+          } else if (plan.actions.length) {
+            csLine += `\n→ apply with: vts setup --csharp apply   (or vts_admin { op: "setup", params: { csharp: "apply" } })`;
+          }
+        }
+      } catch (e) { csLine = `\n\n(C# step failed: ${e.message})`; }
+      return out((changed.length ? `Updated ${changed.join(", ")}.` : "No recognized keys.") + langLine + `\nConfig: ${CONFIG_FILE}\n${JSON.stringify(current, null, 2)}` + genLine + csLine);
     }
     if (name === "vts_config") {
       return out(`Effective settings (env > config > default):\n` + JSON.stringify({ projectPath: PROJECT_PATH || "(unset)", backend: BACKEND || "(auto)", maxResults: MAX_RESULTS, prewarmBackends: PREWARM_BACKENDS || "(auto)" }, null, 2) + `\n\nConfig file: ${CONFIG_FILE}`);

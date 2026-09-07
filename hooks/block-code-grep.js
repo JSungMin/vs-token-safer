@@ -37,7 +37,7 @@ import { classifyPowerShellSearch } from "../server/psearch.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
+import { hookNoise, shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -366,7 +366,11 @@ function isLogSearchSegment(segment) {
 // awk. The same token leak the Read-tool steer catches (raw bodies into context), through a side door no
 // search hook covers. Read-ONLY only: `-i`/inplace is the edit-steer's case, and any stdout redirect (`>`,
 // minus `2>` stderr) means the bytes go to a FILE, not into context — leave those alone.
-const readSteerOn = () => !/^(0|false|off|no)$/i.test(String(process.env.VTS_READ_STEER ?? "1"));
+const readSteerOn = () => {
+  const v = process.env.VTS_READ_STEER;
+  if (v !== undefined && v !== "") return !/^(0|false|off|no)$/i.test(String(v));   // explicit env wins
+  return hookNoise() !== "quiet";                                                   // else the one-knob level
+};
 const BODY_READ_EXECS = new Set(["sed", "cat", "head", "tail", "awk"]);
 // Interpreters that can be handed an INLINE program (`-c`/`-e`/heredoc) which opens a code file, reads it,
 // and prints slices — a hand-rolled read_symbol. The model reaches for these exactly when read_symbol
@@ -470,7 +474,11 @@ function grepNudgeFor(ti) {
 // a ready symbol-edit call. The token win (skipping the file Read) is already sunk by Edit time, so this
 // can't recover the CURRENT edit — it's a learning signal for the NEXT one, and the adoption ledger measures
 // whether it lands (escalating to a block only if it doesn't; see L2). A sub-declaration tweak isn't flagged.
-function editWarnOn() { const v = String(process.env.VTS_EDIT_WARN ?? "1").toLowerCase(); return !(v === "0" || v === "false" || v === "off"); }
+function editWarnOn() {
+  const raw = process.env.VTS_EDIT_WARN;
+  if (raw !== undefined && raw !== "") { const v = String(raw).toLowerCase(); return !(v === "0" || v === "false" || v === "off"); }
+  return hookNoise() !== "quiet";
+}
 function editMinLines() { const n = Number(process.env.VTS_EDIT_MIN_LINES); return Number.isFinite(n) && n > 0 ? n : 8; }
 // Best-effort declaration name from a code chunk, so the nudge can name the symbol (a ready call beats a
 // vague hint — the SkillOpt "actionable artifact" principle). null when no name is confidently found.

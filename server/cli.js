@@ -80,6 +80,10 @@ Commands:
                  the UBT command; apply runs it, needs clangd ≥ 22). Parks it out-of-tree.
                  [--clangdCmd <path>] — persist the clangd ≥ 22 binary path (VS-bundled 19.1.x deadlocks UE).
                  [--roslynCmd <path>] [--roslynDll <path|off>] — persist the C# launcher / pin or disable the MS Roslyn dll.
+                 [--csharp dry|apply] — C#/Unity provisioning: a DOTNET_ROOT launcher when dotnet isn't on the host's PATH
+                 (persisted as roslynCmd) and a .sln over many .csproj (Unity). Dry prints the plan; apply writes.
+                 [--hookNoise full|quiet] — quiet turns off the per-call nudges (read/edit steer, orchestrator redirect);
+                 blocks and rewrites stay. Each nudge is ~60-120 tokens, so a long session can lose more to them than it saves.
   serve          Start the local dashboard (127.0.0.1 only, nothing transmitted) — savings trend, language
                  mix, per-tool savings, and the include-graph fan-in as an interactive 3D force graph (Three.js,
                  vendored locally — no CDN). [--port N (default 8731) --projectPath <dir> --open (launch browser)]
