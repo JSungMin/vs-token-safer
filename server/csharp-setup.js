@@ -97,9 +97,9 @@ export function applyCSharp(plan, opts = {}) {
       const name = path.basename(plan.root);
       const env = { ...process.env, DOTNET_ROOT: plan.dotnetHome || process.env.DOTNET_ROOT || "", DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" };
       try {
-        execFileSync(dotnet, ["new", "sln", "-n", name], { cwd: plan.root, env, stdio: "ignore", timeout: 60000 });
+        execFileSync(dotnet, ["new", "sln", "-n", name], { cwd: plan.root, env, stdio: "ignore", timeout: 60000, windowsHide: true });
         for (const p of shallow(plan.root, /\.csproj$/i))
-          execFileSync(dotnet, ["sln", `${name}.sln`, "add", p], { cwd: plan.root, env, stdio: "ignore", timeout: 60000 });
+          execFileSync(dotnet, ["sln", `${name}.sln`, "add", p], { cwd: plan.root, env, stdio: "ignore", timeout: 60000, windowsHide: true });
         done.push(`solution written: ${path.join(plan.root, name + ".sln")} (${plan.csprojCount} projects) — add *.sln to .gitignore if the repo doesn't track it`);
       } catch (e) { done.push(`sln generation failed: ${e.message}`); }
     }
