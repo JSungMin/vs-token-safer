@@ -320,15 +320,19 @@ function extractGrepScope(segment, isGit) {
   const pat = extractGrepPattern(segment, isGit);
   const toks = shellWords(segment).slice(1); // drop the executable (quote-aware — see shellWords)
   const start = isGit ? (toks[0] === "grep" ? 1 : 0) : 0; // `git grep` — don't treat the `grep` subcommand as an operand
-  let file = null, dir = null;
+  let file = null, dir = null, operands = 0;
   for (let i = toks.length - 1; i >= start; i--) {
     const t = stripQuotes(toks[i]);
     if (!t || t.startsWith("-")) continue;
     if (pat != null && t === pat) break;             // reached the pattern → operands after it are exhausted
     if (!SAFE_PATH.test(t)) continue;                // not a plausible path token
+    operands++;
     if (/\.[A-Za-z0-9_]+$/.test(t)) { if (!file) file = t; }        // has an extension → a file
     else if (!dir) dir = t;                          // bare or slashed, no extension → a directory
   }
+  // Several operands (`grep -rn X server/ hooks/`) have no single scope. Keeping one of them NARROWED the task
+  // to `under hooks/` and silently dropped the rest (live, v1.2.1); the unscoped task is a superset.
+  if (operands > 1) return { file: null, dir: null };
   return { file, dir };
 }
 // `find [path] -name X` — the FIRST operand (before any `-predicate`) is the search directory. Honor it so
