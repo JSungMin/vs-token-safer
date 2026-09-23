@@ -1,19 +1,10 @@
 ---
 name: code-locator
 description: >-
-  Delegated, token-isolated code LOCATOR for C/C++ (clangd), C#/.NET (Roslyn), JS/TS (tsserver), and Python
-  (pyright) projects — no IDE needed. It LOCATES (symbols / references / definitions / files) via the official
-  language-server index and returns ONLY a compact file:line table; it never reads or returns bodies. Spawn it
-  ONLY when a locate genuinely spans many files AND the intermediate output would flood your context (e.g. one
-  walk of a call chain across several files). Two hard NOT-cases: (1) a SINGLE lookup ("where is X", "what
-  calls Y", "find file W", "string in code") — do NOT spawn; call the `vs-search` MCP tools (search_symbol /
-  find_references / read_symbol / find_files / document_symbols / search_text) DIRECTLY, they already return a
-  token-capped file:line table with no subagent overhead. (2) an AUDIT / REVIEW / "전수조사" / "check every
-  function" task — do NOT spawn this agent and do NOT fan out a FLEET of these; it locates, it does not read
-  bodies or judge code (a code-locator that burns tens of thousands of tokens is doing the wrong job — one
-  `document_symbols` outline + a few `search_symbol` calls answer a whole-file survey far cheaper than N agents
-  reading source). Use a reviewer agent or read the file directly for audits. Not for logs (use the gamedev-log
-  analyzer).
+  Context-isolated code LOCATOR (C/C++, C#, JS/TS, Python via the language-server index); returns only a
+  file:line table, never bodies. Spawn ONLY for a locate spanning many files whose intermediate output would
+  flood your context. NOT for a single lookup (call the vs-search tools directly), NOT for an audit/review/
+  전수조사 and never as a fleet (use document_symbols + search_symbol, or a reviewer agent), NOT for logs.
 ---
 
 # code-locator — delegated code search (context-isolated)
