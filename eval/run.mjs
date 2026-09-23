@@ -205,7 +205,23 @@ fs.writeFileSync(rfile2, "aaa bbb ccc\n");
 const rm = await runTool("rename", { path: rfile2, line: 0, character: 0, newName: "MULTI", backend: "clangd", apply: true });
 const renameMultiOk = !rm.isError && /APPLIED/.test(rm.text) && fs.readFileSync(rfile2, "utf8") === "X bbb ZZZZ\n";
 try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
-const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk;
+// Leftovers (2608.13568: an LSP rename leaves comments/strings, and failed 3/4 of multi-file renames): the
+// preview must LIST where the old name still appears outside the edit — a comment in the same file and a doc
+// elsewhere — without editing them, and say so explicitly when nothing is left.
+const ldir = path.join(os.tmpdir(), `vts-rename-left-${process.pid}`);
+fs.mkdirSync(ldir, { recursive: true });
+fs.writeFileSync(path.join(ldir, "r3.cpp"), "abc = 1;\n// abc is the counter\n");
+fs.writeFileSync(path.join(ldir, "notes.md"), "Call `abc` first.\n");
+const rnLeft = await runTool("rename", { path: path.join(ldir, "r3.cpp"), line: 0, character: 0, newName: "NEW", backend: "clangd", projectPath: ldir });
+const leftOk = !rnLeft.isError && /still appears 2×/.test(rnLeft.text) && /r3\.cpp:2/.test(rnLeft.text) && /notes\.md:1/.test(rnLeft.text) && !/r3\.cpp:1:/.test(rnLeft.text);
+const rnCleanDir = path.join(os.tmpdir(), `vts-rename-clean-${process.pid}`);
+fs.mkdirSync(rnCleanDir, { recursive: true });
+fs.writeFileSync(path.join(rnCleanDir, "r4.cpp"), "abc = 1;\n");
+const rnClean = await runTool("rename", { path: path.join(rnCleanDir, "r4.cpp"), line: 0, character: 0, newName: "NEW", backend: "clangd", projectPath: rnCleanDir });
+const cleanOk = !rnClean.isError && /No other whole-word occurrence of "abc"/.test(rnClean.text);
+if (!(leftOk && cleanOk)) console.error("  rename leftovers:", JSON.stringify({ left: rnLeft.text.slice(-300), clean: rnClean.text.slice(-200) }));
+for (const d of [ldir, rnCleanDir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk && leftOk && cleanOk;
 
 // 15) JS/TS + Python backends — auto-detect ordering and languageId mapping. Pure functions, so no
 // live tsserver/pyright is needed; this guards that adding the new backends didn't shadow clangd/roslyn
@@ -1431,7 +1447,8 @@ const toolsBudgetOk =
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
   ["replace_symbol_body", "safe_delete", "read_symbol"].every((n) => /INSTEAD OF/.test(TOOL_DEFS.find((t) => t.name === n)?.description || "")) && // 2602.20426 adoption lever: the symbol-edit/read tools front-load the "use INSTEAD OF Read/Edit" selection cue so the model picks them over Read+Edit (the 135k-tok/wk leak)
-  toolsTok <= 2950; // ~2931 (16 tools) — detect_changes added one first-class hot tool (+~135 tok, terse). Cap blocks prose creep.
+  toolsTok <= 2850; // ~2823 (16 tools). Tightened from 2950 when vts_admin stopped restating its own enum. Every token here
+  // rides in each request's cached prefix — measured cache reads were 69% of weighted cost — so the cap blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -1987,7 +2004,19 @@ process.env.VTS_SUPPRESS = "0";
 const supOff = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === false && suppressOn() === false; // toggle off
 if (supTogglePrev === undefined) delete process.env.VTS_SUPPRESS; else process.env.VTS_SUPPRESS = supTogglePrev;
 const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
-const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig); // tree + posture
+// …and it stays SMALL: the digest rides in every session's cached prefix for every turn. ~150 tok today; the cap
+// (1000 chars ≈ 250 tok, with the qvts line forced on) stops it regrowing into the ~300-tok essay it used to be.
+// orchestratorPresent() is cached per PROCESS and this eval pins it off for hermeticity, so flipping env here
+// would silently test the no-qvts digest. Render the qvts variant in a fresh child instead.
+const digMax = await (async () => {
+  const policyUrl = new URL("../server/policy.js", import.meta.url).href;
+  const src = `const { routingDigest } = await import(${JSON.stringify(policyUrl)}); process.stdout.write(routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 3, converted: 0 }, block: { shown: 0, converted: 0 } } }));`;
+  const { spawnSync: sp } = await import("node:child_process");
+  const r = sp(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8", env: { ...process.env, VTS_ORCHESTRATOR: "1", VTS_ORCHESTRATOR_AWARE: "1" } });
+  return r.stdout || "";
+})();
+const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig) && // tree + posture
+  /qvts/.test(digMax) && digMax.length <= 1000;
 // the rolling recent rate is surfaced alongside the all-time ratio when it diverges (#c): here recent 4/5=80%
 // vs all-time 2/10=20% — the live signal the steer loop can actually move.
 const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
@@ -2681,6 +2710,148 @@ const widenHintOk = await (async () => {
   }
 })();
 
+// ── Bash→qvts delegation keeps the agent's pattern, scope and retry ────────────────────────────────────────
+// Three defects hit live in one session: (1) the pattern was split on whitespace ignoring quotes, so
+// `grep -n "function fooBar"` delegated `find 'function …` — a search for the wrong thing; (2) a leading
+// `cd <repo> &&` was neither honoured as scope (the root fell back to an unrelated project) nor allowed to
+// rewrite (two segments → block); (3) the block promised "re-issue passes", but on this path it never did.
+const bashOrchOk = await (async () => {
+  const hook = fileURLToPath(new URL("../hooks/block-code-grep.js", import.meta.url));
+  // realpath: on the GitHub Windows runner os.tmpdir() is an 8.3 short name (C:\Users\RUNNER~1\…); the `~` fails
+  // the hook's SAFE_PATH gate, which silently dropped the file scope and failed this guard on CI only.
+  const base = path.join(fs.realpathSync.native(os.tmpdir()), `vts-eval-bashorch-${process.pid}`);
+  const repo = path.join(base, "repoA");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.writeFileSync(path.join(repo, "package.json"), "{}");
+  const seen = path.join(base, "seen.json");
+  const { spawnSync: sp } = await import("node:child_process");
+  const run = (command) => {
+    const r = sp(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }), encoding: "utf8",
+      env: { ...process.env, VTS_ORCHESTRATOR: "1", VTS_ORCHESTRATOR_AWARE: "1", VTS_ENFORCE: "1", VTS_ORCH_SEEN_FILE: seen },
+    });
+    let rw = ""; try { rw = JSON.parse(r.stdout).hookSpecificOutput.updatedInput.command; } catch { /* block */ }
+    return { status: r.status, text: rw || (r.stderr || "") };
+  };
+  try {
+    const a = run(`grep -n "function fooBarBaz" ${path.join(repo, "x.js")}`);
+    const b = run(`cd "${repo}" && git grep -l "two words"`);
+    const cmd = `git grep -n "Foo" -- src | head -5`;
+    const c1 = run(cmd), c2 = run(cmd);
+    const ok = (
+      /find function fooBarBaz in x\.js/.test(a.text) &&
+      b.status === 0 && /find two words/.test(b.text) && b.text.includes(repo) &&
+      c1.status === 2 && c2.status === 0
+    );
+    if (!ok) console.error("  bash→qvts guard:", JSON.stringify({ repo, a: a.text.slice(0, 160), b: [b.status, b.text.slice(0, 160)], c: [c1.status, c2.status] }));
+    return (
+      /find function fooBarBaz in x\.js/.test(a.text) &&                        // whole quoted pattern survives
+      b.status === 0 && /find two words/.test(b.text) && b.text.includes(repo) && // cd → rewritten, scoped to it
+      c1.status === 2 && c2.status === 0                                         // blocked once, retry passes
+    );
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
+// ── lifetime-weighted cost: rank leaks by what they COST, not by their size ─────────────────────────────────
+// Measured on real sessions: cache READ was 69% of weighted cost (avg 386k tok context/turn, ~850 turns per
+// session), so a tool result is re-billed on every later turn until a compaction drops it. discover now weighs
+// each leak by size × (1.25 + 0.1 × turns it lived). Pin the arithmetic, the compaction cut-off, and that a
+// real transcript scan attaches the right lifetime to a bypass.
+const lifetimeOk = await (async () => {
+  const { lifetimeCost, runTool } = await import("../server/core.js");
+  const arith =
+    lifetimeCost(100, 10, [], 110) === 1125 &&        // 100 × (1.25 + 0.1 × 100 turns)
+    lifetimeCost(100, 10, [20], 110) === 225 &&       // a compaction 10 turns later ends its life
+    lifetimeCost(100, 10, [5], 110) === 1125 &&       // a compaction BEFORE it entered is irrelevant
+    lifetimeCost(100, 110, [], 110) === 125 &&        // entered on the last turn: write cost only
+    lifetimeCost(0, 1, [], 50) === 0;
+  // Integration: the SAME bypassed grep appears twice — early (turn 1, cut by a compaction at turn 4) and late
+  // (turn 5, lives to the end at turn 8). Equal size, equal lifetime (3 turns) → equal billed cost; without the
+  // compaction cut the early one would have lived 7 turns.
+  const dir = path.join(os.tmpdir(), `vts-eval-life-${process.pid}`, "proj");
+  fs.mkdirSync(dir, { recursive: true });
+  const out = "src/a.cpp:1: int Foo;\n".repeat(20);
+  const ts = () => new Date().toISOString();
+  const asst = (id, blocks) => JSON.stringify({ timestamp: ts(), message: { id, role: "assistant", content: blocks } });
+  const user = (blocks) => JSON.stringify({ timestamp: ts(), message: { role: "user", content: blocks } });
+  const grep = (id) => ({ type: "tool_use", id, name: "Bash", input: { command: "grep -rn Foo src/a.cpp" } });
+  const res = (id) => ({ type: "tool_result", tool_use_id: id, content: out });
+  const txt = (id) => asst(id, [{ type: "text", text: "." }]);
+  const lines = [
+    asst("m1", [grep("g1")]), user([res("g1")]), txt("m2"), txt("m3"), txt("m4"),
+    JSON.stringify({ type: "system", subtype: "compact_boundary", timestamp: ts() }),
+    asst("m5", [grep("g2")]), user([res("g2")]), txt("m6"), txt("m7"), txt("m8"),
+  ];
+  fs.writeFileSync(path.join(dir, "s.jsonl"), lines.join("\n") + "\n");
+  const detail = path.join(path.dirname(dir), "d.jsonl");
+  const saveP = process.env.VTS_CLAUDE_PROJECTS;
+  process.env.VTS_CLAUDE_PROJECTS = path.dirname(dir);
+  try {
+    const r = await runTool("vts_discover", { since: 1, detail: true, out: detail });
+    const text = (r && r.text) || "";
+    const recs = fs.readFileSync(detail, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.t === "search");
+    const [early, late] = recs.sort((a, b) => a.turn - b.turn);
+    const integ = recs.length === 2 && early.turn === 1 && late.turn === 5 &&
+      early.billedTok === lifetimeCost(early.rawTok, 1, [4], 8) && early.billedTok === late.billedTok &&
+      /lifetime-weighted cost/.test(text);
+    if (!integ) console.error("  lifetime guard:", JSON.stringify({ recs, head: text.slice(0, 200) }));
+    return arith && integ;
+  } catch (e) {
+    console.error("  lifetime guard threw:", e && e.message);
+    return false;
+  } finally {
+    if (saveP === undefined) delete process.env.VTS_CLAUDE_PROJECTS; else process.env.VTS_CLAUDE_PROJECTS = saveP;
+    try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
+// ── re-retrieval: did the capped answer END the lookup? ──────────────────────────────────────────────────────
+// 2607.12161 measured compression RAISING billed cost when it made the agent fetch again; 2608.13568 measured an
+// LSP spending MORE tokens than grep on name-known localization. The honest test of a vts answer: was it followed
+// by a WHOLE read of a file it just named? Counted: whole read, big, within the window. Not counted: a sliced read
+// (read the region to edit — the intended flow), a whole read long after, a file vts never named.
+const rereadOk = await (async () => {
+  const { runTool } = await import("../server/core.js");
+  const dir = path.join(os.tmpdir(), `vts-eval-reread-${process.pid}`, "proj");
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = () => new Date().toISOString();
+  const asst = (id, blocks) => JSON.stringify({ timestamp: ts(), message: { id, role: "assistant", content: blocks } });
+  const user = (blocks) => JSON.stringify({ timestamp: ts(), message: { role: "user", content: blocks } });
+  const vts = (id) => ({ type: "tool_use", id, name: "mcp__plugin_vs-token-safer_vs-search__search_symbol", input: { q: "Foo" } });
+  const rd = (id, file, sliced) => ({ type: "tool_use", id, name: "Read", input: sliced ? { file_path: file, offset: 10, limit: 40 } : { file_path: file } });
+  const res = (id, text) => ({ type: "tool_result", tool_use_id: id, content: text });
+  const big = "x".repeat(8000); // ~2000 tok ≥ VTS_REREAD_MIN_TOK
+  const txt = (id) => asst(id, [{ type: "text", text: "." }]);
+  const lines = [
+    asst("m1", [vts("v1")]), user([res("v1", "class Foo @ src/Alpha.cpp:10\nclass Foo @ src/Beta.cpp:20")]),
+    asst("m2", [rd("r1", "/w/src/Alpha.cpp", false)]), user([res("r1", big)]),   // COUNTED: whole, big, 1 turn later
+    asst("m3", [rd("r2", "/w/src/Beta.cpp", true)]), user([res("r2", big)]),     // not: sliced read
+    asst("m4", [rd("r3", "/w/src/Gamma.cpp", false)]), user([res("r3", big)]),   // not: vts never named it
+    txt("m5"), txt("m6"), txt("m7"), txt("m8"), txt("m9"),
+    asst("m10", [rd("r4", "/w/src/Beta.cpp", false)]), user([res("r4", big)]),   // not: outside the 5-turn window
+  ];
+  fs.writeFileSync(path.join(dir, "s.jsonl"), lines.join("\n") + "\n");
+  const saveP = process.env.VTS_CLAUDE_PROJECTS;
+  process.env.VTS_CLAUDE_PROJECTS = path.dirname(dir);
+  try {
+    const r = await runTool("vts_discover", { since: 1 });
+    const t = (r && r.text) || "";
+    const ok = /re-retrieval: 1 of 1 vts answers/.test(t);
+    if (!ok) console.error("  reread guard:", (t.match(/re-retrieval:[^\n]*/) || ["(no re-retrieval line)"])[0]);
+    return ok;
+  } catch (e) {
+    console.error("  reread guard threw:", e && e.message);
+    return false;
+  } finally {
+    if (saveP === undefined) delete process.env.VTS_CLAUDE_PROJECTS; else process.env.VTS_CLAUDE_PROJECTS = saveP;
+    try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── orchestrator redirect must not WIDEN a call that is already scoped ────────────────────────────────────
 // With qvts installed, a vs-search locate is redirected to it. But `taskFor` renders a natural-language task
 // that carried the ROOT and not the FILE, so `search_text q=X path=<one header>` — which answers instantly and
@@ -2928,6 +3099,9 @@ const rows = [
   ["PowerShell search channel: Select-String/Get-ChildItem classified (aliases, abbreviated params, non-Windows paths), scripted-value/-NotMatch/prose shapes silent, hook WIRED to the tool, counted by discover", psearchOk, "true", psearchOk],
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
+  ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
+  ["re-retrieval: a WHOLE read of a file a vts answer just named is counted; sliced reads, unnamed files and reads outside the window are not", rereadOk, "true", rereadOk],
+  ["Bash→qvts delegation: quoted pattern kept whole, leading `cd` is the scope (rewrite, not block), a blocked command passes on re-issue", bashOrchOk, "true", bashOrchOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

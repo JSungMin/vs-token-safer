@@ -437,6 +437,21 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   orphan launch: 44 console/terminal processes per run without the flag, 0 with it). Eval guard 96 scans every
   spawn site — it under-detected at first because quote-blanking mis-paired on a regex literal like `/^"|"$/`,
   so it now blanks only comments + template literals. Verify a guard FAILS before trusting it.
+- **Judge by BILLED cost, not token count.** Measured (maintainer, 30d, 21 sessions, 17,893 turns): cache READ
+  = 69% of weighted cost, avg context 386k tok/turn, ~850 turns/session. A token entering context is re-billed
+  every later turn until a compaction, so `core.js lifetimeCost(size, turn, compactBoundaries, lastTurn)` =
+  size × (1.25 + 0.1 × turns lived) drives `vts discover` (leaks ranked by it; "billed coverage" scales the
+  ledger by the MEASURED lifetime of vts's own results; `VTS_COST_W_WRITE/READ`). It reordered the work: edit
+  pre-reads ≈ 29× raw, 7× the search leak. Two corollaries enforced by guards: (1) the FIXED prefix we inject
+  into every session (tool schemas ≤2850 tok, SessionStart digest ≤1000 chars, agent/skill descriptions) is paid
+  on every turn of every session — keep it terse, the hooks deliver the specific call at the moment of need;
+  (2) a cap only saves if it ENDS the lookup — discover's `re-retrieval` counts a WHOLE read of a file a vts
+  answer just named (0 of 257 on the maintainer's data). External evidence (read the abstracts, not summaries):
+  2609.22114 (compressed reads save quadratically because they are re-sent; schema trimming is the one sure
+  lever), 2607.12161 (38% fewer tokens, +6.8% billed — compression that triggers re-fetch loses), 2608.13568
+  (LSP localization can cost MORE than grep; a location-only LSP rename misses comments/strings → `rename` now
+  lists every remaining whole-word occurrence, reported not edited, `VTS_RENAME_LEFTOVERS=0`). Tool schemas are
+  byte-static (no env/time/fs values) so they never break the prompt cache mid-session.
 - **Never WIDEN a call that is already scoped.** The Bash path lets a `find <subdir> -name X` run natively and
   the Glob path lets a subdir-scoped glob through, because delegating them LOSES the scope. `hooks/
   orchestrator-redirect.js` never got that rule: `rootFor` lifted the root out of a `path` but `taskFor`
