@@ -48,7 +48,15 @@ Steps:
      - `Skip for now` → text fallback stays active.
    Only fall back to a free-text question if `AskUserQuestion` is unavailable. Always dry-run the DB before
    apply.
-6. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
+6. **C# / Unity provisioning.** When the census shows C# (or the user mentions Unity/.NET), setup already
+   prints a dry-run plan: is `csharp-ls` present, does the MCP host see `dotnet`, are there many `.csproj`
+   with no `.sln`. Offer to apply it with `AskUserQuestion` — `Apply (Recommended)` →
+   `vts_admin { op: "setup", params: { csharp: "apply" } }` (writes a `DOTNET_ROOT` launcher persisted as
+   `roslynCmd`, and a `.sln` over every `.csproj`; tell them to gitignore it) / `Skip`.
+7. **Hook noise.** Ask whether the per-call nudges should stay on. `Quiet (Recommended for long sessions)` →
+   `vts_admin { op: "setup", params: { hookNoise: "quiet" } }` — blocks/rewrites stay, nudges go; each nudge is
+   ~60-120 tokens so a long session can lose more to them than the plugin saves. `Full` keeps them.
+8. **Tell the user to run `/reload-plugins`** (or restart) — settings are read at startup.
 
 Notes:
 - Precedence is **environment variable (`VTS_*`) > config file > default**; a same-named env var wins.
