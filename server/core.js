@@ -2045,6 +2045,33 @@ function conceptScan(root, terms, max, accept) {
   out.truncated = pool.truncated || (scored.length > max ? "cap" : undefined);
   return out;
 }
+// Where does the OLD name still appear after an LSP rename? A language server renames semantic references only —
+// it leaves comments, strings, docs, reflection/config keys and anything it failed to index. 2608.13568 measured
+// a location-only LSP failing three quarters of multi-file renames under real test execution, and even a
+// complete, warmed LSP could not close the gap "since a rename must touch comments and strings that semantic
+// references exclude". vts's rename is exactly that LSP rename, and it reported success silently. So list the
+// remaining whole-word occurrences, minus the lines the edit itself covers — reported, never auto-edited (a
+// comment mentioning the old name may be intentional; a string may be a wire format). Capped + bounded scan.
+function renameLeftovers(root, editsByPath, max) {
+  if (/^(0|false|off|no)$/i.test(String(process.env.VTS_RENAME_LEFTOVERS ?? "1"))) return "";
+  let oldName = "";
+  try {
+    const [p0, e0] = [...editsByPath.entries()][0];
+    const r = e0[0].range;
+    if (r.start.line === r.end.line) oldName = fs.readFileSync(p0, "utf8").split(/\r?\n/)[r.start.line].slice(r.start.character, r.end.character);
+  } catch { return ""; }
+  if (!/^[A-Za-z_$][\w$]*$/.test(oldName)) return ""; // only an identifier-shaped name is safe to word-match
+  const covered = new Set();
+  for (const [p, edits] of editsByPath) for (const e of edits) covered.add(`${path.resolve(p).toLowerCase()}:${e.range.start.line + 1}`);
+  const hits = scanTextUnder(root, `\\b${oldName}\\b`, Math.max(max * 3, 60), DOC_EXTS); // code + docs/config, never binaries
+  const rest = hits.filter((h) => {
+    const m = /^(.*?):(\d+):/.exec(h);
+    return m && !covered.has(`${path.resolve(m[1]).toLowerCase()}:${m[2]}`);
+  });
+  if (!rest.length) return `\n✓ No other whole-word occurrence of "${oldName}" left under ${root}${hits.truncated ? " (scan was bounded — not exhaustive)" : ""}.`;
+  const shownRest = rest.slice(0, max).join("\n") + (rest.length > max ? `\n… ${rest.length - max} more.` : "");
+  return `\n⚠ "${oldName}" still appears ${rest.length}${hits.truncated ? "+" : ""}× outside the rename — comments, strings, docs, or references the language server did not resolve. Review (not auto-edited):\n${shownRest}`;
+}
 function scanTextUnder(root, q, max, accept) {
   let re; try { re = new RegExp(q); } catch { re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); }
   // `accept` decides which files to read: a RegExp tested against the filename (the ext set — code by
@@ -3489,8 +3516,9 @@ export async function runTool(name, a = {}) {
       const rows = [];
       for (const [p, edits] of m) for (const e of edits) rows.push(`${p.replace(/\\/g, "/")}:${e.range.start.line + 1}`);
       const shown = rows.slice(0, max).join("\n") + (rows.length > max ? `\n… ${rows.length - max} more.` : "");
+      const leftover = renameLeftovers(root, m, max);
       const apply = a.apply === true || a.apply === "true";
-      if (!apply) return finishOut(we, `rename → "${a.newName}" — PREVIEW: ${total} edit(s) across ${m.size} file(s). Pass apply=true to write. Affected:\n${shown}`);
+      if (!apply) return finishOut(we, `rename → "${a.newName}" — PREVIEW: ${total} edit(s) across ${m.size} file(s). Pass apply=true to write. Affected:\n${shown}${leftover}`);
       let written = 0; let p4ed = 0; const failed = [];
       for (const [p, edits] of m) {
         if (ensureWritableForEdit(p)) p4ed++; // P4: open each read-only ref-file for edit before writing
@@ -3499,7 +3527,7 @@ export async function runTool(name, a = {}) {
       }
       const p4note = p4ed ? ` (p4 edit'd ${p4ed} file(s))` : "";
       const note = failed.length ? `\n⚠ ${failed.length} file(s) not written (read-only? check out of Perforce first; vts auto-runs \`p4 edit\` unless VTS_P4_EDIT=0): ${failed.slice(0, 5).join("; ")}` : "";
-      return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${p4note}${note}\n${shown}`);
+      return finishOut(we, `rename → "${a.newName}" APPLIED: ${total} edit(s) across ${written}/${m.size} file(s).${p4note}${note}\n${shown}${leftover}`);
     }
     if (name === "replace_symbol_body" || name === "insert_symbol" || name === "safe_delete") {
       const c = await getClient(root, backendName);

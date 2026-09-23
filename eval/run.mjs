@@ -205,7 +205,23 @@ fs.writeFileSync(rfile2, "aaa bbb ccc\n");
 const rm = await runTool("rename", { path: rfile2, line: 0, character: 0, newName: "MULTI", backend: "clangd", apply: true });
 const renameMultiOk = !rm.isError && /APPLIED/.test(rm.text) && fs.readFileSync(rfile2, "utf8") === "X bbb ZZZZ\n";
 try { fs.rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
-const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk;
+// Leftovers (2608.13568: an LSP rename leaves comments/strings, and failed 3/4 of multi-file renames): the
+// preview must LIST where the old name still appears outside the edit — a comment in the same file and a doc
+// elsewhere — without editing them, and say so explicitly when nothing is left.
+const ldir = path.join(os.tmpdir(), `vts-rename-left-${process.pid}`);
+fs.mkdirSync(ldir, { recursive: true });
+fs.writeFileSync(path.join(ldir, "r3.cpp"), "abc = 1;\n// abc is the counter\n");
+fs.writeFileSync(path.join(ldir, "notes.md"), "Call `abc` first.\n");
+const rnLeft = await runTool("rename", { path: path.join(ldir, "r3.cpp"), line: 0, character: 0, newName: "NEW", backend: "clangd", projectPath: ldir });
+const leftOk = !rnLeft.isError && /still appears 2×/.test(rnLeft.text) && /r3\.cpp:2/.test(rnLeft.text) && /notes\.md:1/.test(rnLeft.text) && !/r3\.cpp:1:/.test(rnLeft.text);
+const rnCleanDir = path.join(os.tmpdir(), `vts-rename-clean-${process.pid}`);
+fs.mkdirSync(rnCleanDir, { recursive: true });
+fs.writeFileSync(path.join(rnCleanDir, "r4.cpp"), "abc = 1;\n");
+const rnClean = await runTool("rename", { path: path.join(rnCleanDir, "r4.cpp"), line: 0, character: 0, newName: "NEW", backend: "clangd", projectPath: rnCleanDir });
+const cleanOk = !rnClean.isError && /No other whole-word occurrence of "abc"/.test(rnClean.text);
+if (!(leftOk && cleanOk)) console.error("  rename leftovers:", JSON.stringify({ left: rnLeft.text.slice(-300), clean: rnClean.text.slice(-200) }));
+for (const d of [ldir, rnCleanDir]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } }
+const renameOk = renamePreviewOk && renameApplyOk && renameMultiOk && leftOk && cleanOk;
 
 // 15) JS/TS + Python backends — auto-detect ordering and languageId mapping. Pure functions, so no
 // live tsserver/pyright is needed; this guards that adding the new backends didn't shadow clangd/roslyn
