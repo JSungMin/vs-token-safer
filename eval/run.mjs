@@ -1431,7 +1431,8 @@ const toolsBudgetOk =
   JSON.stringify(adminTool?.inputSchema?.properties?.op?.enum || []) === JSON.stringify([...ADMIN_OPS]) && // enum matches the dispatch set
   !cfgViaOp.isError && /settings/i.test(cfgViaOp.text) && // op→vts_config resolves to a real handler
   ["replace_symbol_body", "safe_delete", "read_symbol"].every((n) => /INSTEAD OF/.test(TOOL_DEFS.find((t) => t.name === n)?.description || "")) && // 2602.20426 adoption lever: the symbol-edit/read tools front-load the "use INSTEAD OF Read/Edit" selection cue so the model picks them over Read+Edit (the 135k-tok/wk leak)
-  toolsTok <= 2950; // ~2931 (16 tools) — detect_changes added one first-class hot tool (+~135 tok, terse). Cap blocks prose creep.
+  toolsTok <= 2850; // ~2823 (16 tools). Tightened from 2950 when vts_admin stopped restating its own enum. Every token here
+  // rides in each request's cached prefix — measured cache reads were 69% of weighted cost — so the cap blocks prose creep.
 
 // 63) LSP-glue strengthening (referencing OMC lsp_* / IDE surfaces): a `diagnostics` tool + goto_definition
 // `kind` (type_definition/implementation/declaration). The mock pushes 2 diagnostics (publishDiagnostics on
@@ -1987,7 +1988,15 @@ process.env.VTS_SUPPRESS = "0";
 const supOff = shouldSuppressSteer("/p/Intermediate/Build/Foo.gen.cpp") === false && suppressOn() === false; // toggle off
 if (supTogglePrev === undefined) delete process.env.VTS_SUPPRESS; else process.env.VTS_SUPPRESS = supTogglePrev;
 const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
-const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig); // tree + posture
+// …and it stays SMALL: the digest rides in every session's cached prefix for every turn. ~150 tok today; the cap
+// (1000 chars ≈ 250 tok, with the qvts line forced on) stops it regrowing into the ~300-tok essay it used to be.
+const saveOrch = process.env.VTS_ORCHESTRATOR, saveAware = process.env.VTS_ORCHESTRATOR_AWARE;
+process.env.VTS_ORCHESTRATOR = "1"; process.env.VTS_ORCHESTRATOR_AWARE = "1";
+const digMax = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 3, converted: 0 }, block: { shown: 0, converted: 0 } } });
+if (saveOrch === undefined) delete process.env.VTS_ORCHESTRATOR; else process.env.VTS_ORCHESTRATOR = saveOrch;
+if (saveAware === undefined) delete process.env.VTS_ORCHESTRATOR_AWARE; else process.env.VTS_ORCHESTRATOR_AWARE = saveAware;
+const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig) && // tree + posture
+  /qvts/.test(digMax) && digMax.length <= 1000;
 // the rolling recent rate is surfaced alongside the all-time ratio when it diverges (#c): here recent 4/5=80%
 // vs all-time 2/10=20% — the live signal the steer loop can actually move.
 const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });

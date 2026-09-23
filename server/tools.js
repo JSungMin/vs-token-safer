@@ -263,12 +263,9 @@ export const TOOLS = [
     // the individual vts_* implementations unchanged (the grep-block hook still reroutes git/p4 to the CLI).
     name: "vts_admin",
     description:
-      "vs-token-safer admin/meta ops (rarely needed reflexively) — set `op`, put that op's args in `params`:\n" +
-      "  setup·config·savings{graph|daily|history}·savings_reset — configure / settings / tokens saved\n" +
-      "  discover{since,learn} — code searches that BYPASSED vts · warmup·preindex — pre-build the index\n" +
-      "  scope — indexing scope + TU stats · index{status} — build the committable .vts-index (cold-start tier)\n" +
-      "  gen_compile_db{apply,…} — generate the UE clangd compile DB\n" +
-      "  git·p4{argv} — run a READ-ONLY VCS command, output compacted (mutating REFUSED)",
+      // Every tool description rides in each request's cached prefix; the op list is already the enum below.
+      "Admin/meta ops (rarely needed): set `op`, pass its args in `params`. discover = searches that bypassed vts; " +
+      "index/preindex/warmup = build indexes; git·p4{argv} = read-only VCS, output compacted.",
     inputSchema: {
       type: "object",
       properties: {

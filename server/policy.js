@@ -260,20 +260,21 @@ export function stalenessLine(fresh, { ko = false } = {}) {
 export function routingDigest(o = readEditLedger()) {
   const pct = adoptionPct(o);
   const total = (o.builtin || 0) + (o.symbol || 0);
+  // KEEP THIS SHORT: it rides in EVERY session's cached prefix and is re-billed on every turn (cache reads were
+  // 69% of measured weighted cost at ~850 turns/session). The enforcement hooks deliver the specific call at the
+  // moment of need; this only needs to name the map.
   const lines = [
-    "[vs-token-safer] Tool routing — vts + CC-native are COMPLEMENTARY; cheapest tool that fits:",
-    "  • symbol / refs / rename on INDEXED code → vts search_symbol / find_references / rename (not grep)",
-    "  • ADD/REPLACE a whole decl → vts replace_symbol_body / insert_symbol (by name, skips the Read)",
-    "  • doc/log, quick literal peek, JUST-edited or unindexed file, sub-decl tweak → CC-native Read/Grep/Edit",
-    "  • big tree, slow first query → vts setup --scope <module>; vts preindex",
-    "  • SINGLE lookup → call vts tools DIRECTLY (no agent). code-locator only for a genuine multi-FILE locate; never for an AUDIT/REVIEW/전수조사 and never a FLEET of them — document_symbols + a few search_symbol map a whole file far cheaper than N body-reading agents",
+    "[vs-token-safer] Tool routing — vts + CC-native are COMPLEMENTARY:",
+    "  • symbol/refs/rename → search_symbol / find_references / rename · add/replace a whole decl → insert_symbol / replace_symbol_body (no Read)",
+    "  • docs/logs, just-edited or unindexed file, small tweak → native Read/Grep/Edit · big tree → vts setup --scope <module>; vts preindex",
+    "  • single lookup → call vts directly; code-locator only for a multi-file locate, never an audit or a fleet",
   ];
   // When a local-LLM orchestrator (qvts) is installed, prefer DELEGATING the high-volume / high-output work to
   // it (the raw output stays in the free local model; Claude gets only a compact answer). The vts tools above
   // remain the right choice for a single/quick lookup, an unindexed or just-edited file, and ALL edits.
   if (orchestratorPresent()) {
     lines.splice(1, 0,
-      "  • LOCAL ORCHESTRATOR (qvts) DETECTED → DELEGATE high-volume locate (`qvts def_search` / `qvts \"<task>\"`) and big-file READS/surveys (`qvts digest <file>`) to it — it returns only a compact answer, saving Claude tokens. Call the vts tools below DIRECTLY only for a single/quick lookup, an unindexed/just-edited file, and ALL edits.");
+      "  • qvts installed → delegate bulk locates and big-file reads to it (`qvts -p <root> --json \"<task>\"`, `qvts digest <file>`); vts directly for quick lookups and all edits");
   }
   if (pct !== null && total >= 3) {
     const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
