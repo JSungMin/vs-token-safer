@@ -2955,12 +2955,53 @@ const orchScopeOk = await (async () => {
     const d = run("document_symbols", { path: file });
     const g = run("search_text", { q: "bIsEditorOnly", path: dir });
     const n = run("search_symbol", { q: "bIsEditorOnly" });
-    return (
+    const ok = (
       f.status === 0 && !/qvts -p/.test(f.out) &&   // a named FILE passes through, silently
       d.status === 0 && !/qvts -p/.test(d.out) &&
       g.status === 2 && /under /.test(g.out) &&      // a named DIR delegates WITH its scope
       n.status === 2                                  // a path-less locate still delegates
     );
+    // Seen flaky once (1 fail in ~6 runs, cause unknown) — name the failing case so the next one is diagnosable.
+    if (!ok) for (const [k, r] of Object.entries({ f, d, g, n })) console.error(`  orch-scope ${k}: status=${r.status} ${r.out.slice(0, 160).replace(/\s+/g, " ")}`);
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
+// ── the Grep TOOL's qvts redirect: same never-widen rule + the retry its block text promises ─────────────
+// Dogfood-found: a Grep over ONE file was handed back as `qvts -p <repo root> "find X in code"`, and re-issuing
+// it (as the message says to) was blocked again — the Grep branch had neither the file exemption nor a retry.
+const grepToolScopeOk = await (async () => {
+  const hook = fileURLToPath(new URL("../hooks/block-code-grep.js", import.meta.url));
+  const base = path.join(fs.realpathSync.native(os.tmpdir()), `vts-eval-grepscope-${process.pid}`);
+  const dir = path.join(base, "Source", "Components");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "ActorComponent.h");
+  fs.writeFileSync(file, "bool bIsEditorOnly;\n");
+  const seen = path.join(base, "seen.json");
+  const run = (input) => {
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: "Grep", tool_input: input, cwd: base }),
+      encoding: "utf8",
+      env: { ...process.env, VTS_ORCHESTRATOR_AWARE: "1", VTS_ORCHESTRATOR: "1", VTS_ENFORCE: "1", VTS_ORCH_BLOCK: "1", VTS_ORCH_SEEN_FILE: seen },
+    });
+    return { status: r.status, out: (r.stderr || "") + (r.stdout || "") };
+  };
+  try {
+    const f = run({ pattern: "bIsEditorOnly", path: file });
+    const d1 = run({ pattern: "bIsEditorOnly", path: dir });
+    const d2 = run({ pattern: "bIsEditorOnly", path: dir }); // the promised retry
+    const n = run({ pattern: "bIsEditorOnly" });
+    const ok =
+      f.status === 0 && !/qvts -p/.test(f.out) &&
+      d1.status === 2 && /under /.test(d1.out) &&
+      d2.status === 0 &&
+      n.status === 2;
+    if (!ok) for (const [k, r] of Object.entries({ f, d1, d2, n })) console.error(`  grep-scope ${k}: status=${r.status} ${r.out.slice(0, 160).replace(/\s+/g, " ")}`);
+    return ok;
   } catch {
     return false;
   } finally {
@@ -3170,6 +3211,7 @@ const rows = [
   ["PowerShell search channel: Select-String/Get-ChildItem classified (aliases, abbreviated params, non-Windows paths), scripted-value/-NotMatch/prose shapes silent, hook WIRED to the tool, counted by discover", psearchOk, "true", psearchOk],
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
+  ["Grep tool qvts redirect: one-file Grep stays native, a dir Grep delegates WITH its scope, re-issue passes (as the block text promises)", grepToolScopeOk, "true", grepToolScopeOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
   ["transparent rewrite covers real shapes exactly: cd scope, BRE \\|, --include, glob operand, head→maxResults; multi-operand still blocks; heredoc body + stdin grep left alone", shapeRewriteOk, "true", shapeRewriteOk],
   ["CLI resolves tree-sitter without CLAUDE_PLUGIN_DATA: data dir derived from the cache/<mkt>/<plugin>/<ver> install layout; dev checkout derives nothing", derivedDataOk, "true", derivedDataOk],

@@ -274,10 +274,10 @@ function shellWords(segment) {
 // blocked it is recorded; the identical command re-issued within VTS_ORCH_RETRY_MS (180s) is allowed. Returns
 // true when this call is that retry. VTS_ORCH_SEEN_FILE (shared name with the MCP redirect's store) overrides
 // the location for tests; a separate key prefix keeps the two paths from satisfying each other.
-function bashRetryPass(command) {
+function bashRetryPass(command, prefix = "bash:") {
   const file = process.env.VTS_ORCH_SEEN_FILE || path.join(os.homedir(), ".vs-token-safer", "orch-seen.json");
   const ttl = Number(process.env.VTS_ORCH_RETRY_MS || 180000);
-  const key = "bash:" + String(command).trim();
+  const key = prefix + String(command).trim();
   let m = {};
   try { m = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { /* fresh */ }
   const now = Date.now();
@@ -919,7 +919,17 @@ process.stdin.on("end", () => {
     // qvts present → a code/symbol Grep is the orchestrator's job: block and hand back the qvts command (a
     // log/text-target Grep is left to the normal steer below).
     if (ORCH && !isLogGrepTool(ti) && notTextLogTarget(ti) && (isCodeGrepTool(ti) || isSymbolHuntGrep(ti))) {
-      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code`, ti.path) + "\n");
+      // Never WIDEN a scoped call (the rule the MCP redirect and the Glob path already follow): a Grep over ONE
+      // file has bounded output, and delegating it handed back `qvts -p <repo root> "find X in code"` — a
+      // whole-tree scan in place of a one-file read. A named DIR still delegates, but with its scope. The block
+      // text promises that re-issuing the same call goes through; this path never honoured it.
+      const gp = ti.path ? path.resolve(j.cwd || process.cwd(), String(ti.path)) : "";
+      let isFile = false;
+      try { isFile = !!gp && fs.statSync(gp).isFile(); } catch { /* missing → treat as unscoped */ }
+      if (isFile) process.exit(0);
+      if (bashRetryPass(JSON.stringify([ti.pattern, ti.path || "", ti.glob || "", ti.type || ""]), "grep:")) process.exit(0);
+      const under = ti.path ? ` under ${ti.path}` : "";
+      process.stderr.write(orchMsg(`find ${String(ti.pattern || "").slice(0, 120)} in code${under}`, ti.path) + "\n");
       process.exit(2);
     }
     if (isLogGrepTool(ti)) emitWarn(LOG_NUDGE + setup);
