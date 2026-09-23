@@ -2995,12 +2995,20 @@ const grepToolScopeOk = await (async () => {
     const d1 = run({ pattern: "bIsEditorOnly", path: dir });
     const d2 = run({ pattern: "bIsEditorOnly", path: dir }); // the promised retry
     const n = run({ pattern: "bIsEditorOnly" });
+    // Bash with TWO dir operands must not be narrowed to one of them (live v1.2.1: `server/ hooks/` → `under hooks/`).
+    const b = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: 'grep -rn "bIsEditorOnly" Source/ Other/' }, cwd: base }),
+      encoding: "utf8",
+      env: { ...process.env, VTS_ORCHESTRATOR_AWARE: "1", VTS_ORCHESTRATOR: "1", VTS_ENFORCE: "1", VTS_ORCH_BLOCK: "1", VTS_ORCH_SEEN_FILE: seen },
+    });
+    const bo = { status: b.status, out: (b.stderr || "") + (b.stdout || "") };
     const ok =
       f.status === 0 && !/qvts -p/.test(f.out) &&
       d1.status === 2 && /under /.test(d1.out) &&
       d2.status === 0 &&
-      n.status === 2;
-    if (!ok) for (const [k, r] of Object.entries({ f, d1, d2, n })) console.error(`  grep-scope ${k}: status=${r.status} ${r.out.slice(0, 160).replace(/\s+/g, " ")}`);
+      n.status === 2 &&
+      /qvts -p/.test(bo.out) && !/under (Source|Other)/.test(bo.out);
+    if (!ok) for (const [k, r] of Object.entries({ f, d1, d2, n, bo })) console.error(`  grep-scope ${k}: status=${r.status} ${r.out.slice(0, 160).replace(/\s+/g, " ")}`);
     return ok;
   } catch {
     return false;
