@@ -2694,6 +2694,44 @@ const widenHintOk = await (async () => {
   }
 })();
 
+// ── Bash→qvts delegation keeps the agent's pattern, scope and retry ────────────────────────────────────────
+// Three defects hit live in one session: (1) the pattern was split on whitespace ignoring quotes, so
+// `grep -n "function fooBar"` delegated `find 'function …` — a search for the wrong thing; (2) a leading
+// `cd <repo> &&` was neither honoured as scope (the root fell back to an unrelated project) nor allowed to
+// rewrite (two segments → block); (3) the block promised "re-issue passes", but on this path it never did.
+const bashOrchOk = await (async () => {
+  const hook = fileURLToPath(new URL("../hooks/block-code-grep.js", import.meta.url));
+  const base = path.join(os.tmpdir(), `vts-eval-bashorch-${process.pid}`);
+  const repo = path.join(base, "repoA");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.writeFileSync(path.join(repo, "package.json"), "{}");
+  const seen = path.join(base, "seen.json");
+  const { spawnSync: sp } = await import("node:child_process");
+  const run = (command) => {
+    const r = sp(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }), encoding: "utf8",
+      env: { ...process.env, VTS_ORCHESTRATOR: "1", VTS_ORCHESTRATOR_AWARE: "1", VTS_ENFORCE: "1", VTS_ORCH_SEEN_FILE: seen },
+    });
+    let rw = ""; try { rw = JSON.parse(r.stdout).hookSpecificOutput.updatedInput.command; } catch { /* block */ }
+    return { status: r.status, text: rw || (r.stderr || "") };
+  };
+  try {
+    const a = run(`grep -n "function fooBarBaz" ${path.join(repo, "x.js")}`);
+    const b = run(`cd "${repo}" && git grep -l "two words"`);
+    const cmd = `git grep -n "Foo" -- src | head -5`;
+    const c1 = run(cmd), c2 = run(cmd);
+    return (
+      /find function fooBarBaz in x\.js/.test(a.text) &&                        // whole quoted pattern survives
+      b.status === 0 && /find two words/.test(b.text) && b.text.includes(repo) && // cd → rewritten, scoped to it
+      c1.status === 2 && c2.status === 0                                         // blocked once, retry passes
+    );
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── lifetime-weighted cost: rank leaks by what they COST, not by their size ─────────────────────────────────
 // Measured on real sessions: cache READ was 69% of weighted cost (avg 386k tok context/turn, ~850 turns per
 // session), so a tool result is re-billed on every later turn until a compaction drops it. discover now weighs
@@ -2995,6 +3033,7 @@ const rows = [
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
+  ["Bash→qvts delegation: quoted pattern kept whole, leading `cd` is the scope (rewrite, not block), a blocked command passes on re-issue", bashOrchOk, "true", bashOrchOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

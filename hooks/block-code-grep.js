@@ -224,8 +224,48 @@ function stripQuotes(t) {
   if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) return t.slice(1, -1);
   return t;
 }
+// Quote-aware word split. A bare `split(/\s+/)` cut `grep -n "function fooBar" f.js` into `"function` +
+// `fooBar"`: the pattern became `"function` (its unmatched quote survives stripQuotes), and a delegated qvts
+// task read `find 'function in f.js` — a search for the wrong thing (live, twice in one session). Quotes are
+// KEPT on the token so stripQuotes still sees the outer pair; `\"` inside double quotes stays literal.
+function shellWords(segment) {
+  const out = [];
+  let cur = "", q = null, has = false;
+  const s = String(segment || "");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (q === '"' && c === "\\" && s[i + 1] === '"') { cur += '\\"'; i++; continue; }
+      cur += c;
+      if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { q = c; cur += c; has = true; continue; }
+    if (/\s/.test(c)) { if (has) { out.push(cur); cur = ""; has = false; } continue; }
+    cur += c; has = true;
+  }
+  if (has) out.push(cur);
+  return out;
+}
+// One-shot block for the Bash→qvts path, mirroring orchestrator-redirect.js: the FIRST time a given command is
+// blocked it is recorded; the identical command re-issued within VTS_ORCH_RETRY_MS (180s) is allowed. Returns
+// true when this call is that retry. VTS_ORCH_SEEN_FILE (shared name with the MCP redirect's store) overrides
+// the location for tests; a separate key prefix keeps the two paths from satisfying each other.
+function bashRetryPass(command) {
+  const file = process.env.VTS_ORCH_SEEN_FILE || path.join(os.homedir(), ".vs-token-safer", "orch-seen.json");
+  const ttl = Number(process.env.VTS_ORCH_RETRY_MS || 180000);
+  const key = "bash:" + String(command).trim();
+  let m = {};
+  try { m = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { /* fresh */ }
+  const now = Date.now();
+  for (const k of Object.keys(m)) if (now - m[k] > ttl) delete m[k];
+  const hit = m[key] !== undefined && now - m[key] <= ttl;
+  if (hit) delete m[key]; else m[key] = now;
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(m)); } catch { /* best-effort */ }
+  return hit;
+}
 function extractGrepPattern(segment, isGit) {
-  const toks = segment.trim().split(/\s+/);
+  const toks = shellWords(segment);
   let i = 0;
   while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++; // FOO=bar prefixes
   i++; // the executable (grep/rg/ack/ag/git)
@@ -255,7 +295,7 @@ function extractFindName(segment) {
 // the grep has no explicit path operand.
 function extractGrepScope(segment, isGit) {
   const pat = extractGrepPattern(segment, isGit);
-  const toks = segment.trim().split(/\s+/).slice(1); // drop the executable
+  const toks = shellWords(segment).slice(1); // drop the executable (quote-aware — see shellWords)
   const start = isGit ? (toks[0] === "grep" ? 1 : 0) : 0; // `git grep` — don't treat the `grep` subcommand as an operand
   let file = null, dir = null;
   for (let i = toks.length - 1; i >= start; i--) {
@@ -272,7 +312,7 @@ function extractGrepScope(segment, isGit) {
 // the rewrite searches the tree the command names, not the configured root — dropping it made a
 // `find /abs/UE/path -name X` rewrite search the vts repo and falsely report "No files" (live dogfood bug).
 function extractFindDir(segment) {
-  const t = segment.trim().split(/\s+/)[1]; // token after `find`
+  const t = shellWords(segment)[1]; // token after `find` (quote-aware: a quoted path with spaces stays one token)
   if (!t || t.startsWith("-") || t.startsWith("(") || t.startsWith("!")) return null; // no path operand → cwd
   return stripQuotes(t);
 }
@@ -912,8 +952,16 @@ process.stdin.on("end", () => {
       const task = grepPat ? `find ${grepPat}${inScope}`
         : findGlob ? `find file named ${findGlob}`
         : "locate the searched symbol/string in code";
-      const target = searchFile || searchDir || findDir; // a file/dir the command names → generalize the root
-      if (segments.length === 1) {
+      // A leading `cd <dir> &&` is the agent saying WHERE it is searching — the most common Bash shape of all.
+      // It used to (1) count as a second segment, so the search was blocked instead of rewritten, and (2) be
+      // ignored as scope, so with no file operand the root fell back to the last active project — live, a
+      // `cd <repoA> && git grep …` was handed back as `qvts -p <an unrelated UE depot>`. Now the cd target is the
+      // base: relative operands resolve against it, and with no operand it IS the target.
+      const lead = segments.length === 2 && execOf(segments[0]) === "cd" ? stripQuotes(shellWords(segments[0])[1] || "") : "";
+      const rel = (p) => (p && lead && !path.isAbsolute(p) ? path.resolve(lead, p) : p);
+      const target = rel(searchFile || searchDir || findDir) || lead || ""; // a file/dir the command names → generalize the root
+      const soleSearch = segments.length === 1 || (lead && codeSegs.length === 1);
+      if (soleSearch) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -923,6 +971,13 @@ process.stdin.on("end", () => {
             additionalContext: orchMsg(task, target),
           },
         }) + "\n");
+        process.exit(0);
+      }
+      // The block message tells the agent that re-issuing the same call passes through (the delegated answer may
+      // come back empty). The MCP redirect keeps that promise; this path did not, so an agent that followed the
+      // instruction was blocked again, forever. Keep it: an identical command re-issued within the window runs.
+      if (bashRetryPass(cmd)) {
+        emitWarn(orchMsg(task, target));
         process.exit(0);
       }
       process.stderr.write(orchMsg(task, target) + "\n");
