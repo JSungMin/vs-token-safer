@@ -24,5 +24,11 @@
     "unreal",
     "visual-studio"
   ],
-  "dependencies": ["gamedev-log-analyzer"]
+  "dependencies": ["gamedev-log-analyzer"],
+  "mcpServers": {
+    "vs-search": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.js"]
+    }
+  }
 }
