@@ -31,15 +31,30 @@ function anchors() {
   const a = [];
   const DATA = process.env.CLAUDE_PLUGIN_DATA;
   const ROOT = process.env.CLAUDE_PLUGIN_ROOT;
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
   if (DATA) a.push(path.join(DATA, "package.json"));
+  else { const d = derivedDataAnchor(here); if (d) a.push(d); }
   if (ROOT) a.push(path.join(ROOT, "server", "package.json"));
-  a.push(
-    path.join(
-      path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")),
-      "package.json",
-    ),
-  );
+  a.push(path.join(here, "package.json"));
   return a;
+}
+// The grammars install into ${CLAUDE_PLUGIN_DATA}, but only the plugin's OWN processes receive that variable
+// (the MCP server, its hooks). The `vts` CLI that the grep hook REWRITES a Bash search into runs in the Bash
+// tool's environment, where it is unset — so every rewritten search silently lost the tree-sitter tier
+// (concept_search failed outright; symbol/outline fell to the literal scan). Proven live on v1.2.0: the same
+// `vts concept` call failed without the variable and returned 15 ranked matches with it. When the variable is
+// absent, derive the data dir from Claude Code's install layout:
+//   cache:  …/plugins/cache/<marketplace>/<plugin>/<version>/server   (this module)
+//   data:   …/plugins/data/<plugin>-<marketplace>/
+// Returns null outside that layout (a dev checkout), so nothing changes there.
+export function derivedDataAnchor(serverDir) {
+  const parts = path.resolve(String(serverDir || "")).split(/[\\/]+/);
+  const i = parts.lastIndexOf("cache");
+  if (i < 1 || parts[i - 1] !== "plugins" || parts.length < i + 5) return null;
+  const marketplace = parts[i + 1], plugin = parts[i + 2];
+  if (!marketplace || !plugin) return null;
+  const base = parts.slice(0, i).join(path.sep) || path.sep; // keep "C:" as a drive root, "" as POSIX root
+  return path.join(base.endsWith(":") ? base + path.sep : base, "data", `${plugin}-${marketplace}`, "package.json");
 }
 function resolver() {
   for (const anchor of anchors()) {

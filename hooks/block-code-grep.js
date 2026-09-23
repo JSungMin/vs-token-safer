@@ -159,8 +159,31 @@ function isFindFileOps(segment) {
   return execOf(segment) === "find" && (FIND_ACTION_RE.test(segment) || FIND_TYPE_DIR_RE.test(segment));
 }
 
+// A plain grep with no -r/-R and NO path operand reads STDIN — it filters another command's output
+// (`… | grep -oE "[A-Za-z_]+\.cs:[0-9]+"`), it does not search code. The code-extension test below looks at the
+// whole segment, so a pattern that merely MENTIONS `.cs` was blocked as a code search (hit live). rg and
+// `git grep` are excluded: with no operand they search the working tree.
+function isStdinFilterGrep(segment) {
+  const toks = shellWords(segment);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+  if (!/^(grep|egrep|fgrep)$/.test((toks[i] || "").toLowerCase())) return false;
+  let pat = false, recursive = false, operands = 0, endOpts = false;
+  for (i++; i < toks.length; i++) {
+    const t = toks[i];
+    if (/^\d*>/.test(t) || /^\d*<>?/.test(t)) continue; // redirections
+    if (!endOpts && t === "--") { endOpts = true; continue; }
+    if (!endOpts && /^--(recursive|dereference-recursive)$/.test(t)) { recursive = true; continue; }
+    if (!endOpts && /^-e$|^--regexp=/.test(t)) { pat = true; if (t === "-e") i++; continue; }
+    if (!endOpts && t.startsWith("-") && t.length > 1) { if (/^-[A-Za-z]*[rR]/.test(t)) recursive = true; continue; }
+    if (!pat) { pat = true; continue; }
+    operands++;
+  }
+  return !recursive && operands === 0;
+}
 function isCodeSearchSegment(segment) {
   if (!isSearchSegment(segment)) return false;
+  if (isStdinFilterGrep(segment)) return false; // filtering piped output, not a code search
   if (isFindFileOps(segment)) return false; // a file-ops find is not a code search
   const s = segment.toLowerCase();
   const textTarget =
@@ -357,6 +380,120 @@ function buildRewrite(segment) {
   }
   const pat = extractGrepPattern(segment, isGit);
   return pat ? rewriteForPattern(root, pat) : null;
+}
+
+// ── Transparent rewrite for the command shapes agents ACTUALLY type ────────────────────────────────────────────
+// Measured by replaying 1,694 real search commands (14 days) through the v1.2.0 hook in standalone mode: 391
+// were BLOCKED and only 4 were REWRITTEN. The rewrite accepted exactly one bare segment, but real commands look
+// like `cd <dir> && grep -rn "A\|B" Src/ | head -20` — a cd prefix, a BRE alternation (`\|`, rejected by the
+// safe-pattern gate), a scope operand (which the rewrite then DROPPED, searching the whole project), and a head.
+// Since a rewrite is the only lever that measurably works (warnings convert 2 in 1,680), this recognises that
+// shape and translates it FAITHFULLY — or not at all. Anything whose result set search_text cannot reproduce
+// (-i -w -v -l -c -o -x, context flags, several operands, an unknown long option) still blocks.
+
+// `cd <dir> [&&|;] <search> [| head [-n] N]` → { lead, search, head } or null. Parsed from the RAW command,
+// because splitSegments drops the separators and so cannot tell `cd A && grep` from `cd A || grep`.
+function searchShape(command) {
+  let s = String(command || "").trim();
+  let lead = "";
+  const cd = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(&&|;)\s*/.exec(s);
+  if (cd) { lead = stripQuotes(cd[1]); s = s.slice(cd[0].length); }
+  let head = 0;
+  const hd = /\s*\|\s*head(?:\s+-n)?\s*(?:-?(\d+))?\s*$/.exec(s);
+  if (hd) { head = hd[1] ? Number(hd[1]) : 10; s = s.slice(0, hd.index); }
+  if (/[|;&`$<>]/.test(s.replace(/"[^"]*"|'[^']*'/g, "").replace(/\s2>\/dev\/null\b/g, ""))) return null; // anything else chained
+  return { lead, search: s.replace(/\s2>\/dev\/null\b/g, "").trim(), head };
+}
+// Git Bash writes Windows drives as /d/…; node on Windows needs D:/…
+function nativePath(p) {
+  if (process.platform === "win32" && /^\/[a-zA-Z](\/|$)/.test(p)) return p[1].toUpperCase() + ":" + (p.slice(2) || "/");
+  return p;
+}
+// A grep BASIC regex → the JS regex search_text runs. In BRE `\|` `\(` `\)` `\+` `\?` `\{` `\}` are the OPERATORS
+// and the bare characters are LITERALS — the inverse of JS. `\<` `\>` are word boundaries. Anything else escaped
+// that JS reads differently → null (don't guess).
+function breToJs(p) {
+  let out = "";
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === "\\") {
+      const n = p[i + 1];
+      if (n === undefined) return null;
+      i++;
+      if ("|()+?{}".includes(n)) out += n;
+      else if (n === "<" || n === ">") out += "\\b";
+      else if (".*[]\\^$/bBwWsS".includes(n)) out += "\\" + n;
+      else return null;
+    } else if (c === "|") out += "|"; // DELIBERATE deviation: strict BRE reads a bare `|` literally, but agents
+    // write `grep "A|B"` meaning alternation and the rewrite has always honoured that (eval pins it) — the result
+    // is exactly the intended set, nothing is silently hidden.
+    else if ("()+?{}".includes(c)) out += "\\" + c;
+    else out += c;
+  }
+  return out;
+}
+// ctx: { lead (cd target or ""), head (N or 0), cwd (session cwd) }. Returns the rewrite or null (→ block).
+function buildGrepRewrite(search, ctx) {
+  const toks = shellWords(search);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+  const exec = (toks[i] || "").replace(/\.exe$/i, "").toLowerCase();
+  i++;
+  if (exec === "git") { if (toks[i] !== "grep") return null; i++; }
+  else if (!["grep", "egrep", "rg"].includes(exec)) return null;
+  let ere = exec === "egrep" || exec === "rg", glob = "", pat = null;
+  const operands = [];
+  // GNU grep accepts options AFTER the pattern (`grep -rn X --include=*.cs .`), so options are recognised at any
+  // position until an explicit `--`; a quoted token is never an option (its quote is still attached here).
+  let endOpts = false;
+  for (; i < toks.length; i++) {
+    const t = toks[i];
+    if (!endOpts && t === "--") { endOpts = true; continue; }
+    if (!endOpts && t.startsWith("--")) {
+      const inc = /^--include=(.+)$/.exec(t);
+      if (inc && !glob) { glob = stripQuotes(inc[1]); continue; }
+      if (t === "--line-number" || t === "--recursive") continue;
+      return null; // unknown long option — may change the result set
+    }
+    if (!endOpts && /^-[A-Za-z]+$/.test(t)) {
+      for (const f of t.slice(1)) {
+        if ("rRnHsI".includes(f)) continue;
+        if (f === "E" || f === "P") { ere = true; continue; }
+        return null; // -i -w -v -l -c -o -x -e -A -B -C -m … — not expressible, or not the same answer
+      }
+      continue;
+    }
+    if (pat === null) { pat = stripQuotes(t); continue; }
+    operands.push(stripQuotes(t));
+  }
+  if (!pat || operands.length > 1) return null;
+  // An UNSCOPED identifier grep (no operand, no cd) keeps its documented route to the semantic `vts symbol`
+  // (synergy A) — decline here so the original rewrite handles it. This translator is for SCOPED searches.
+  if (!operands.length && !ctx.lead && IDENT.test(pat)) return null;
+  const q = ere ? pat : breToJs(pat);
+  if (q === null || !q.trim() || /["`$]/.test(q)) return null; // shell-unsafe inside the double-quoted --q
+  try { new RegExp(q); } catch { return null; }
+  const base = nativePath(ctx.lead || ctx.cwd || rewriteRoot());
+  const baseAbs = path.isAbsolute(base) ? base : path.resolve(ctx.cwd || rewriteRoot(), base);
+  let op = operands[0] ? nativePath(operands[0]) : "";
+  // A shell-glob operand (`Public/Chaos/*.h`) is a directory plus a filename glob, not a file. Only the LAST
+  // segment may be a glob; a wildcard in a directory part cannot be expressed as one search_text scope.
+  if (/[*?[]/.test(op)) {
+    const dirPart = path.dirname(op), leaf = path.basename(op);
+    if (/[*?[]/.test(dirPart) || glob) return null;
+    glob = leaf; op = dirPart === "." ? "" : dirPart;
+  }
+  const target = op ? (path.isAbsolute(op) ? op : path.resolve(baseAbs, op)) : baseAbs;
+  let st;
+  try { st = fs.statSync(target); } catch { return null; } // a target that doesn't exist: grep would error — don't guess
+  const isFile = st.isFile();
+  const root = isFile ? path.dirname(target) : target;
+  if (/["$`\r\n]/.test(root + target + glob)) return null;
+  let cmd = `node ${quote(CLI_PATH)} text --q ${quote(q)} --projectPath ${quote(root)}`;
+  if (isFile) cmd += ` --path ${quote(target)}`;
+  else if (glob) cmd += ` --glob ${quote(glob)}`;
+  if (ctx.head > 0) cmd += ` --maxResults ${ctx.head}`;
+  return { cmd, tool: "search_text", q };
 }
 
 // Build a vts wrapper rewrite for a SINGLE read-only git/p4 command (status/log/diff/opened/…), or null.
@@ -968,7 +1105,8 @@ process.stdin.on("end", () => {
       const lead = segments.length === 2 && execOf(segments[0]) === "cd" ? stripQuotes(shellWords(segments[0])[1] || "") : "";
       const rel = (p) => (p && lead && !path.isAbsolute(p) ? path.resolve(lead, p) : p);
       const target = rel(searchFile || searchDir || findDir) || lead || ""; // a file/dir the command names → generalize the root
-      const soleSearch = segments.length === 1 || (lead && codeSegs.length === 1);
+      // `cd X && grep … | head -N` is still ONE search (qvts returns a capped answer anyway) — see searchShape.
+      const soleSearch = segments.length === 1 || (codeSegs.length === 1 && (lead || !!searchShape(cmd)));
       if (soleSearch) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
@@ -994,8 +1132,14 @@ process.stdin.on("end", () => {
     // #1 transparent rewrite: a whole command that is exactly one code-search segment, where we can build
     // a safe vts equivalent, is rerouted via updatedInput — the model's flow is unbroken AND the output is
     // guaranteed token-capped. Anything ambiguous (pipelines, complex patterns) falls back to the block.
-    if (!rewriteOff() && segments.length === 1 && codeSegs.length === 1) {
-      const rw = buildRewrite(codeSegs[0]);
+    if (!rewriteOff() && codeSegs.length === 1) {
+      // grep family: the faithful translator (cd scope, operand scope, BRE, head). find/findstr: the original
+      // single-segment rewrite. Either returns null for anything it cannot reproduce exactly → block below.
+      const shape = ["grep", "egrep", "rg", "git"].includes(execOf(codeSegs[0])) ? searchShape(cmd) : null;
+      // When the faithful translator declines a SINGLE-segment command, the original rewrite still applies
+      // (unchanged behaviour for those shapes); multi-segment shapes it declines keep blocking.
+      const rw = (shape && buildGrepRewrite(shape.search, { lead: shape.lead, head: shape.head, cwd: j.cwd }))
+        || (segments.length === 1 ? buildRewrite(codeSegs[0]) : null);
       if (rw) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
