@@ -574,6 +574,30 @@ function detectFleets(spawns, winMs) {
   }
   return out;
 }
+// ---- lifetime-weighted cost: what a token that ENTERS context actually costs ----
+// Tool output is billed once when it enters context (cache write) and then again on EVERY later turn as part
+// of the cached prefix (cache read), until a compaction drops it. Measured on real sessions (30d, 21 sessions,
+// 17,893 turns): cache READ was 69% of weighted cost, avg context 386k tok/turn, ~850 turns/session. So the
+// raw size of a bypass says little — a 500-tok grep result early in a long session costs ~100× more than the
+// same result near a compaction. Ranking leaks by raw size optimised the wrong thing.
+// billed-equivalent tokens = size × (W_WRITE + W_READ × turns it stayed in context), in units of one fresh
+// input token. Weights are LIST-PRICE RATIOS (cache write 1.25×, cache read 0.1×), not a bill — env-tunable.
+// A token's life ends at the first compaction boundary after it entered, else at the session's last turn.
+export function lifetimeCost(size, turn, boundaries, lastTurn) {
+  const wWrite = envNum("VTS_COST_W_WRITE", 1.25);
+  const wRead = envNum("VTS_COST_W_READ", 0.1);
+  const n = Number(size) || 0;
+  if (n <= 0) return 0;
+  const t = Number(turn) || 0;
+  let end = Number(lastTurn) || t;
+  for (const b of boundaries || []) if (b > t) { end = Math.min(end, b); break; }
+  const lived = Math.max(0, end - t);
+  return Math.round(n * (wWrite + wRead * lived));
+}
+function envNum(name, dflt) { const v = Number(process.env[name]); return Number.isFinite(v) && v >= 0 ? v : dflt; }
+// A compaction boundary in a Claude Code transcript (both markers appear, one per compaction).
+const isCompactBoundary = (e) => !!e && (e.subtype === "compact_boundary" || e.isCompactSummary === true);
+
 function scanBypasses(a = {}) {
   const base = process.env.VTS_CLAUDE_PROJECTS || path.join(os.homedir(), ".claude", "projects");
   let dirs;
@@ -617,13 +641,33 @@ function scanBypasses(a = {}) {
   const readUse = new Map();    // Read tool_use_id → normalized file (its result carries the size)
   const searchUse = new Map();  // vts search/goto/refs tool_use id → true (its result carries the file:line)
   const searchedBn = new Set(); // basenames seen in a prior vts search/goto/refs RESULT → steer-reachable
+  // Lifetime weighting (see lifetimeCost): per transcript, the index of the assistant turn each leak entered at,
+  // the compaction boundaries, and the last turn — resolved into billed-equivalent tokens when the file ends.
+  let billedTotal = 0, editReadBilled = 0;
+  // The savings ledger records at call time and cannot know how many turns a result will live. So measure it
+  // here instead: how long vts's OWN results actually stayed in context → the multiplier that turns "tokens
+  // saved" into "billed-equivalent tokens saved". Measured, not assumed; absent → the catch-rate stays raw.
+  let vtsMultSum = 0, vtsMultN = 0;
+  const vtsUse = new Map(); // vs-search tool_use id → true
   outer: for (const { p } of files) {
     cand.clear(); reads.clear(); readUse.clear(); searchUse.clear(); searchedBn.clear(); spawnUse.clear(); // tool_use+result share one transcript → bound per file
+    let turn = 0; const msgSeen = new Set(); const bounds = []; const fileMissed = []; const fileEditReads = []; const fileVts = [];
+    vtsUse.clear();
+    const settle = () => {
+      for (const r of fileMissed) { r.billedTok = lifetimeCost(r.rawTok, r.turn, bounds, turn); billedTotal += r.billedTok; }
+      for (const r of fileEditReads) editReadBilled += lifetimeCost(r.tok, r.turn, bounds, turn);
+      for (const t of fileVts) { vtsMultSum += lifetimeCost(1000, t, bounds, turn) / 1000; vtsMultN++; }
+    };
     let txt; try { txt = fs.readFileSync(p, "utf8"); } catch { continue; }
     for (const line of txt.split(/\r?\n/)) {
       if (!line.trim()) continue;
-      if (++lines > MAX_LINES) break outer;
+      if (++lines > MAX_LINES) { settle(); break outer; }
       let e; try { e = JSON.parse(line); } catch { continue; }
+      // Turn + compaction bookkeeping runs BEFORE the window/scope filters below: a leak's lifetime is measured in
+      // the turns that FOLLOWED it, including ones outside the reporting window. A streamed message spans several
+      // records sharing one message id — count it once.
+      if (e && e.message && e.message.role === "assistant") { const id = e.message.id || e.uuid; if (!id || !msgSeen.has(id)) { if (id) msgSeen.add(id); turn++; } }
+      if (isCompactBoundary(e)) bounds.push(turn);
       // Harvest async-spawn completion tokens by task-id (=== agentId). Scanned on the raw line (the notification
       // text lives inside a JSON string with literal <tags>); cheap-guarded so the regex only runs when present.
       // Done BEFORE the window/scope filters — agentIds are globally unique, so a stray join can't cross projects.
@@ -636,17 +680,20 @@ function scanBypasses(a = {}) {
       const content = e && e.message && e.message.content;
       if (!Array.isArray(content)) continue;
       for (const b of content) {
+        // Independent of the branch chain below: a vts result also counts toward the measured lifetime multiplier.
+        if (b && b.type === "tool_result" && vtsUse.has(b.tool_use_id)) { vtsUse.delete(b.tool_use_id); fileVts.push(turn); }
         if (b && b.type === "tool_use") {
           const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
+          if (/vs-search__/.test(String(b.name || ""))) vtsUse.set(b.id, true);
           if ((b.name === "Agent" || b.name === "Task") && b.input && b.input.subagent_type) spawnUse.set(b.id, { type: String(b.input.subagent_type), desc: String(b.input.description || ""), ts: e.timestamp ? Date.parse(e.timestamp) : 0 }); // an agent spawn (NOT the TaskCreate/Update to-do tools — those carry no subagent_type)
           if (b.name === "Read" && b.input && b.input.file_path) readUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
           else if (/(?:search_symbol|goto_definition|find_references)$/.test(String(b.name || ""))) searchUse.set(b.id, true);
-          else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; let rtk = 0; if (reads.has(ce.file)) { rtk = reads.get(ce.file); editReadTok += rtk; reads.delete(ce.file); } const prior = searchedBn.has(path.basename(ce.file)); if (!prior) editUnreached++; editDetails.push({ file: ce.file, kind: ce.replaceDecl ? "replace" : "insert", readTok: rtk, priorSearch: prior }); } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
+          else { const ce = classifyDeclEdit(b.name, b.input, envInt("VTS_EDIT_MIN_LINES", 8)); if (ce.file && (ce.replaceDecl || ce.insertDecl)) { editCount++; let rtk = 0; if (reads.has(ce.file)) { const rr = reads.get(ce.file); rtk = rr.tok; editReadTok += rtk; fileEditReads.push(rr); reads.delete(ce.file); } const prior = searchedBn.has(path.basename(ce.file)); if (!prior) editUnreached++; editDetails.push({ file: ce.file, kind: ce.replaceDecl ? "replace" : "insert", readTok: rtk, priorSearch: prior }); } } // attribute a read ONCE (a re-Read re-adds it); unreached = no prior vts search landed on this file
         }
         else if (b && b.type === "tool_result" && readUse.has(b.tool_use_id)) {
           const f = readUse.get(b.tool_use_id); readUse.delete(b.tool_use_id);
           const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
-          reads.set(f, tok(o)); // most recent Read of this file → the token a later symbol-edit would skip
+          reads.set(f, { tok: tok(o), turn }); // most recent Read of this file → the token a later symbol-edit would skip
         }
         else if (b && b.type === "tool_result" && searchUse.has(b.tool_use_id)) {
           searchUse.delete(b.tool_use_id);
@@ -671,7 +718,7 @@ function scanBypasses(a = {}) {
           // block header — so it stays counted, correctly.) Rewritten Bash greps already don't reach here
           // (their tool_use is the vts command, which matchBypass doesn't flag).
           if (/✨ vs-token-safer/.test(o)) continue;
-          const rt = tok(o); rawTokTotal += rt; missed.push({ ...meta, rawTok: rt });
+          const rt = tok(o); rawTokTotal += rt; const rec = { ...meta, rawTok: rt, turn }; missed.push(rec); fileMissed.push(rec);
           // resolve relative hits against the ENTRY's cwd (the project the search actually ran in) —
           // recordQueryResults would otherwise resolve them against the scanner's cwd, mis-attributing.
           let pm; PATH_RE.lastIndex = 0;
@@ -683,6 +730,7 @@ function scanBypasses(a = {}) {
         }
       }
     }
+    settle(); // the file's last turn is now known → resolve each leak's lifetime
   }
   // Reconcile launched spawns with harvested completion tokens (async) → EXACT; else inline totalTokens (sync);
   // else the returned-summary token count (approx, flagged). agentId === the completion's task-id.
@@ -693,7 +741,7 @@ function scanBypasses(a = {}) {
     else { t = r.summaryTok; approx = true; }
     spawns.push({ type: r.type, tok: t, desc: r.desc, ts: r.ts, approx });
   }
-  return { missed, rawTokTotal, learned, filesCount: files.length, all, since, editCount, editReadTok, editUnreached, editDetails, spawns };
+  return { missed, rawTokTotal, billedTotal, vtsMult: vtsMultN ? vtsMultSum / vtsMultN : null, vtsMultN, learned, filesCount: files.length, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -710,7 +758,14 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, learned, filesCount: fc, all, since, editCount, editReadTok, editUnreached, editDetails, spawns } = r;
+  const { missed, rawTokTotal, billedTotal, vtsMult, vtsMultN, learned, filesCount: fc, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns } = r;
+  // The number worth optimising is what a leak COSTS, not how big it was: size × how long it stayed in context.
+  // Ranked and reported that way, a small early leak in a long session outranks a big one right before a compaction.
+  const billedLine = rawTokTotal || editReadTok
+    ? `\n  lifetime-weighted cost: search leaks ≈ ${billedTotal.toLocaleString()} billed-equivalent tok (${rawTokTotal ? (billedTotal / rawTokTotal).toFixed(0) : "—"}× their raw size)` +
+      (editReadTok ? ` · edit pre-reads ≈ ${editReadBilled.toLocaleString()} (${(editReadBilled / editReadTok).toFixed(0)}×)` : "") +
+      ` — every token is re-billed as cached prefix on each later turn until a compaction (weights: write 1.25×, read 0.1×, list-price ratios).`
+    : "";
   // A2: agent-spawn accounting — the largest single token events (a code-locator/Explore fleet) were invisible.
   // Folded into the report (and `--agents`); VTS_DISCOVER_AGENTS=0 hides. Redacted: type + counts + tokens only,
   // no prompt/description bodies (same discipline as the search/edit blocks).
@@ -760,7 +815,16 @@ function discoverReport(a = {}) {
   const trueLeak = rawTokTotal + (editReadTok || 0);
   const trueRate = caught + trueLeak > 0 ? (100 * caught / (caught + trueLeak)).toFixed(1) : "—";
   const trueLine = editReadTok ? `\n  true coverage (incl. edit-pre-reads): ~${caught.toLocaleString()} caught vs ~${trueLeak.toLocaleString()} leaking (search ${rawTokTotal.toLocaleString()} + edit-read ${editReadTok.toLocaleString()}) → ${trueRate}% — symbol-edit adoption is the real gap.` : "";
-  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine;
+  // Same coverage question in BILLED terms. The ledger's "caught" is raw (it can't know future turns at record
+  // time), so it is scaled by vts's own MEASURED lifetime multiplier from these transcripts. Leaks and savings
+  // then share one unit, and the ratio reflects where money goes rather than where bytes go.
+  let billedCatch = "";
+  if (vtsMult && vtsMultN >= 20 && (billedTotal || editReadBilled)) {
+    const caughtBilled = Math.round(caught * vtsMult);
+    const leakBilled = (billedTotal || 0) + (editReadBilled || 0);
+    billedCatch = `\n  billed coverage: ~${caughtBilled.toLocaleString()} saved (caught × ${vtsMult.toFixed(0)}, the measured lifetime of ${vtsMultN} vts results) vs ~${leakBilled.toLocaleString()} leaking → ${(100 * caughtBilled / (caughtBilled + leakBilled)).toFixed(1)}%`;
+  }
+  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine + billedCatch;
   // Optional LOCAL detail dump (token-free): on `detail`/`out`, write the full per-bypass + per-edit records to
   // a local JSONL the model NEVER sees — it feeds an OFFLINE counterfactual (e.g. how much of the edit-pre-read
   // tokens a symbol-edit / read_symbol would actually have recovered). The report still surfaces only the summary.
@@ -770,21 +834,22 @@ function discoverReport(a = {}) {
     try {
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       const recs = [JSON.stringify({ t: "meta", scope, transcripts: fc, editCount, editReadTok, editUnreached })]
-        .concat(missed.map((m) => JSON.stringify({ t: "search", tool: m.tool, q: m.q, rawTok: m.rawTok })))
+        .concat(missed.map((m) => JSON.stringify({ t: "search", tool: m.tool, q: m.q, rawTok: m.rawTok, turn: m.turn, billedTok: m.billedTok })))
         .concat((editDetails || []).map((d) => JSON.stringify({ t: "edit", ...d })));
       fs.writeFileSync(outPath, recs.join("\n") + "\n");
       detailLine = `\n  ✓ wrote ${missed.length + (editDetails ? editDetails.length : 0)} detailed record(s) to ${outPath} (LOCAL only — not sent to the model; for offline counterfactual analysis).`;
     } catch { /* best-effort */ }
   }
-  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + editLine + agentLine + learnLine + detailLine;
+  if (!missed.length) return `vs-token-safer discover (${scope}, ${files.length} transcript(s)): no code searches bypassed vts. It's catching them. ✓` + catchLine + billedLine + editLine + agentLine + learnLine + detailLine;
   const byTool = {};
   for (const m of missed) byTool[m.tool] = (byTool[m.tool] || 0) + 1;
   const toolLine = Object.entries(byTool).sort((x, y) => y[1] - x[1]).map(([t, n]) => `${t}×${n}`).join(", ");
-  const top = missed.slice().sort((x, y) => y.rawTok - x.rawTok).slice(0, 5)
-    .map((m) => `  ~${m.rawTok.toLocaleString()} tok  [${m.tool}]  ${m.q}`).join("\n");
+  // "biggest" = most EXPENSIVE (lifetime-weighted), shown with both numbers so the difference is visible.
+  const top = missed.slice().sort((x, y) => (y.billedTok || y.rawTok) - (x.billedTok || x.rawTok)).slice(0, 5)
+    .map((m) => `  ~${(m.billedTok || m.rawTok).toLocaleString()} billed (raw ${m.rawTok.toLocaleString()}, turn ${m.turn ?? "?"})  [${m.tool}]  ${m.q}`).join("\n");
   return `vs-token-safer discover — missed token savings (local scan, ${scope}, ${files.length} transcript(s))\n` +
     `  ${missed.length} code search(es) bypassed vts (${toolLine})\n` +
-    `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}\n` +
+    `  raw tool output ingested: ~${rawTokTotal.toLocaleString()} tok (~$${usd(rawTokTotal).toFixed(2)}) — routed through vts (file:line, capped) most of this is avoidable (typically 70–90% less)${catchLine}${billedLine}\n` +
     `  biggest:\n${top}\n` +
     `  Fix: rewrite is on by default (Bash grep auto-reroutes to vts); for the Grep tool, prefer the vs-search MCP tools (search_symbol / search_text / find_files).${editLine}${agentLine}${learnLine}${detailLine}`;
 }

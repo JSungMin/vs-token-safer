@@ -2681,6 +2681,59 @@ const widenHintOk = await (async () => {
   }
 })();
 
+// ── lifetime-weighted cost: rank leaks by what they COST, not by their size ─────────────────────────────────
+// Measured on real sessions: cache READ was 69% of weighted cost (avg 386k tok context/turn, ~850 turns per
+// session), so a tool result is re-billed on every later turn until a compaction drops it. discover now weighs
+// each leak by size × (1.25 + 0.1 × turns it lived). Pin the arithmetic, the compaction cut-off, and that a
+// real transcript scan attaches the right lifetime to a bypass.
+const lifetimeOk = await (async () => {
+  const { lifetimeCost, runTool } = await import("../server/core.js");
+  const arith =
+    lifetimeCost(100, 10, [], 110) === 1125 &&        // 100 × (1.25 + 0.1 × 100 turns)
+    lifetimeCost(100, 10, [20], 110) === 225 &&       // a compaction 10 turns later ends its life
+    lifetimeCost(100, 10, [5], 110) === 1125 &&       // a compaction BEFORE it entered is irrelevant
+    lifetimeCost(100, 110, [], 110) === 125 &&        // entered on the last turn: write cost only
+    lifetimeCost(0, 1, [], 50) === 0;
+  // Integration: the SAME bypassed grep appears twice — early (turn 1, cut by a compaction at turn 4) and late
+  // (turn 5, lives to the end at turn 8). Equal size, equal lifetime (3 turns) → equal billed cost; without the
+  // compaction cut the early one would have lived 7 turns.
+  const dir = path.join(os.tmpdir(), `vts-eval-life-${process.pid}`, "proj");
+  fs.mkdirSync(dir, { recursive: true });
+  const out = "src/a.cpp:1: int Foo;\n".repeat(20);
+  const ts = () => new Date().toISOString();
+  const asst = (id, blocks) => JSON.stringify({ timestamp: ts(), message: { id, role: "assistant", content: blocks } });
+  const user = (blocks) => JSON.stringify({ timestamp: ts(), message: { role: "user", content: blocks } });
+  const grep = (id) => ({ type: "tool_use", id, name: "Bash", input: { command: "grep -rn Foo src/a.cpp" } });
+  const res = (id) => ({ type: "tool_result", tool_use_id: id, content: out });
+  const txt = (id) => asst(id, [{ type: "text", text: "." }]);
+  const lines = [
+    asst("m1", [grep("g1")]), user([res("g1")]), txt("m2"), txt("m3"), txt("m4"),
+    JSON.stringify({ type: "system", subtype: "compact_boundary", timestamp: ts() }),
+    asst("m5", [grep("g2")]), user([res("g2")]), txt("m6"), txt("m7"), txt("m8"),
+  ];
+  fs.writeFileSync(path.join(dir, "s.jsonl"), lines.join("\n") + "\n");
+  const detail = path.join(path.dirname(dir), "d.jsonl");
+  const saveP = process.env.VTS_CLAUDE_PROJECTS;
+  process.env.VTS_CLAUDE_PROJECTS = path.dirname(dir);
+  try {
+    const r = await runTool("vts_discover", { since: 1, detail: true, out: detail });
+    const text = (r && r.text) || "";
+    const recs = fs.readFileSync(detail, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.t === "search");
+    const [early, late] = recs.sort((a, b) => a.turn - b.turn);
+    const integ = recs.length === 2 && early.turn === 1 && late.turn === 5 &&
+      early.billedTok === lifetimeCost(early.rawTok, 1, [4], 8) && early.billedTok === late.billedTok &&
+      /lifetime-weighted cost/.test(text);
+    if (!integ) console.error("  lifetime guard:", JSON.stringify({ recs, head: text.slice(0, 200) }));
+    return arith && integ;
+  } catch (e) {
+    console.error("  lifetime guard threw:", e && e.message);
+    return false;
+  } finally {
+    if (saveP === undefined) delete process.env.VTS_CLAUDE_PROJECTS; else process.env.VTS_CLAUDE_PROJECTS = saveP;
+    try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── orchestrator redirect must not WIDEN a call that is already scoped ────────────────────────────────────
 // With qvts installed, a vs-search locate is redirected to it. But `taskFor` renders a natural-language task
 // that carried the ROOT and not the FILE, so `search_text q=X path=<one header>` — which answers instantly and
@@ -2928,6 +2981,7 @@ const rows = [
   ["PowerShell search channel: Select-String/Get-ChildItem classified (aliases, abbreviated params, non-Windows paths), scripted-value/-NotMatch/prose shapes silent, hook WIRED to the tool, counted by discover", psearchOk, "true", psearchOk],
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
+  ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;
