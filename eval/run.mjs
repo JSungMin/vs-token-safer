@@ -2785,6 +2785,49 @@ const lifetimeOk = await (async () => {
   }
 })();
 
+// ── re-retrieval: did the capped answer END the lookup? ──────────────────────────────────────────────────────
+// 2607.12161 measured compression RAISING billed cost when it made the agent fetch again; 2608.13568 measured an
+// LSP spending MORE tokens than grep on name-known localization. The honest test of a vts answer: was it followed
+// by a WHOLE read of a file it just named? Counted: whole read, big, within the window. Not counted: a sliced read
+// (read the region to edit — the intended flow), a whole read long after, a file vts never named.
+const rereadOk = await (async () => {
+  const { runTool } = await import("../server/core.js");
+  const dir = path.join(os.tmpdir(), `vts-eval-reread-${process.pid}`, "proj");
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = () => new Date().toISOString();
+  const asst = (id, blocks) => JSON.stringify({ timestamp: ts(), message: { id, role: "assistant", content: blocks } });
+  const user = (blocks) => JSON.stringify({ timestamp: ts(), message: { role: "user", content: blocks } });
+  const vts = (id) => ({ type: "tool_use", id, name: "mcp__plugin_vs-token-safer_vs-search__search_symbol", input: { q: "Foo" } });
+  const rd = (id, file, sliced) => ({ type: "tool_use", id, name: "Read", input: sliced ? { file_path: file, offset: 10, limit: 40 } : { file_path: file } });
+  const res = (id, text) => ({ type: "tool_result", tool_use_id: id, content: text });
+  const big = "x".repeat(8000); // ~2000 tok ≥ VTS_REREAD_MIN_TOK
+  const txt = (id) => asst(id, [{ type: "text", text: "." }]);
+  const lines = [
+    asst("m1", [vts("v1")]), user([res("v1", "class Foo @ src/Alpha.cpp:10\nclass Foo @ src/Beta.cpp:20")]),
+    asst("m2", [rd("r1", "/w/src/Alpha.cpp", false)]), user([res("r1", big)]),   // COUNTED: whole, big, 1 turn later
+    asst("m3", [rd("r2", "/w/src/Beta.cpp", true)]), user([res("r2", big)]),     // not: sliced read
+    asst("m4", [rd("r3", "/w/src/Gamma.cpp", false)]), user([res("r3", big)]),   // not: vts never named it
+    txt("m5"), txt("m6"), txt("m7"), txt("m8"), txt("m9"),
+    asst("m10", [rd("r4", "/w/src/Beta.cpp", false)]), user([res("r4", big)]),   // not: outside the 5-turn window
+  ];
+  fs.writeFileSync(path.join(dir, "s.jsonl"), lines.join("\n") + "\n");
+  const saveP = process.env.VTS_CLAUDE_PROJECTS;
+  process.env.VTS_CLAUDE_PROJECTS = path.dirname(dir);
+  try {
+    const r = await runTool("vts_discover", { since: 1 });
+    const t = (r && r.text) || "";
+    const ok = /re-retrieval: 1 of 1 vts answers/.test(t);
+    if (!ok) console.error("  reread guard:", (t.match(/re-retrieval:[^\n]*/) || ["(no re-retrieval line)"])[0]);
+    return ok;
+  } catch (e) {
+    console.error("  reread guard threw:", e && e.message);
+    return false;
+  } finally {
+    if (saveP === undefined) delete process.env.VTS_CLAUDE_PROJECTS; else process.env.VTS_CLAUDE_PROJECTS = saveP;
+    try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── orchestrator redirect must not WIDEN a call that is already scoped ────────────────────────────────────
 // With qvts installed, a vs-search locate is redirected to it. But `taskFor` renders a natural-language task
 // that carried the ROOT and not the FILE, so `search_text q=X path=<one header>` — which answers instantly and
@@ -3033,6 +3076,7 @@ const rows = [
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
+  ["re-retrieval: a WHOLE read of a file a vts answer just named is counted; sliced reads, unnamed files and reads outside the window are not", rereadOk, "true", rereadOk],
   ["Bash→qvts delegation: quoted pattern kept whole, leading `cd` is the scope (rewrite, not block), a blocked command passes on re-issue", bashOrchOk, "true", bashOrchOk],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);

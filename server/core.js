@@ -649,11 +649,15 @@ function scanBypasses(a = {}) {
   // saved" into "billed-equivalent tokens saved". Measured, not assumed; absent → the catch-rate stays raw.
   let vtsMultSum = 0, vtsMultN = 0;
   const vtsUse = new Map(); // vs-search tool_use id → true
+  let vtsAnswers = 0, rereads = 0, rereadTok = 0, rereadBilled = 0;
+  const named = new Map();        // basename a vts answer named → turn it was named at (per transcript)
+  const wholeReadUse = new Map(); // un-sliced Read tool_use id → normalized file
   outer: for (const { p } of files) {
     cand.clear(); reads.clear(); readUse.clear(); searchUse.clear(); searchedBn.clear(); spawnUse.clear(); // tool_use+result share one transcript → bound per file
-    let turn = 0; const msgSeen = new Set(); const bounds = []; const fileMissed = []; const fileEditReads = []; const fileVts = [];
-    vtsUse.clear();
+    let turn = 0; const msgSeen = new Set(); const bounds = []; const fileMissed = []; const fileEditReads = []; const fileVts = []; const fileRereads = [];
+    vtsUse.clear(); named.clear(); wholeReadUse.clear();
     const settle = () => {
+      for (const r of fileRereads) rereadBilled += lifetimeCost(r.tok, r.turn, bounds, turn);
       for (const r of fileMissed) { r.billedTok = lifetimeCost(r.rawTok, r.turn, bounds, turn); billedTotal += r.billedTok; }
       for (const r of fileEditReads) editReadBilled += lifetimeCost(r.tok, r.turn, bounds, turn);
       for (const t of fileVts) { vtsMultSum += lifetimeCost(1000, t, bounds, turn) / 1000; vtsMultN++; }
@@ -680,8 +684,32 @@ function scanBypasses(a = {}) {
       const content = e && e.message && e.message.content;
       if (!Array.isArray(content)) continue;
       for (const b of content) {
-        // Independent of the branch chain below: a vts result also counts toward the measured lifetime multiplier.
-        if (b && b.type === "tool_result" && vtsUse.has(b.tool_use_id)) { vtsUse.delete(b.tool_use_id); fileVts.push(turn); }
+        // Independent of the branch chain below: a vts result also counts toward the measured lifetime multiplier,
+        // and remembers which files it NAMED — so a later whole-file read of one of them can be detected.
+        if (b && b.type === "tool_result" && vtsUse.has(b.tool_use_id)) {
+          vtsUse.delete(b.tool_use_id); fileVts.push(turn);
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          let pm, any = false; PATH_RE.lastIndex = 0;
+          while ((pm = PATH_RE.exec(o))) { named.set(path.basename(pm[0]).toLowerCase(), turn); any = true; }
+          if (any) vtsAnswers++;
+        }
+        // RE-RETRIEVAL (2607.12161: compression that makes the agent fetch again can RAISE billed cost; 2608.13568:
+        // on name-known localization an LSP spent MORE tokens than grep). The honest test of a capped answer is
+        // whether it ENDED the lookup: a WHOLE-file read of a file the vts answer just named, within a few turns,
+        // means the file:line list did not narrow it — both costs were paid. A SLICED read after a locate is the
+        // intended flow (read the region to edit it) and is not counted.
+        if (b && b.type === "tool_result" && wholeReadUse.has(b.tool_use_id)) {
+          const f = wholeReadUse.get(b.tool_use_id); wholeReadUse.delete(b.tool_use_id);
+          const o = typeof b.content === "string" ? b.content : JSON.stringify(b.content || "");
+          const t0 = named.get(path.basename(f));
+          const rt = tok(o);
+          if (t0 !== undefined && turn - t0 <= envInt("VTS_REREAD_WINDOW", 5) && rt >= envInt("VTS_REREAD_MIN_TOK", 1500)) {
+            rereads++; fileRereads.push({ tok: rt, turn }); rereadTok += rt;
+          }
+        }
+        if (b && b.type === "tool_use" && b.name === "Read" && b.input && b.input.file_path && !b.input.offset && !b.input.limit) {
+          wholeReadUse.set(b.id, String(b.input.file_path).replace(/\\/g, "/").toLowerCase());
+        }
         if (b && b.type === "tool_use") {
           const m = matchBypass(b.name, b.input); if (m) cand.set(b.id, m);
           if (/vs-search__/.test(String(b.name || ""))) vtsUse.set(b.id, true);
@@ -741,7 +769,7 @@ function scanBypasses(a = {}) {
     else { t = r.summaryTok; approx = true; }
     spawns.push({ type: r.type, tok: t, desc: r.desc, ts: r.ts, approx });
   }
-  return { missed, rawTokTotal, billedTotal, vtsMult: vtsMultN ? vtsMultSum / vtsMultN : null, vtsMultN, learned, filesCount: files.length, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns };
+  return { missed, rawTokTotal, billedTotal, vtsMult: vtsMultN ? vtsMultSum / vtsMultN : null, vtsMultN, vtsAnswers, rereads, rereadTok, rereadBilled, learned, filesCount: files.length, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns };
 }
 // Boot-time self-improvement: harvest the last `since` days of bypassed searches and record their result
 // files into the warm-set query-history — the same write `vts discover --learn` does, but automatic.
@@ -758,7 +786,7 @@ export function autoLearn(root, since = 7) {
 function discoverReport(a = {}) {
   const r = scanBypasses(a);
   if (r.error) return r.error;
-  const { missed, rawTokTotal, billedTotal, vtsMult, vtsMultN, learned, filesCount: fc, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns } = r;
+  const { missed, rawTokTotal, billedTotal, vtsMult, vtsMultN, vtsAnswers, rereads, rereadTok, rereadBilled, learned, filesCount: fc, all, since, editCount, editReadTok, editReadBilled, editUnreached, editDetails, spawns } = r;
   // The number worth optimising is what a leak COSTS, not how big it was: size × how long it stayed in context.
   // Ranked and reported that way, a small early leak in a long session outranks a big one right before a compaction.
   const billedLine = rawTokTotal || editReadTok
@@ -824,7 +852,11 @@ function discoverReport(a = {}) {
     const leakBilled = (billedTotal || 0) + (editReadBilled || 0);
     billedCatch = `\n  billed coverage: ~${caughtBilled.toLocaleString()} saved (caught × ${vtsMult.toFixed(0)}, the measured lifetime of ${vtsMultN} vts results) vs ~${leakBilled.toLocaleString()} leaking → ${(100 * caughtBilled / (caughtBilled + leakBilled)).toFixed(1)}%`;
   }
-  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine + billedCatch;
+  // Did the capped answer END the lookup? A whole-file read of a file vts had just named means both were paid.
+  const rereadLine = vtsAnswers
+    ? `\n  re-retrieval: ${rereads} of ${vtsAnswers} vts answers were followed by a WHOLE read of a file they named within ${envInt("VTS_REREAD_WINDOW", 5)} turns (~${rereadTok.toLocaleString()} tok, ≈${rereadBilled.toLocaleString()} billed) — there the file:line list did not narrow the lookup; a sliced read after a locate is the intended flow and is not counted.`
+    : "";
+  const catchLine = `\n  catch-rate: ~${caught.toLocaleString()} tok caught (via vts) vs ~${rawTokTotal.toLocaleString()} still bypassing → ${rate}% of search tokens routed through vts` + trueLine + billedCatch + rereadLine;
   // Optional LOCAL detail dump (token-free): on `detail`/`out`, write the full per-bypass + per-edit records to
   // a local JSONL the model NEVER sees — it feeds an OFFLINE counterfactual (e.g. how much of the edit-pre-read
   // tokens a symbol-edit / read_symbol would actually have recovered). The report still surfaces only the summary.
