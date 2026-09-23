@@ -2717,7 +2717,9 @@ const widenHintOk = await (async () => {
 // rewrite (two segments → block); (3) the block promised "re-issue passes", but on this path it never did.
 const bashOrchOk = await (async () => {
   const hook = fileURLToPath(new URL("../hooks/block-code-grep.js", import.meta.url));
-  const base = path.join(os.tmpdir(), `vts-eval-bashorch-${process.pid}`);
+  // realpath: on the GitHub Windows runner os.tmpdir() is an 8.3 short name (C:\Users\RUNNER~1\…); the `~` fails
+  // the hook's SAFE_PATH gate, which silently dropped the file scope and failed this guard on CI only.
+  const base = path.join(fs.realpathSync.native(os.tmpdir()), `vts-eval-bashorch-${process.pid}`);
   const repo = path.join(base, "repoA");
   fs.mkdirSync(repo, { recursive: true });
   fs.writeFileSync(path.join(repo, "package.json"), "{}");
@@ -2736,6 +2738,12 @@ const bashOrchOk = await (async () => {
     const b = run(`cd "${repo}" && git grep -l "two words"`);
     const cmd = `git grep -n "Foo" -- src | head -5`;
     const c1 = run(cmd), c2 = run(cmd);
+    const ok = (
+      /find function fooBarBaz in x\.js/.test(a.text) &&
+      b.status === 0 && /find two words/.test(b.text) && b.text.includes(repo) &&
+      c1.status === 2 && c2.status === 0
+    );
+    if (!ok) console.error("  bash→qvts guard:", JSON.stringify({ repo, a: a.text.slice(0, 160), b: [b.status, b.text.slice(0, 160)], c: [c1.status, c2.status] }));
     return (
       /find function fooBarBaz in x\.js/.test(a.text) &&                        // whole quoted pattern survives
       b.status === 0 && /find two words/.test(b.text) && b.text.includes(repo) && // cd → rewritten, scoped to it
