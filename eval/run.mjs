@@ -1990,11 +1990,15 @@ if (supTogglePrev === undefined) delete process.env.VTS_SUPPRESS; else process.e
 const dig = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
 // …and it stays SMALL: the digest rides in every session's cached prefix for every turn. ~150 tok today; the cap
 // (1000 chars ≈ 250 tok, with the qvts line forced on) stops it regrowing into the ~300-tok essay it used to be.
-const saveOrch = process.env.VTS_ORCHESTRATOR, saveAware = process.env.VTS_ORCHESTRATOR_AWARE;
-process.env.VTS_ORCHESTRATOR = "1"; process.env.VTS_ORCHESTRATOR_AWARE = "1";
-const digMax = routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 3, converted: 0 }, block: { shown: 0, converted: 0 } } });
-if (saveOrch === undefined) delete process.env.VTS_ORCHESTRATOR; else process.env.VTS_ORCHESTRATOR = saveOrch;
-if (saveAware === undefined) delete process.env.VTS_ORCHESTRATOR_AWARE; else process.env.VTS_ORCHESTRATOR_AWARE = saveAware;
+// orchestratorPresent() is cached per PROCESS and this eval pins it off for hermeticity, so flipping env here
+// would silently test the no-qvts digest. Render the qvts variant in a fresh child instead.
+const digMax = await (async () => {
+  const policyUrl = new URL("../server/policy.js", import.meta.url).href;
+  const src = `const { routingDigest } = await import(${JSON.stringify(policyUrl)}); process.stdout.write(routingDigest({ builtin: 8, symbol: 2, mod: { warn: { shown: 3, converted: 0 }, block: { shown: 0, converted: 0 } } }));`;
+  const { spawnSync: sp } = await import("node:child_process");
+  const r = sp(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8", env: { ...process.env, VTS_ORCHESTRATOR: "1", VTS_ORCHESTRATOR_AWARE: "1" } });
+  return r.stdout || "";
+})();
 const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig) && // tree + posture
   /qvts/.test(digMax) && digMax.length <= 1000;
 // the rolling recent rate is surfaced alongside the all-time ratio when it diverges (#c): here recent 4/5=80%
