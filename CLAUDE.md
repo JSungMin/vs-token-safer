@@ -414,6 +414,17 @@ repo while config pinned clangd for a UE tree) > forced `VTS_BACKEND`/config `ba
   ("re-run with the vts tool matching the intent" + the concrete call), with a brief human-facing reassurance
   that the red box is a redirect ("hold on"), not a failure — the hook output is consumed by the MODEL, which
   is the one that re-runs, not a human picking from a menu.
+- `server/squeeze.js` + `vts squeeze` — PASSTHROUGH COMPACTION (the rtk model). A Bash code search the hook can't
+  translate EXACTLY into a vts call used to be BLOCKED — and a blocked/warned model almost never switches (2 of
+  1,694 warnings acted on). Now the hook wraps the ORIGINAL command (`wrapCommand`: `{ { cmd\n} 2>&1; printf rc; }
+  | node cli squeeze`) — the real grep runs with real semantics, only the output is grouped by file, clipped
+  (160ch), capped (`VTS_SQUEEZE_MAX_LINES` 80) and teed; the original exit status survives via an rc marker line
+  (no pipefail — it would turn `grep | head` SIGPIPE into failure). No equivalence proof needed, nothing
+  re-interpreted. Also: a grep the exact translator declines only reaches the LEGACY rewrite when its flags are
+  ones it reproduces (`legacyFlagsOnly`: -r/-n/-H/-s/-I/-E/-P, --include…) — the legacy path silently dropped
+  -i/-w/-v/-l/-c/-o. Not wrapped: a shell `exit` outside quotes (the rc marker would be skipped), background
+  `&`. Replay of 1,753 real commands (14d): blocks 282 → 1; all 282 wrapped commands pass `bash -n`.
+  `VTS_PASSTHROUGH=0` restores the block (the eval pins that as the legacy-guard baseline). Eval guard passthroughOk.
 - `skills/vs-search/SKILL.md` — routing. `commands/{setup,savings,update}.md`. `commands/update.md` = `/vs-token-safer:update`
   — one-command REFRESH of a STALE committable `.vts-index` (op `vts_admin{op:index}` = incremental `buildSymIndex`,
   re-parses only stat/hash-changed files). Surfaced two ways: the `SYNTACTIC · STALE` cert (core.js) now names
