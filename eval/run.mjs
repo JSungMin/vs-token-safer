@@ -3080,6 +3080,32 @@ const passthroughOk = await (async () => {
   }
 })();
 
+// ── subagent fixed prefix: code-locator gets ONLY the locate tools; `vts` resolves from the plugin bin/ ──────
+// A subagent without `tools:` inherits every tool the host has (dozens of MCP schemas), re-billed each turn.
+// Measured on a live spawn: 53.7k → 39.0k first-turn tokens and one fewer turn (no ToolSearch). Claude Code
+// puts each plugin's bin/ on the Bash PATH; with no bin/ the `vts` fallback named in the agent never resolved.
+const subagentPrefixOk = await (async () => {
+  const { TOOLS } = await import("../server/tools.js");
+  const real = new Set((Array.isArray(TOOLS) ? TOOLS : Object.values(TOOLS)).map((t) => t.name));
+  const md = fs.readFileSync(fileURLToPath(new URL("../agents/code-locator.md", import.meta.url)), "utf8");
+  const line = (/^tools:\s*(.+)$/m.exec(md) || [])[1] || "";
+  const listed = line.split(",").map((s) => s.trim()).filter(Boolean);
+  const mcp = listed.filter((t) => t.startsWith("mcp__"));
+  const toolsOk = mcp.length >= 5 &&
+    mcp.every((t) => t.startsWith("mcp__plugin_vs-token-safer_vs-search__") && real.has(t.split("__").pop())) &&
+    !mcp.some((t) => /replace_symbol_body|insert_symbol|safe_delete|rename|vts_admin/.test(t)) && // a locator never edits
+    listed.every((t) => t.startsWith("mcp__") || t === "Bash");
+  const bin = fileURLToPath(new URL("../bin/", import.meta.url));
+  const sh = path.join(bin, "vts"), cmd = path.join(bin, "vts.cmd");
+  let binOk = fs.existsSync(sh) && fs.existsSync(cmd) && /server\\cli\.js/.test(fs.readFileSync(cmd, "utf8"));
+  if (binOk && spawnSync("sh", ["-c", "true"], { encoding: "utf8" }).status === 0) {
+    const r = spawnSync("sh", [sh, "--help"], { encoding: "utf8" });
+    binOk = r.status === 0 && /^vts — /m.test(r.stdout);
+  }
+  if (!toolsOk || !binOk) console.error("  subagent prefix:", { toolsOk, binOk, listed });
+  return toolsOk && binOk;
+})();
+
 // ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
 // ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
 // big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
@@ -3284,6 +3310,7 @@ const rows = [
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
   ["Grep tool qvts redirect: one-file Grep stays native, a dir Grep delegates WITH its scope, re-issue passes (as the block text promises)", grepToolScopeOk, "true", grepToolScopeOk],
   ["passthrough compaction (rtk model): an untranslatable code search runs as-is with output grouped/capped, exit status kept; -i never hits the flag-dropping legacy rewrite; a shell `exit` still blocks", passthroughOk, "true", passthroughOk],
+  ["subagent fixed prefix: code-locator limited to real vs-search locate tools (+Bash, no edit tools); bin/vts shim on the plugin PATH", subagentPrefixOk, "true", subagentPrefixOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
   ["transparent rewrite covers real shapes exactly: cd scope, BRE \\|, --include, glob operand, head→maxResults; multi-operand still blocks; heredoc body + stdin grep left alone", shapeRewriteOk, "true", shapeRewriteOk],
   ["CLI resolves tree-sitter without CLAUDE_PLUGIN_DATA: data dir derived from the cache/<mkt>/<plugin>/<ver> install layout; dev checkout derives nothing", derivedDataOk, "true", derivedDataOk],
