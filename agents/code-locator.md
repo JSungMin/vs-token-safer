@@ -5,6 +5,7 @@ description: >-
   file:line table, never bodies. Spawn ONLY for a locate spanning many files whose intermediate output would
   flood your context. NOT for a single lookup (call the vs-search tools directly), NOT for an audit/review/
   전수조사 and never as a fleet (use document_symbols + search_symbol, or a reviewer agent), NOT for logs.
+tools: mcp__plugin_vs-token-safer_vs-search__search_symbol, mcp__plugin_vs-token-safer_vs-search__find_references, mcp__plugin_vs-token-safer_vs-search__goto_definition, mcp__plugin_vs-token-safer_vs-search__hover, mcp__plugin_vs-token-safer_vs-search__document_symbols, mcp__plugin_vs-token-safer_vs-search__find_files, mcp__plugin_vs-token-safer_vs-search__search_text, mcp__plugin_vs-token-safer_vs-search__concept_search, Bash
 ---
 
 # code-locator — delegated code search (context-isolated)
@@ -58,6 +59,8 @@ cross-file reference map) — not on surveying or judging code.
    `search_text` (token-capped grep wrapper).
 4. **File by name** → `find_files` (`q`, glob or keyword).
 5. **Outline of a file** → `document_symbols` (`path`).
+6. **vs-search MCP tools missing** (server not connected) → the same engine from Bash: `vts symbol --q X
+   --projectPath <root>`, `vts references --symbol X`, `vts text --q X`, `vts files --q X` (`vts` is on PATH).
 6. **Errors / warnings in a file** → `diagnostics` (`path`) — token-capped `file:line:col severity: message`.
 
 ## Setup / fallbacks
