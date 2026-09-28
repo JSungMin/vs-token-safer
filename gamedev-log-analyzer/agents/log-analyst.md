@@ -26,13 +26,13 @@ in *your* throwaway context — the caller only gets your compact conclusion.
    (`gamedev-log tail`, or `Read` with a small `limit`) — never an unbounded dump.
 
 ## How to run it
-Prefer the installed bin; otherwise npx:
-```bash
-gamedev-log <cmd> [--flags]                    # if installed
-npx -p gamedev-log-analyzer gamedev-log <cmd>  # otherwise (pure Node, no deps)
-```
-If neither resolves, find the plugin CLI and run it directly:
-`node "<plugin>/server/cli.js" <cmd>` (glob for `**/gamedev-log-analyzer/server/cli.js`).
+`gamedev-log <cmd> [--flags]` — the plugin puts it on your PATH. Call it directly; do not search for the CLI
+file or export a path variable first. Only if the command is not found: `npx -p gamedev-log-analyzer
+gamedev-log <cmd>`.
+
+Do not write your own parsing scripts (`node -e`, a scratch `.js`): each one is several extra turns, and the
+question almost always maps to a command below — `timeline` covers "grep with order, context and line
+numbers".
 
 ## Command map (pick by the question)
 - **"what errors / triage"** → `summary --path <log>` (severity counts + top categories), then
@@ -42,6 +42,9 @@ If neither resolves, find the plugin CLI and run it directly:
   (`C4996 ×37 …` one line per diagnostic code).
 - **"what changed since last run"** → `diff --pathA <old> --pathB <new>` (delta only).
 - **"open the offending source"** → `locate --path <log>` (distinct `file:line`, no bodies).
+- **"what happened to X, in order" / "when did Y flip" / "lines around Z"** → `timeline --path <log>
+  --query <regex>` (log order, real line numbers, repeats collapsed ×N). `--also <regex>` = both on the line
+  (e.g. an actor name + `\[Server\]`), `--context 1-5`, `--from/--to <line>` to zoom into a window.
 - **"track scalar X over time / spikes / teleports"** → `fields --path <log> --fields ts,<Key>...`
   (add `--stats` for per-column min/max/avg/Δ; `--window t0,t1` to scope).
 - **"detect / which log"** → `detect --projectPath <dir>`.

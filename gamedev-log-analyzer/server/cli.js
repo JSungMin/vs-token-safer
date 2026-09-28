@@ -32,6 +32,9 @@ Commands:
                     [--pathA --pathB | --projectPath] [--query --severityMin --category --file --groupBy --minDelta]
   locate            Jump list: distinct file:line of matches, no bodies (for opening source).
                     [--path --severityMin --category --file --query --basename --max]
+  timeline          Matches in log ORDER with real line numbers — follow one actor/flag/ID through
+                    the run. Repeats collapse (×N), UE timestamps shrink to the time, rows clipped.
+                    [--path --query <regex> --also <regex> --context 0-5 --from L --to L --max --case]
   tail              Last N raw lines.                               [--path --lines]
   learnings         Local learnings report (parse coverage etc.).
   learnings-reset   Clear the local learnings ledger.
@@ -52,7 +55,7 @@ Settings precedence: env (GDLOG_*) > ~/.gamedev-log-analyzer/config.json > defau
 // Flags that should be parsed as comma-separated lists.
 const LIST_FLAGS = new Set(["fields", "window"]);
 // Flags with no value (presence = true).
-const BOOL_FLAGS = new Set(["basename", "stats"]);
+const BOOL_FLAGS = new Set(["basename", "stats", "case"]);
 
 function parseArgs(argv) {
   const a = {};

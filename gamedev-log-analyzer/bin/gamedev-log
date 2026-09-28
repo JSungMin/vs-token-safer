@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Claude Code puts a plugin's bin/ on the Bash PATH, so `gamedev-log` resolves without any path hunting.
+exec node "$(dirname "$0")/../server/cli.js" "$@"
