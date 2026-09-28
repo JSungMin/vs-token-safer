@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { analyzeLog, extractFields, parseLine, diffLogs, locateLog, readText } from "../server/logs.js";
+import { analyzeLog, extractFields, parseLine, diffLogs, locateLog, readText, timelineLog, fileLines } from "../server/logs.js";
 import { runTool } from "../server/core.js";
 import { shouldBlockLogBash, normalizeMode, shouldBlockRead, nudgeText, READ_MIN_BYTES, buildLogRewrite } from "../server/enforce.js";
 import { analyzeJsonl as discoverJsonl, formatGamedevReport } from "../server/discover.mjs";
@@ -301,6 +301,53 @@ const membersOk =
   /Item_A/.test(memOff) && !/Item_D/.test(memOff) &&
   /Item_A/.test(memOn) && /Item_D/.test(memOn) && (memOn.match(/^ {4}• /gm) || []).length === 4;
 
+// timeline — the ordered view the agent kept scripting by hand. Synthetic UE-prefixed lines.
+const timelineOk = (() => {
+  const P = (t, s) => `[2024.01.01-00.00.0${t}:000][  1]${s}`;
+  const lines = [
+    P(1, "LogX: Spawn Actor_7"),
+    P(1, "LogX: Tick Actor_7"),
+    P(2, "LogX: Tick Actor_7"),
+    P(2, "LogX: Tick Actor_7"),
+    P(3, "LogY: [Server] Hide Actor_7"),
+    P(3, "LogY: [Client] Hide Actor_7"),
+    P(4, "LogX: Destroy Actor_7"),
+  ];
+  const t = timelineLog(lines, { query: "Actor_7" });
+  const c = timelineLog(lines, { query: "Destroy", context: 1 });
+  const a = timelineLog(lines, { query: "Hide", also: "\\[Server\\]" });
+  const r = timelineLog(lines, { query: "Actor_7", from: 5, to: 6 });
+  const none = timelineLog(lines, { query: "Nope" });
+  const ok =
+    /L1: 00:00:01\.000 LogX: Spawn Actor_7/.test(t) &&
+    /L2-4 ×3: .*Tick Actor_7/.test(t) &&           // consecutive repeats → one row, real line span
+    /7 matching line\(s\).*→ 5 row\(s\)/.test(t) &&
+    /^ 6: .*\[Client\] Hide/m.test(c) && /^L7: .*Destroy/m.test(c) &&
+    /\[Server\] Hide/.test(a) && !/\[Client\]/.test(a) &&
+    /L5: /.test(r) && /L6: /.test(r) && !/L7/.test(r) &&
+    /^No lines match/.test(none);
+  // Streamed reader: a real file, CRLF endings, no trailing newline.
+  const f = path.join(os.tmpdir(), `gdl-timeline-${process.pid}.log`);
+  fs.writeFileSync(f, lines.join("\r\n"));
+  let streamed = "";
+  try { streamed = timelineLog(fileLines(f), { query: "Destroy" }); } finally { fs.rmSync(f, { force: true }); }
+  const ok2 = /^L7: 00:00:04\.000 LogX: Destroy Actor_7$/m.test(streamed);
+  if (!ok || !ok2) console.error("  timeline:", JSON.stringify({ t, c, a, r, streamed }).slice(0, 900));
+  return ok && ok2;
+})();
+// bin/ shim — Claude Code adds each plugin's bin/ to the Bash PATH; without it the agent hunted for the CLI
+// path every run (`export GDL=…` ×21 across 12 runs).
+const binShimOk = (() => {
+  const binDir = fileURLToPath(new URL("../bin/", import.meta.url));
+  const sh = path.join(binDir, "gamedev-log"), cmd = path.join(binDir, "gamedev-log.cmd");
+  if (!fs.existsSync(sh) || !fs.existsSync(cmd)) return false;
+  if (!/server[\\/]cli\.js/.test(fs.readFileSync(sh, "utf8")) || !/server\\cli\.js/.test(fs.readFileSync(cmd, "utf8"))) return false;
+  const hasSh = spawnSync("sh", ["-c", "true"], { encoding: "utf8" }).status === 0;
+  if (!hasSh) return true;
+  const r = spawnSync("sh", [sh, "--help"], { encoding: "utf8" });
+  return r.status === 0 && /timeline/.test(r.stdout);
+})();
+
 const rows = [
   ["parse coverage", (coverage * 100).toFixed(1) + "%", "≥ 95%", coverage >= 0.95],
   ["quoted-literal dedup (6 names → 1 ×6)", assetDedupOk, "true", assetDedupOk],
@@ -326,6 +373,8 @@ const rows = [
   ["tail-read clean line boundary", tailOk, "true", tailOk],
   ["fields --stats aggregate", statsOk, "true", statsOk],
   ["savings per-call line (big log)", savingsLineOk, "true", savingsLineOk],
+  ["timeline: log order + line nos, ×N collapse, context, --also, range, streamed", timelineOk, "true", timelineOk],
+  ["bin/ shim: `gamedev-log` on the plugin PATH runs the CLI", binShimOk, "true", binShimOk],
 ];
 
 console.log(`gamedev-log-analyzer eval — ${N} synthetic (sanitized) lines\n`);
