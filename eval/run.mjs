@@ -3106,6 +3106,27 @@ const subagentPrefixOk = await (async () => {
   return toolsOk && binOk;
 })();
 
+// ── no raw NUL bytes in source: grep/ripgrep (and the built-in Grep tool) classify the file as BINARY and drop
+// every match after it. core.js carried one as a map-key separator, so `Grep` on the most-edited file silently
+// returned a truncated list. Write the "\0" escape instead — same runtime value.
+const noNulSourceOk = (() => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const bad = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === "vendor" || e.name.startsWith(".")) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(m?js|cjs|md|json|html|scm)$/.test(e.name) && fs.readFileSync(p).includes(0)) bad.push(path.relative(root, p));
+    }
+  };
+  for (const d of ["server", "hooks", "eval", "scripts", "agents", "skills", "commands"]) {
+    try { walk(path.join(root, d)); } catch { /* optional dir */ }
+  }
+  if (bad.length) console.error("  raw NUL byte in:", bad.join(", "));
+  return bad.length === 0;
+})();
+
 // ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
 // ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
 // big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
@@ -3311,6 +3332,7 @@ const rows = [
   ["Grep tool qvts redirect: one-file Grep stays native, a dir Grep delegates WITH its scope, re-issue passes (as the block text promises)", grepToolScopeOk, "true", grepToolScopeOk],
   ["passthrough compaction (rtk model): an untranslatable code search runs as-is with output grouped/capped, exit status kept; -i never hits the flag-dropping legacy rewrite; a shell `exit` still blocks", passthroughOk, "true", passthroughOk],
   ["subagent fixed prefix: code-locator limited to real vs-search locate tools (+Bash, no edit tools); bin/vts shim on the plugin PATH", subagentPrefixOk, "true", subagentPrefixOk],
+  ["no raw NUL byte in source (grep/ripgrep/Grep treat the file as binary and drop matches after it)", noNulSourceOk, "true", noNulSourceOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
   ["transparent rewrite covers real shapes exactly: cd scope, BRE \\|, --include, glob operand, head→maxResults; multi-operand still blocks; heredoc body + stdin grep left alone", shapeRewriteOk, "true", shapeRewriteOk],
   ["CLI resolves tree-sitter without CLAUDE_PLUGIN_DATA: data dir derived from the cache/<mkt>/<plugin>/<ver> install layout; dev checkout derives nothing", derivedDataOk, "true", derivedDataOk],
