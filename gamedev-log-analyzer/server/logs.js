@@ -51,7 +51,11 @@ export function detectLogs(projectPath) {
 }
 
 // ---- read (tail bytes for huge logs) ----
+// V8 cannot build a string over ~536M chars, so a logMaxBytes set near 1 GB (or unset on a multi-GB editor log)
+// crashed every op with "Cannot create a string longer than 0x1fffffe8 characters". Clamp the window.
+const SAFE_MAX_BYTES = 400 * 1024 * 1024;
 export function readText(file, maxBytes) {
+  maxBytes = Math.min(maxBytes || SAFE_MAX_BYTES, SAFE_MAX_BYTES);
   const size = fs.statSync(file).size;
   if (!maxBytes || size <= maxBytes) return fs.readFileSync(file, "utf8");
   const fd = fs.openSync(file, "r");
@@ -683,4 +687,94 @@ export function collectLearnings(text, maxSamples = 8) {
     categories: top(cats, 10),
     misses: top(misses, maxSamples),
   };
+}
+
+// ---- timeline: matches in CHRONOLOGICAL order with real log line numbers ----
+// The question search/locate can't answer: "what happened to X, in order" (an actor's lifecycle, the moment a
+// flag flips, which world logged it). search dedups away the ordering and locate returns SOURCE file:line, so
+// the log-analyst agent kept writing throwaway node scripts to grep with context (57 improvised calls across
+// 12 runs). This is that script, capped: consecutive repeats collapse to one row with ×N and a line range, the
+// Unreal `[date-time:ms][frame]` prefix shrinks to the time, every row is clipped. STREAMING: editor logs
+// reach GBs (a 2.7 GB PIE log exceeds V8's max string), so it walks lines, never the whole text.
+const UE_PREFIX = /^\[(\d{4})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2}):(\d{3})\]\[\s*\d+\]/;
+function shortTime(line) {
+  const m = UE_PREFIX.exec(line);
+  return m ? `${m[4]}:${m[5]}:${m[6]}.${m[7]} ${line.slice(m[0].length)}` : line;
+}
+const bodyOf = (line) => (UE_PREFIX.test(line) ? line.replace(UE_PREFIX, "") : line);
+
+// Lines of a file, streamed in 1 MB chunks (sync, so the CLI and MCP paths stay one code path).
+export function* fileLines(file) {
+  const fd = fs.openSync(file, "r");
+  const buf = Buffer.alloc(1 << 20);
+  let rest = "";
+  try {
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (!n) break;
+      const parts = (rest + buf.toString("utf8", 0, n)).split("\n");
+      rest = parts.pop();
+      for (const p of parts) yield p.endsWith("\r") ? p.slice(0, -1) : p;
+    }
+    if (rest) yield rest;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// lines: any iterable of strings (an array in tests, fileLines() for a real log).
+export function timelineLog(lines, opts = {}) {
+  const { query = "", also = "", context = 0, from = 1, to = Infinity, max = 60, maxLineChars = 200, ignoreCase = true } = opts;
+  if (!query) return "timeline needs --query <regex> (what to follow through the log).";
+  let re, re2 = null;
+  try {
+    re = new RegExp(query, ignoreCase ? "i" : "");
+    if (also) re2 = new RegExp(also, ignoreCase ? "i" : "");
+  } catch (e) {
+    return `Invalid regex: ${e.message}`;
+  }
+  const ctx = Math.max(0, Math.min(5, Number(context) || 0));
+  const lo = Math.max(1, Number(from) || 1);
+  const hi = Number(to) > 0 ? Number(to) : Infinity;
+  const clip = (s) => (s.length > maxLineChars ? s.slice(0, maxLineChars) + " …" : s);
+  const rows = [];          // {start, end, n, text} or, with context, {start, text, before, after}
+  const ring = [];          // last `ctx` lines before the current one: [lineNo, text]
+  let hits = 0, rowCount = 0, lineNo = 0, lastHitRow = null, prevWasHit = false;
+  for (const line of lines) {
+    lineNo++;
+    if (lineNo > hi) break;
+    for (const r of rows) if (r.after && r.after.length < ctx && lineNo > r.start) r.after.push([lineNo, line]);
+    const hit = lineNo >= lo && re.test(line) && (!re2 || re2.test(line));
+    if (hit) {
+      hits++;
+      if (!ctx && prevWasHit && lastHitRow && bodyOf(lastHitRow.text) === bodyOf(line)) {
+        lastHitRow.end = lineNo; lastHitRow.n++;
+      } else {
+        rowCount++;
+        if (rows.length < max) {
+          const row = ctx ? { start: lineNo, text: line, before: ring.slice(), after: [] } : { start: lineNo, end: lineNo, n: 1, text: line };
+          rows.push(row); lastHitRow = row;
+        } else lastHitRow = null;
+      }
+    }
+    prevWasHit = hit;
+    if (ctx) { ring.push([lineNo, line]); if (ring.length > ctx) ring.shift(); }
+  }
+  const range = `lines ${lo}-${Math.min(lineNo, hi)}`;
+  if (!hits) return `No lines match /${query}/${also ? ` + /${also}/` : ""} in ${range}.`;
+  const out = [];
+  let lastPrinted = 0;
+  for (const r of rows) {
+    if (!ctx) {
+      out.push(`${r.n > 1 ? `L${r.start}-${r.end} ×${r.n}` : `L${r.start}`}: ${clip(shortTime(r.text))}`);
+      continue;
+    }
+    const block = [...r.before, [r.start, r.text], ...r.after].filter(([k]) => k > lastPrinted);
+    if (block.length && block[0][0] > lastPrinted + 1 && out.length) out.push("  ⋮");
+    for (const [k, t] of block) out.push(`${k === r.start ? "L" : " "}${k}: ${clip(shortTime(t))}`);
+    if (block.length) lastPrinted = block[block.length - 1][0];
+  }
+  const more = rowCount - rows.length;
+  return `${hits} matching line(s) in ${range} → ${rowCount} row(s)` +
+    `${more > 0 ? `, first ${rows.length} shown (narrow with --from/--to or --also)` : ""}:\n${out.join("\n")}`;
 }

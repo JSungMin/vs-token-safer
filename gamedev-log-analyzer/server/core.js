@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detectLogs, readText, analyzeLog, extractFields, collectLearnings, diffLogs, locateLog } from "./logs.js";
+import { detectLogs, readText, analyzeLog, extractFields, collectLearnings, diffLogs, locateLog, timelineLog, fileLines } from "./logs.js";
 import { enforceMode, enforceSource, writeEnforceMode } from "./enforce.js";
 
 const CONFIG_DIR = path.join(os.homedir(), ".gamedev-log-analyzer");
@@ -255,6 +255,26 @@ export function runTool(name, a = {}) {
       const tail = readText(lp, LOG_MAX_BYTES).split(/\r?\n/).slice(-n)
         .map((l) => (l.length > MAX_LINE_CHARS ? l.slice(0, MAX_LINE_CHARS) + " …" : l));
       return out(`Last ${tail.length} line(s) of ${lp}:\n` + tail.join("\n"));
+    }
+    if (name === "log_timeline") {
+      // The WHOLE file, streamed (not the logMaxBytes tail window): the rows cite real log line numbers, and
+      // only the capped matches leave this process. Raw baseline = the file size, never materialized.
+      const body = `Source: ${lp}\n` +
+          timelineLog(fileLines(lp), {
+            query: a.query || "",
+            also: a.also || "",
+            context: a.context,
+            from: a.from,
+            to: a.to,
+            max: Number(a.max) > 0 ? Number(a.max) : 60,
+            maxLineChars: MAX_LINE_CHARS,
+            ignoreCase: !(a.case === true || a.case === "true"),
+          });
+      // Same baseline as the other ops (the logMaxBytes window an agent would have read), not the whole file
+      // — a 2.7 GB log would otherwise claim ~680M tokens saved.
+      const rawTok = Math.round(Math.min(fs.statSync(lp).size, LOG_MAX_BYTES) / 4), outTok = tok(body);
+      try { recordSavings(rawTok, outTok); } catch { /* best-effort */ }
+      return out(body + savingsLine(rawTok, outTok));
     }
     const text = readText(lp, LOG_MAX_BYTES);
     let covHint = "";
