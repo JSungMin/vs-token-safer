@@ -37,6 +37,9 @@ process.env.VTS_LANG = "en"; // force English UI so message-marker assertions ar
 // not depend on what else the developer has installed). The orchestrator-aware path deserves its OWN guard that
 // forces VTS_ORCHESTRATOR=1 rather than inheriting the ambient install.
 process.env.VTS_ORCHESTRATOR_AWARE = "0";
+// The older hook guards pin the BLOCK contract (message text, i18n, setup nudge), which is now the
+// VTS_PASSTHROUGH=0 fallback; the default (passthrough on) has its own guard, passthroughOk, that sets it to 1.
+process.env.VTS_PASSTHROUGH = "0";
 const { runTool, disposeClients, prewarm } = await import("../server/core.js");
 
 const tok = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
@@ -3017,6 +3020,66 @@ const grepToolScopeOk = await (async () => {
   }
 })();
 
+// ── passthrough compaction (rtk model): an untranslatable code search runs AS-IS, only its output shrinks ──
+// A block hands the choice back to the model, which almost never switches; replay of 1,753 real commands:
+// blocks 282 → 1. The original command runs unchanged, so faithfulness is by construction — these pin the
+// compaction, the exit status surviving the pipe, and which shapes the hook wraps.
+const passthroughOk = await (async () => {
+  const { squeezeOutput, splitRc, wrapCommand } = await import("../server/squeeze.js");
+  const g = squeezeOutput("src/a.cpp:10:  int Foo() {\nsrc/a.cpp:22:  Foo();\nsrc/b.cpp:3:Foo x;\n", { maxLines: 80 });
+  const unitOk =
+    g.text === "src/a.cpp\n  10: int Foo() {\n  22: Foo();\nsrc/b.cpp\n  3: Foo x;" &&
+    squeezeOutput(Array.from({ length: 100 }, (_, i) => `f.cpp:${i + 1}:x`).join("\n"), { maxLines: 80 }).truncated &&
+    squeezeOutput("x".repeat(500)).text.length <= 160 &&
+    squeezeOutput("   42\n").text === "   42" &&                      // non-grep output passes through
+    splitRc("out\n__VTS_RC=1\n").rc === 1 && splitRc("out\n__VTS_RC=1\n").body === "out" &&
+    splitRc("no marker").rc === null;
+  const base = path.join(fs.realpathSync.native(os.tmpdir()), `vts-eval-pt-${process.pid}`);
+  const src = path.join(base, "src");
+  fs.mkdirSync(src, { recursive: true });
+  fs.writeFileSync(path.join(src, "a.cpp"), "int Foo() { return 1; }\nvoid Bar() { Foo(); }\n");
+  fs.writeFileSync(path.join(src, "b.cpp"), "int foo_b = Foo();\n");
+  const hook = fileURLToPath(new URL("../hooks/block-code-grep.js", import.meta.url));
+  const decide = (command, extra = {}) => {
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: base }),
+      encoding: "utf8",
+      env: { ...process.env, VTS_ORCHESTRATOR_AWARE: "0", VTS_ENFORCE: "1", VTS_PASSTHROUGH: "1", ...extra },
+    });
+    let cmd = "";
+    try { cmd = JSON.parse(r.stdout).hookSpecificOutput.updatedInput.command || ""; } catch { /* no rewrite */ }
+    return { status: r.status, cmd };
+  };
+  try {
+    const multi = decide('grep -n "Foo" src/a.cpp src/b.cpp | sort');
+    const off = decide('grep -n "Foo" src/a.cpp src/b.cpp | sort', { VTS_PASSTHROUGH: "0" });
+    const ci = decide('grep -in "foo" src/a.cpp');                      // -i: legacy rewrite would drop it
+    const shellExit = decide('cd src || exit 1\ngrep -n "Foo" a.cpp b.cpp | sort');
+    const awkExit = decide("awk '/Foo/{print; exit}' src/a.cpp; grep -n \"Foo\" src/a.cpp src/b.cpp | sort");
+    const hookOk =
+      /squeeze/.test(multi.cmd) && off.status === 2 &&
+      /squeeze/.test(ci.cmd) && shellExit.status === 2 && /squeeze/.test(awkExit.cmd);
+    // End to end through a real shell: output compacted, exit status of a no-match grep preserved.
+    let e2eOk = true;
+    const hasBash = spawnSync("bash", ["-c", "true"], { encoding: "utf8" }).status === 0;
+    if (hasBash) {
+      const cli = fileURLToPath(new URL("../server/cli.js", import.meta.url));
+      const run = (c) => spawnSync("bash", ["-c", wrapCommand(c, cli)], { cwd: base, encoding: "utf8" });
+      const hit = run('grep -n "Foo" src/a.cpp src/b.cpp');
+      const miss = run('grep -n "ZZZ_NONE" src/a.cpp src/b.cpp');
+      e2eOk = hit.status === 0 && /^src\/a\.cpp$/m.test(hit.stdout) && /^ {2}1: int Foo/m.test(hit.stdout) && miss.status === 1;
+      if (!e2eOk) console.error("  passthrough e2e:", hit.status, JSON.stringify(hit.stdout.slice(0, 120)), miss.status, hit.stderr.slice(0, 120));
+    }
+    if (!unitOk || !hookOk) console.error("  passthrough:", { unitOk, multi: multi.cmd.slice(0, 40), off: off.status, ci: ci.cmd.slice(0, 40), shellExit: shellExit.status, awkExit: awkExit.cmd.slice(0, 40) });
+    return unitOk && hookOk && e2eOk;
+  } catch (e) {
+    console.error("  passthrough threw:", e && e.message);
+    return false;
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
+
 // ── auto-index bounds: an UNATTENDED build must be capped, liveness-deduped, and stoppable ────────────────
 // ensureAutoIndex starts `vts index` detached on any locate over an un-indexed tree. It had a FLOOR (only trees
 // big enough to be worth indexing) but no CEILING, so a UE-size depot got a tens-of-minutes, one-process-per-
@@ -3220,6 +3283,7 @@ const rows = [
   ["widen-root hint: names a real enclosing PROJECT on an empty symbol miss, silent when outermost / when the parent is only a VCS container, toggle", widenHintOk, "true", widenHintOk],
   ["orchestrator redirect never widens a scoped call: a named FILE passes through silently, a named DIR delegates WITH its scope, path-less still delegates", orchScopeOk, "true", orchScopeOk],
   ["Grep tool qvts redirect: one-file Grep stays native, a dir Grep delegates WITH its scope, re-issue passes (as the block text promises)", grepToolScopeOk, "true", grepToolScopeOk],
+  ["passthrough compaction (rtk model): an untranslatable code search runs as-is with output grouped/capped, exit status kept; -i never hits the flag-dropping legacy rewrite; a shell `exit` still blocks", passthroughOk, "true", passthroughOk],
   ["lifetime-weighted cost: size × (write + read × turns lived), cut at the next compaction; discover attaches it per bypass from a real transcript scan", lifetimeOk, "true", lifetimeOk],
   ["transparent rewrite covers real shapes exactly: cd scope, BRE \\|, --include, glob operand, head→maxResults; multi-operand still blocks; heredoc body + stdin grep left alone", shapeRewriteOk, "true", shapeRewriteOk],
   ["CLI resolves tree-sitter without CLAUDE_PLUGIN_DATA: data dir derived from the cache/<mkt>/<plugin>/<ver> install layout; dev checkout derives nothing", derivedDataOk, "true", derivedDataOk],

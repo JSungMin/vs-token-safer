@@ -328,7 +328,7 @@ const dayKey = (d = new Date()) => d.toISOString().slice(0, 10); // YYYY-MM-DD (
 // $/Mtok used for the est. USD line in `vts savings`. A rough single rate (saved tokens are mostly input
 // the model never has to ingest) — override with VTS_USD_PER_MTOK; purely informational.
 const USD_PER_MTOK = parseFloat(cfg("VTS_USD_PER_MTOK", "usdPerMtok", "3")) || 3;
-function recordSavings(rawTok, outTok, tool) {
+export function recordSavings(rawTok, outTok, tool) {
   // vts output is never genuinely larger than the raw alternative for the SAME query; a computed negative is
   // an artifact of the JSON-of-already-capped-data baseline on tiny results. Floor to break-even so the
   // ledger never shows a tool "costing" tokens (dogfood-found: search_text/find_files went slightly negative).
@@ -437,7 +437,7 @@ function savingsReport(a = {}) {
 const TEE_DIR = cfg("VTS_TEE_DIR", "teeDir", path.join(CONFIG_DIR, "tee"));
 const teeMode = () => String(cfg("VTS_TEE", "tee", "truncate")).toLowerCase(); // "truncate" (default) | "off"
 const TEE_MAX = parseInt(cfg("VTS_TEE_MAX", "teeMax", "5000"), 10) || 5000;
-function writeTee(tool, q, lines) {
+export function writeTee(tool, q, lines) {
   try {
     fs.mkdirSync(TEE_DIR, { recursive: true });
     // Prune to the most-recent 50 tee files so the dir doesn't grow unbounded.

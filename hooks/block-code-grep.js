@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 // inside quotes is part of a grep pattern — `grep "FooA|FooB" src/x.cpp` used to split into two
 // non-matching segments and sail through the hook entirely (the top bypass `vts discover` surfaced).
 import { splitSegments } from "../server/shell-split.js";
+import { wrapCommand } from "../server/squeeze.js";
 import { classifyPowerShellSearch } from "../server/psearch.js";
 // Whole-declaration edit detector, shared with discover (core.js) so the set we STEER matches the set we
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
@@ -613,6 +614,42 @@ function isLogGrepTool(ti) {
   return LOG_TARGET_RE.test(glob) || LOG_TARGET_RE.test(p);
 }
 
+// PASSTHROUGH (rtk model): a code search we cannot translate exactly used to be BLOCKED, which hands the choice
+// back to the model — and a blocked or warned model almost never switches (2 of 1,694 warnings acted on). Instead
+// run the ORIGINAL command and compact only its output (server/squeeze.js). Nothing is re-interpreted, so no
+// equivalence proof is needed and the model never has to choose. VTS_PASSTHROUGH=0 restores the block.
+const passthroughOn = () => !/^(0|false|off|no)$/i.test(process.env.VTS_PASSTHROUGH ?? "1");
+// Not wrappable: a command that calls `exit` (the rc marker would be skipped), is already squeezed, or runs in
+// the background.
+// Flags the legacy single-segment rewrite reproduces (recursion, line numbers, filename, quiet errors, regex
+// dialect). Anything else changes WHICH lines match or how they print.
+function legacyFlagsOnly(segment) {
+  for (const t of shellWords(segment).slice(1)) {
+    const w = stripQuotes(t);
+    if (w === "--") break;
+    if (/^--(include|exclude|exclude-dir)=/.test(w) || /^--(line-number|recursive|with-filename|no-messages)$/.test(w)) continue;
+    if (w.startsWith("--")) return false;
+    if (/^-[A-Za-z]+$/.test(w) && /[^rRnHsIEP]/.test(w.slice(1))) return false;
+  }
+  return true;
+}
+// An `exit` inside quotes belongs to awk/a script string, not the shell.
+const canWrap = (cmd) => !/\bexit\b/.test(String(cmd).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''")) && !/\bsqueeze\b/.test(cmd) && !/&\s*$/.test(String(cmd).trim());
+function emitPassthrough(ti, cmd, hint) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "Code search ran as-is; output grouped by file and capped by vts squeeze (full text teed).",
+      updatedInput: { ...ti, command: wrapCommand(cmd, CLI_PATH) },
+      additionalContext: (KO
+        ? "[vs-token-safer] 원래 명령 그대로 실행, 출력만 파일별 묶음·캡(전체는 tee 파일). 끄기: VTS_PASSTHROUGH=0."
+        : "[vs-token-safer] Ran as-is; only the output was grouped by file and capped (full text teed). Disable: VTS_PASSTHROUGH=0.")
+        + (hint ? "\n" + hint : ""),
+    },
+  }) + "\n");
+  process.exit(0);
+}
 function emitWarn(text) {
   // allow, but inject the nudge into the model's context (stderr on exit 0 isn't reliably surfaced).
   process.stdout.write(
@@ -1136,6 +1173,8 @@ process.stdin.on("end", () => {
       // The block message tells the agent that re-issuing the same call passes through (the delegated answer may
       // come back empty). The MCP redirect keeps that promise; this path did not, so an agent that followed the
       // instruction was blocked again, forever. Keep it: an identical command re-issued within the window runs.
+      // Not a lone search (a pipeline, a script) → run it as-is with the output compacted, never a block.
+      if (passthroughOn() && canWrap(cmd)) emitPassthrough(ti, cmd, orchMsg(task, target));
       if (bashRetryPass(cmd)) {
         emitWarn(orchMsg(task, target));
         process.exit(0);
@@ -1152,8 +1191,12 @@ process.stdin.on("end", () => {
       const shape = ["grep", "egrep", "rg", "git"].includes(execOf(codeSegs[0])) ? searchShape(cmd) : null;
       // When the faithful translator declines a SINGLE-segment command, the original rewrite still applies
       // (unchanged behaviour for those shapes); multi-segment shapes it declines keep blocking.
+      // The original rewrite IGNORES flags such as -i/-w/-v/-l/-c/-o and context options, so a grep carrying one
+      // would come back with DIFFERENT results. With passthrough available, only hand it the flag-free shapes.
+      const grepFamily = ["grep", "egrep", "rg", "git"].includes(execOf(codeSegs[0]));
+      const legacyOk = !grepFamily || !passthroughOn() || legacyFlagsOnly(codeSegs[0]);
       const rw = (shape && buildGrepRewrite(shape.search, { lead: shape.lead, head: shape.head, cwd: j.cwd }))
-        || (segments.length === 1 ? buildRewrite(codeSegs[0]) : null);
+        || (segments.length === 1 && legacyOk ? buildRewrite(codeSegs[0]) : null);
       if (rw) {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
@@ -1169,6 +1212,7 @@ process.stdin.on("end", () => {
         process.exit(0);
       }
     }
+    if (passthroughOn() && canWrap(cmd)) emitPassthrough(ti, cmd, "");
     process.stderr.write(blockMsg(codeSegs) + setup + "\n");
     process.exit(2); // block
   }

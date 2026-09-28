@@ -134,7 +134,29 @@ if (!rawCmd || rawCmd === "-h" || rawCmd === "--help" || rawCmd === "help") { co
 
 // `vts serve` — the local dashboard. Long-running (NOT a runTool dispatch): start the 127.0.0.1 server and
 // stay alive until Ctrl-C. Special-cased here so it doesn't fall through to the one-shot runTool path below.
-if (rawCmd === "serve") {
+// `vts squeeze` — passthrough compaction (see squeeze.js). stdin = the ORIGINAL command's output (+ an rc marker
+// line the hook's wrapper appends); stdout = the compacted text; exit = the original command's status.
+if (rawCmd === "squeeze") {
+  const { splitRc, squeezeOutput } = await import("./squeeze.js");
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  const { body, rc } = splitRc(Buffer.concat(chunks).toString("utf8"));
+  const a = parseArgs(rest);
+  const maxLines = parseInt(a.maxLines || process.env.VTS_SQUEEZE_MAX_LINES, 10) || 80;
+  const r = squeezeOutput(body, { maxLines });
+  let note = "";
+  if (r.truncated || r.text.length < body.length) {
+    const { writeTee, recordSavings } = await import("./core.js");
+    const t = (s) => Math.round(Buffer.byteLength(String(s), "utf8") / 4);
+    recordSavings(t(body), t(r.text), "squeeze");
+    if (r.truncated) {
+      const fp = writeTee("squeeze", "bash", body.split("\n"));
+      note = `\n… ${r.hidden} more line(s)${fp ? ` — full output: ${fp}` : ""}`;
+    }
+  }
+  if (r.text) process.stdout.write(r.text + note + "\n");
+  process.exit(rc ?? 0);
+} else if (rawCmd === "serve") {
   const a = parseArgs(rest);
   const { startServer, writePid, clearPid, stopServer, openBrowser } = await import("./serve.js");
   // --stop: signal a running dashboard via its pidfile and exit (the /vs-token-safer:viz-stop command).
