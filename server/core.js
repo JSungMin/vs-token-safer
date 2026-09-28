@@ -1776,7 +1776,7 @@ export async function buildCallGraph(a = {}) {
     else if (isFocus) nodeMap.get(k).focus = true;
     return k;
   };
-  const addLink = (s, t, count) => { if (s === t) return; const key = s + " " + t; const e = linkMap.get(key); if (e) { e.count += count; } else { const l = { source: s, target: t, count }; linkMap.set(key, l); links.push(l); } };
+  const addLink = (s, t, count) => { if (s === t) return; const key = s + "\0" + t; const e = linkMap.get(key); if (e) { e.count += count; } else { const l = { source: s, target: t, count }; linkMap.set(key, l); links.push(l); } };
   const root0 = items[0];
   addNode(root0, true);
   const capRef = { n: 1, truncated: false }; // root counts as 1 node
