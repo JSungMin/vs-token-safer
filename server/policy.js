@@ -7,11 +7,8 @@
 //      …) where a semantic index is noise. (The doc/log carve-out, sub-declaration ignore, and freeform-grep
 //      warn already live in the hook — this fills the generated/build-output gap.)
 //
-//   2. routingDigest() — ONE coherent SessionStart message: a when-to-use-what decision tree PLUS the live
-//      adoption posture (edit-adoption % + the adaptive controller state), so the model reads a single policy
-//      instead of N scattered reflexive nudges. This is the "integrative" half — vts and CC-native each named
-//      for what they're best at.
-import { readEditLedger, adoptionPct, adoptionPctRecent, controllerReport } from "./edit-ledger.js";
+//   2. routingDigest() — ONE coherent deterministic SessionStart message: a static when-to-use-what decision
+//      tree (zero dynamic counters/percentages so the prompt-cache prefix stays 100% byte-identical across turns).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -200,28 +197,38 @@ export function suppressOn() { return onOff(process.env.VTS_SUPPRESS, "1"); }
 // not an already-sliced read (offset/limit), and at/above `minBytes`. Returns the nudge text or null.
 const READ_CODE_EXT = /\.(c|cc|cxx|cpp|h|hpp|hh|inl|ipp|tpp|cs|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi)$/i;
 export function readSteerOn() { return onOff(process.env.VTS_READ_STEER, "1"); }
+export function hookReadSteerOn() {
+  const v = process.env.VTS_READ_STEER;
+  return v !== undefined && v !== "" ? onOff(v, "1") : hookNoise() !== "quiet";
+}
 // B (concrete nudge): a ready-to-use `read_symbol symbol="Foo"` converts far better than the `<name>` placeholder
 // (the grep-block work proved it). policy.js stays PURE — the HOOK extracts the names (it has fs access) and
 // passes them in like sizeBytes. `symbols` non-empty → render concrete calls; empty → the placeholder, unchanged.
-export function readSteerDecision(file, sizeBytes, { sliced = false, minBytes = 6000, ko = false, symbols = [] } = {}) {
+export function readSteerDecision(file, sizeBytes, { sliced = false, offset, limit, minBytes = 6000, ko = false, symbols = [] } = {}) {
   if (!readSteerOn() || !file) return null;
-  if (sliced) return null;                            // a partial read (offset/limit) is already a slice
-  if (!READ_CODE_EXT.test(String(file))) return null; // only code files (the syntactic/semantic tiers cover these)
+  if (!READ_CODE_EXT.test(String(file))) return null; // non-code (.md/.trd.md/.prd.md/.csv/.json/…) 100% exempt
   if (shouldSuppressSteer(file)) return null;         // generated/build/vendored path — a symbol-read buys nothing
   if (!(sizeBytes >= minBytes)) return null;          // small file: cheap to read whole, not worth a nudge
+  if (sliced) {
+    if (limit === undefined || limit === null) return null;
+    const reqLines = Number(limit);
+    if (!Number.isFinite(reqLines) || reqLines <= 90) return null; // surgical <=90-line slice passes
+    if (!onOff(process.env.VTS_READ_CHUNK_BLOCK, "1")) return null;
+  }
   const kb = Math.round(sizeBytes / 1024);
+  const chunkRange = sliced && limit ? ` (chunk L${Number(offset) || 1}..+${Number(limit)})` : "";
   const all = Array.isArray(symbols) ? symbols.filter((s) => typeof s === "string" && s) : [];
   const names = all.slice(0, 4);
   if (names.length) {
     const calls = names.map((n) => `read_symbol symbol="${n}"`).join(" · ");
     const more = all.length > names.length ? ` (+${all.length - names.length} more — read_symbol lists them)` : "";
     return ko
-      ? `↪ vs-token-safer: 큰 코드파일(~${kb}KB) 통째 읽기. 한 선언만 필요하면 ${calls}${more} 처럼 그 선언만 반환(토큰캡); 통째 편집이면 replace_symbol_body / insert_symbol 이 읽지 않고 이름으로 편집. 끄기: VTS_READ_STEER=0.`
-      : `↪ vs-token-safer: reading a large code file (~${kb} KB) whole. Need ONE declaration? ${calls}${more} returns just that decl (token-capped); for a whole-decl edit, replace_symbol_body / insert_symbol edit by name with no read. VTS_READ_STEER=0 to hide.`;
+      ? `↪ vs-token-safer: 큰 코드파일(~${kb}KB)${chunkRange} 읽기. 한 선언만 필요하면 ${calls}${more} 처럼 그 선언만 반환(토큰캡); 편집이면 replace_symbol_body / insert_symbol 사용. 끄기: VTS_READ_STEER=0.`
+      : `↪ vs-token-safer: reading a large code file (~${kb} KB)${chunkRange}. Need ONE declaration? ${calls}${more} returns just that decl (token-capped); for edits, replace_symbol_body / insert_symbol edit by name with no read. VTS_READ_STEER=0 to hide.`;
   }
   return ko
-    ? `↪ vs-token-safer: 큰 코드파일(~${kb}KB)을 통째로 읽네요. 한 선언만 필요하면 read_symbol symbol="<name>" 이 그 선언만 반환(토큰캡)하고, 통째 편집이면 replace_symbol_body / insert_symbol 이 읽지 않고 이름으로 편집합니다. 끄기: VTS_READ_STEER=0.`
-    : `↪ vs-token-safer: reading a large code file (~${kb} KB) whole. If you only need ONE declaration, read_symbol symbol="<name>" returns just that decl (token-capped); for a whole-decl edit, replace_symbol_body / insert_symbol edit by name with no read. VTS_READ_STEER=0 to hide.`;
+    ? `↪ vs-token-safer: 큰 코드파일(~${kb}KB)${chunkRange}을 읽네요. 한 선언만 필요하면 read_symbol symbol="<name>" 이 그 선언만 반환(토큰캡)하고, 편집이면 replace_symbol_body / insert_symbol 이 읽지 않고 이름으로 편집합니다. 끄기: VTS_READ_STEER=0.`
+    : `↪ vs-token-safer: reading a large code file (~${kb} KB)${chunkRange}. If you only need ONE declaration, read_symbol symbol="<name>" returns just that decl (token-capped); for edits, replace_symbol_body / insert_symbol edit by name with no read. VTS_READ_STEER=0 to hide.`;
 }
 
 // PURE top-level declaration-name extractor (no fs — the hook reads the file and passes the text). Heuristic,
@@ -276,34 +283,33 @@ export function stalenessLine(fresh, { ko = false } = {}) {
     : `[vs-token-safer] the committed index (.vts-index) is STALE — ${n} changed since it was built (symbol search may point at old locations). Refresh: /vs-token-safer:update (incremental — re-parses only changed files). Commit .vts-index after.`;
 }
 
-// The single routing digest. Always emits the decision tree (the integrative guidance); appends the live
-// adoption posture + adaptive-controller state when there is enough data.
-export function routingDigest(o = readEditLedger()) {
-  const pct = adoptionPct(o);
-  const total = (o.builtin || 0) + (o.symbol || 0);
-  // KEEP THIS SHORT: it rides in EVERY session's cached prefix and is re-billed on every turn (cache reads were
-  // 69% of measured weighted cost at ~850 turns/session). The enforcement hooks deliver the specific call at the
-  // moment of need; this only needs to name the map.
+// Hook-facing Read-tool steer evaluator (used by hooks/block-code-grep.js; structured for Phase 3 chunk-steer).
+export function evaluateReadSteer(ti, { ko = false, orch = false, fallbackRoot = "" } = {}) {
+  const fp = ti && ti.file_path;
+  if (!fp) return null;
+  if (orch) { try { recordActiveProject(resolveSearchRoot(fp, fallbackRoot)); } catch { /* ignore */ } }
+  let sz = 0; try { sz = fs.statSync(fp).size; } catch { return null; }
+  if (!sz) return null;
+  const opts = { sliced: !!(ti.offset || ti.limit), offset: ti.offset, limit: ti.limit, minBytes: Number(process.env.VTS_READ_STEER_MIN ?? 6000), ko };
+  let warn = readSteerDecision(fp, sz, opts);
+  if (warn) {
+    let symbols = []; try { symbols = topLevelDeclNames(fs.readFileSync(fp, "utf8"), fp); } catch { /* keep placeholder */ }
+    if (symbols.length) warn = readSteerDecision(fp, sz, { ...opts, symbols });
+  }
+  return warn ? { warn } : null;
+}
+
+// Deterministic static routing digest for Zone-0 prompt-cache stability (no dynamic adoption % or counters).
+export function routingDigest(_o) {
   const lines = [
     "[vs-token-safer] Tool routing — vts + CC-native are COMPLEMENTARY:",
     "  • symbol/refs/rename → search_symbol / find_references / rename · add/replace a whole decl → insert_symbol / replace_symbol_body (no Read)",
     "  • docs/logs, just-edited or unindexed file, small tweak → native Read/Grep/Edit · big tree → vts setup --scope <module>; vts preindex",
     "  • single lookup → call vts directly; code-locator only for a multi-file locate, never an audit or a fleet",
   ];
-  // When a local-LLM orchestrator (qvts) is installed, prefer DELEGATING the high-volume / high-output work to
-  // it (the raw output stays in the free local model; Claude gets only a compact answer). The vts tools above
-  // remain the right choice for a single/quick lookup, an unindexed or just-edited file, and ALL edits.
   if (orchestratorPresent()) {
     lines.splice(1, 0,
       "  • qvts installed → delegate bulk locates and big-file reads to it (`qvts -p <root> --json \"<task>\"`, `qvts digest <file>`); vts directly for quick lookups and all edits");
-  }
-  if (pct !== null && total >= 3) {
-    const hasSteer = (((o.mod || {}).warn || {}).shown || 0) + (((o.mod || {}).block || {}).shown || 0) > 0;
-    // Lead with the ROLLING rate (current behavior) and keep the all-time ratio as context — the recent
-    // number is what tells the model whether the steer is converting now, the lever the loop can actually move.
-    const recent = adoptionPctRecent(o);
-    const recentStr = recent !== null && recent !== pct ? `, recent ${recent}%` : "";
-    lines.push(`  posture: symbol-edit adoption ${pct}% (${o.symbol || 0}/${total})${recentStr}${hasSteer ? " · " + controllerReport(o) : ""}`);
   }
   return lines.join("\n");
 }

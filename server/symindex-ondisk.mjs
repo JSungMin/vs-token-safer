@@ -23,36 +23,76 @@ const DIR = ".vts-index";
 export const POS_FILE = "symbols.pos";
 export const TOK_FILE = "tokens.idx";
 export const TRI_FILE = "trigrams.idx";
+export const SYMINDEX_FORMAT_V = 3;
 const MAGIC_POS = 0x31535056; // "VPS1" LE-ish sentinel
 const MAGIC_DIC = 0x31434944; // "DIC1"
 const INDEX_STRIDE = 16;
 
+// Normalize a declaration record to .vts-index v3 ({ f, n, k, l, l1, o, arity }).
+export function toV3Record(rel, s) {
+  const f = rel || s.f;
+  const l = s.line ?? s.l ?? 1;
+  const l1 = s.endLine ?? s.l1 ?? l;
+  const o = s.owner ?? s.o ?? "";
+  const arity = s.arity !== undefined ? s.arity : null;
+  return { f, n: s.name ?? s.n, k: s.kind ?? s.k, l, l1, o, arity };
+}
+
+// Enrich legacy v1/v2 records missing {l1, o, arity} directly from source lines when upgrading on disk.
+function enrichLegacyEntries(root, entries) {
+  const byFile = new Map();
+  const readLines = (rel) => {
+    if (!byFile.has(rel)) {
+      let ls = null; try { ls = fs.readFileSync(path.join(root, rel), "utf8").split(/\r?\n/); } catch { ls = null; }
+      byFile.set(rel, ls);
+    }
+    return byFile.get(rel);
+  };
+  return entries.map((e) => {
+    if (e.l1 !== undefined && e.o !== undefined && e.arity !== undefined) return e;
+    const ls = e.f ? readLines(e.f) : null;
+    const sIdx = Math.max(0, (e.l || 1) - 1);
+    let l1 = e.l1 ?? e.l ?? 1, o = e.o ?? "", arity = e.arity !== undefined ? e.arity : null;
+    if (ls && ls[sIdx] !== undefined) {
+      if (e.l1 === undefined) {
+        let depth = 0, opened = false;
+        for (let i = sIdx; i < Math.min(ls.length, sIdx + 800); i++) {
+          for (const ch of ls[i]) { if (ch === "{") { depth++; opened = true; } else if (ch === "}") depth--; }
+          if (opened && depth <= 0) { l1 = i + 1; break; }
+          if (!opened && /;\s*$/.test(ls[i])) { l1 = i + 1; break; }
+        }
+      }
+      if (!o && !/^(class|struct|interface|enum|namespace)$/.test(e.k || "")) {
+        for (let i = sIdx - 1; i >= 0; i--) {
+          const m = /\b(?:class|struct|interface|record)\s+([A-Za-z_]\w*)/.exec(ls[i]);
+          if (m) { o = m[1]; break; }
+        }
+      }
+      if (arity === null && /^(func|method|ctor|delegate)$/.test(e.k || "")) {
+        const sig = ls.slice(sIdx, Math.min(ls.length, sIdx + 4)).join(" ");
+        const pm = /\(([^)]*)\)/.exec(sig);
+        const raw = pm ? pm[1].trim() : "";
+        arity = !raw || raw === "void" ? 0 : raw.split(",").filter((x) => !/^(self|cls)$/.test(x.trim())).length;
+      }
+    }
+    return { f: e.f, n: e.n, k: e.k, l: e.l, l1, o, arity };
+  });
+}
+
 const p = (root, f) => path.join(root, DIR, f);
 export function hasOnDisk(root) {
-  try {
-    return fs.existsSync(p(root, POS_FILE)) && fs.existsSync(p(root, TOK_FILE)) && fs.existsSync(p(root, TRI_FILE));
-  } catch {
-    return false;
-  }
+  try { return fs.existsSync(p(root, POS_FILE)) && fs.existsSync(p(root, TOK_FILE)) && fs.existsSync(p(root, TRI_FILE)); }
+  catch { return false; }
 }
 
 // ── varint (unsigned LEB128) ──────────────────────────────────────────────────────────────────────────────
 function pushVarint(bytes, n) {
-  while (n >= 0x80) {
-    bytes.push((n & 0x7f) | 0x80);
-    n = Math.floor(n / 128);
-  }
+  while (n >= 0x80) { bytes.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
   bytes.push(n);
 }
 function readVarint(buf, pos) {
-  let shift = 0,
-    result = 0,
-    b;
-  do {
-    b = buf[pos.i++];
-    result += (b & 0x7f) * Math.pow(2, shift);
-    shift += 7;
-  } while (b & 0x80);
+  let shift = 0, result = 0, b;
+  do { b = buf[pos.i++]; result += (b & 0x7f) * Math.pow(2, shift); shift += 7; } while (b & 0x80);
   return result;
 }
 
@@ -119,18 +159,24 @@ function serializeDict(termMap) {
 // Build all on-disk sidecars from the parsed index { entries, ...} + the symbols.jsonl path (for line offsets).
 // entries[i] must correspond to the (i+1)-th line of symbols.jsonl (line 0 is the header). Streams the .pos and
 // dict files. Postings are built in memory (one pass) — that's the cold cost we're MOVING to build time.
-export function writeOnDisk(root, entries, jsonlPath) {
+export function writeOnDisk(root, entries, jsonlPath = p(root, "symbols.jsonl")) {
+  // Support 1-arg writeOnDisk(root) and upgrade v1/v2 JSONL records to v3 ({l1, o, arity}) in place.
+  if (!entries) {
+    const lines = fs.readFileSync(jsonlPath, "utf8").split(/\r?\n/).filter(Boolean);
+    let hdr = { v: SYMINDEX_FORMAT_V };
+    const parsed = [];
+    lines.forEach((ln, idx) => { try { const o = JSON.parse(ln); if (idx === 0 && o && o.v) hdr = o; else if (o && o.n) parsed.push(o); } catch { /* skip */ } });
+    entries = enrichLegacyEntries(root, parsed);
+    hdr.v = SYMINDEX_FORMAT_V;
+    fs.writeFileSync(jsonlPath, [JSON.stringify(hdr), ...entries.map((r) => JSON.stringify(r))].join("\n") + "\n", "utf8");
+  }
   // 1) symbols.pos — byte offset of each symbol line. Re-scan the jsonl as a Buffer to get exact offsets.
   const buf = fs.readFileSync(jsonlPath);
   const offsets = [];
-  let lineStart = 0;
-  let sawHeader = false;
+  let lineStart = 0, sawHeader = false;
   for (let i = 0; i <= buf.length; i++) {
     if (i !== buf.length && buf[i] !== 0x0a) continue;
-    if (i > lineStart) {
-      if (!sawHeader) sawHeader = true; // line 0 = header, skip
-      else offsets.push(lineStart);
-    }
+    if (i > lineStart) { if (!sawHeader) sawHeader = true; else offsets.push(lineStart); }
     lineStart = i + 1;
   }
   const N = Math.min(offsets.length, entries.length);
@@ -140,27 +186,19 @@ export function writeOnDisk(root, entries, jsonlPath) {
   for (let i = 0; i < N; i++) pos.writeUIntLE(offsets[i], 8 + i * 6, 6);
   fs.writeFileSync(p(root, POS_FILE), pos);
 
-  // 2) token + trigram posting maps (ascending ids by construction: entries iterated in order).
-  const tok = new Map();
-  const tri = new Map();
-  const push = (m, k, i) => {
-    let a = m.get(k);
-    if (!a) {
-      a = [];
-      m.set(k, a);
-    }
-    if (a[a.length - 1] !== i) a.push(i);
-  };
+  // 2) token + trigram posting maps (v3 indexes owner prefix tokens alongside symbol name tokens).
+  const tok = new Map(), tri = new Map();
+  const push = (m, k, i) => { let a = m.get(k); if (!a) { a = []; m.set(k, a); } if (a[a.length - 1] !== i) a.push(i); };
   for (let i = 0; i < N; i++) {
-    const n = entries[i].n;
+    const n = entries[i].n, own = entries[i].o || "";
     if (!n) continue;
     const seen = new Set();
-    for (const t of _tokenize(n)) if (!seen.has(t)) { seen.add(t); push(tok, t, i); }
+    for (const t of _tokenize(own ? `${own} ${n}` : n)) if (!seen.has(t)) { seen.add(t); push(tok, t, i); }
     for (const g of new Set(_trigrams(n))) push(tri, g, i);
   }
   fs.writeFileSync(p(root, TOK_FILE), serializeDict(tok));
   fs.writeFileSync(p(root, TRI_FILE), serializeDict(tri));
-  return { symbols: N, tokens: tok.size, trigrams: tri.size };
+  return { v: SYMINDEX_FORMAT_V, symbols: N, tokens: tok.size, trigrams: tri.size };
 }
 
 // ── Reader ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -223,74 +261,36 @@ function lookup(d, term) {
 
 export function openReader(root) {
   const posPath = p(root, POS_FILE);
-  let st;
-  try {
-    st = fs.statSync(posPath);
-  } catch {
-    return null;
-  }
-  const key = posPath;
-  const cached = _readerCache.get(key);
-  if (cached && cached.mt === st.mtimeMs) return cached.reader;
+  let st; try { st = fs.statSync(posPath); } catch { return null; }
+  const cached = _readerCache.get(posPath);
+  if (cached && cached.mt === st.mtimeMs && cached.sz === st.size) return cached.reader;
+  if (cached) cached.reader.close();
   let posFd, tokD, triD;
-  try {
-    posFd = fs.openSync(posPath, "r");
-    tokD = openDict(p(root, TOK_FILE));
-    triD = openDict(p(root, TRI_FILE));
-  } catch {
-    return null;
-  }
+  try { posFd = fs.openSync(posPath, "r"); tokD = openDict(p(root, TOK_FILE)); triD = openDict(p(root, TRI_FILE)); }
+  catch { try { if (posFd !== undefined) fs.closeSync(posFd); } catch {} return null; }
   const posHead = Buffer.alloc(8);
   fs.readSync(posFd, posHead, 0, 8, 0);
   const N = posHead.readUInt32LE(4);
   const jsonlFd = fs.openSync(p(root, "symbols.jsonl"), "r");
-
-  const symOffset = (id) => {
-    const b = Buffer.alloc(6);
-    fs.readSync(posFd, b, 0, 6, 8 + id * 6);
-    return b.readUIntLE(0, 6);
-  };
+  const symOffset = (id) => { const b = Buffer.alloc(6); fs.readSync(posFd, b, 0, 6, 8 + id * 6); return b.readUIntLE(0, 6); };
   const readSymbol = (id) => {
-    const off = symOffset(id);
     const chunk = Buffer.alloc(4096);
-    let acc = "";
-    let at = off;
-    // read forward until newline (symbol lines are short; one 4KB read almost always suffices)
+    let acc = "", at = symOffset(id);
     for (let guard = 0; guard < 64; guard++) {
       const got = fs.readSync(jsonlFd, chunk, 0, chunk.length, at);
       if (got <= 0) break;
       const nl = chunk.indexOf(0x0a);
-      if (nl >= 0 && nl < got) {
-        acc += chunk.toString("utf8", 0, nl);
-        break;
-      }
+      if (nl >= 0 && nl < got) { acc += chunk.toString("utf8", 0, nl); break; }
       acc += chunk.toString("utf8", 0, got);
       at += got;
     }
-    try {
-      return JSON.parse(acc);
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(acc); } catch { return null; }
   };
   const reader = {
-    N,
-    tokens: (term) => lookup(tokD, term),
-    trigrams: (g) => lookup(triD, g),
-    readSymbol,
-    tri: triD,
-    close: () => {
-      try {
-        fs.closeSync(posFd);
-        fs.closeSync(jsonlFd);
-        fs.closeSync(tokD.fd);
-        fs.closeSync(triD.fd);
-      } catch {
-        /* already closed */
-      }
-    },
+    N, tokens: (term) => lookup(tokD, term), trigrams: (g) => lookup(triD, g), readSymbol, tri: triD,
+    close: () => { try { fs.closeSync(posFd); fs.closeSync(jsonlFd); fs.closeSync(tokD.fd); fs.closeSync(triD.fd); } catch { /* closed */ } },
   };
-  _readerCache.set(key, { mt: st.mtimeMs, reader });
+  _readerCache.set(posPath, { mt: st.mtimeMs, sz: st.size, reader });
   return reader;
 }
 

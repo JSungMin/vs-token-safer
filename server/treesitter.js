@@ -424,11 +424,8 @@ export function tsAvailable() {
   return !!ensureReq();
 }
 
-// Drill an identifier name out of a declaration node. childForFieldName("name") covers most grammars; C/C++
-// hides the name inside nested declarators (function_declarator → … → identifier/field_identifier/
-// qualified_identifier), so we walk declarator fields, then fall back to the first identifier-ish descendant.
-const ID_TYPES =
-  /^(identifier|type_identifier|field_identifier|qualified_identifier|scoped_identifier|namespace_identifier|constant|property_identifier|simple_identifier)$/;
+// Drill an identifier name out of a declaration node (field "name" -> C/C++ declarator chain -> shallow/deep id).
+const ID_TYPES = /^(identifier|type_identifier|field_identifier|qualified_identifier|scoped_identifier|namespace_identifier|constant|property_identifier|simple_identifier)$/;
 function nameOf(node) {
   let n = node.childForFieldName && node.childForFieldName("name");
   if (n) return n.text;
@@ -485,13 +482,15 @@ const TAG_KIND = {
 function extractTagDefs(q, root) {
   const out = [];
   for (const m of q.matches(root)) {
-    let nameNode = null, kind = null;
+    let nameNode = null, defNode = null, kind = null;
     for (const c of m.captures) {
       if (c.name === "name") nameNode = c.node;
-      else if (c.name.startsWith("definition.")) kind = TAG_KIND[c.name.slice(11)] || c.name.slice(11);
+      else if (c.name.startsWith("definition.")) { defNode = c.node; kind = TAG_KIND[c.name.slice(11)] || c.name.slice(11); }
     }
-    if (nameNode && kind && /[A-Za-z_]/.test(nameNode.text))
-      out.push({ name: nameNode.text.slice(0, 80), kind, line: nameNode.startPosition.row + 1, col: nameNode.startPosition.column });
+    if (nameNode && kind && /[A-Za-z_]/.test(nameNode.text)) {
+      const dn = defNode || nameNode;
+      out.push({ name: nameNode.text.slice(0, 80), kind, line: nameNode.startPosition.row + 1, endLine: dn.endPosition.row + 1, owner: "", arity: null, col: nameNode.startPosition.column });
+    }
   }
   return out;
 }
@@ -512,7 +511,44 @@ function extractTagRefs(q, root, want) {
   return out.filter((r) => { const k = `${r.line}:${r.col}`; if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
-// Parse one file and return its declarations: [{ name, kind, line (1-based), col (0-based) }].
+function ownerOf(node, kindMap, nm) {
+  const parts = [];
+  for (let p = node.parent; p; p = p.parent) {
+    const pk = kindMap && kindMap[p.type];
+    if (pk && /^(class|struct|interface|enum|record|trait|impl)$/.test(pk)) {
+      const pn = nameOf(p);
+      if (pn) parts.unshift(pn.split("::").pop());
+    }
+  }
+  if (!parts.length && nm && nm.includes("::")) return nm.split("::").slice(0, -1).join("#");
+  return parts.join("#");
+}
+function arityOf(node, kind) {
+  if (!/^(func|method|ctor|delegate)$/.test(kind)) return null;
+  let pm = node.childForFieldName && node.childForFieldName("parameters");
+  for (let d = !pm && node.childForFieldName && node.childForFieldName("declarator"), g = 0; d && !pm && g < 6; g++) {
+    pm = d.childForFieldName && d.childForFieldName("parameters");
+    d = d.childForFieldName && d.childForFieldName("declarator");
+  }
+    if (!pm) {
+      for (let i = 0; i < node.namedChildCount && !pm; i++) {
+        const c = node.namedChild(i);
+        if (/parameter_list|formal_parameters|^parameters$/.test(c.type)) pm = c;
+      }
+    }
+  if (!pm) return 0;
+  let n = 0;
+  for (let i = 0; i < pm.namedChildCount; i++) {
+    const c = pm.namedChild(i);
+    if (/comment|^self_parameter$/.test(c.type)) continue;
+    if (pm.namedChildCount === 1 && c.text.trim() === "void") continue;
+    if (i === 0 && /^(self|cls)$/.test(c.text.trim())) continue;
+    n++;
+  }
+  return n;
+}
+
+// Parse one file and return its declarations: [{ name, kind, line, endLine, owner, arity, col }].
 // Bounded by maxBytes (a 2 MB generated file isn't worth parsing). Best-effort: any failure → [].
 export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   const ext = extOf(absPath);
@@ -521,79 +557,41 @@ export async function tsFileSymbols(absPath, { maxBytes = 2_000_000 } = {}) {
   const [wasmBase, cfgIn] = entry;
   const cfg = cfgIn || GENERIC;
   let src;
-  try {
-    const st = fs.statSync(absPath);
-    if (st.size > maxBytes) return [];
-    src = fs.readFileSync(absPath, "utf8");
-  } catch {
-    return [];
-  }
+  try { const st = fs.statSync(absPath); if (st.size > maxBytes) return []; src = fs.readFileSync(absPath, "utf8"); } catch { return []; }
   const lang = await loadLanguage(wasmBase);
   if (!lang) return [];
   const TS = _TS;
   let parser, tree;
-  try {
-    parser = new TS.Parser();
-    parser.setLanguage(lang);
-    tree = parser.parse(src);
-  } catch {
-    return [];
-  }
-  // A recovered (ERROR/MISSING) tree still yields decls, but silently DROPS others — report it rather than
-  // hide it. Carried as a property on the returned array: the array-with-extra-property idiom this module
-  // already uses (tsSearchSymbols carries .truncated/.filesParsed/.unavailable; searchSymIndex carries
-  // .fromIndex), so every existing caller keeps working unchanged and only the cert-aware ones read it.
+  try { parser = new TS.Parser(); parser.setLanguage(lang); tree = parser.parse(src); } catch { return []; }
   const health = parseHealth(tree);
-  // Tags-query tier: a file-driven .scm extracts declarations for languages without a hand-tuned node config.
   if (cfg.tags) {
     const q = await defTagsQueryFor(wasmBase);
     let defs = [];
-    try {
-      if (q) defs = extractTagDefs(q, tree.rootNode);
-    } catch {
-      defs = [];
-    }
-    try {
-      tree.delete && tree.delete();
-      parser.delete && parser.delete();
-    } catch {
-      /* ignore */
-    }
+    try { if (q) defs = extractTagDefs(q, tree.rootNode); } catch { defs = []; }
+    try { tree.delete && tree.delete(); parser.delete && parser.delete(); } catch { /* ignore */ }
     const tagged = defs.slice(0, 5000);
     if (health.bad) { tagged.parseError = true; tagged.parseMissing = health.missing; }
     return tagged;
   }
   const out = [];
-  const decl = cfg.decl,
-    kindMap = cfg.kind;
-  // Iterative DFS (deep files would blow a recursive stack). Skip diving into a node we've already captured?
-  // No — methods live inside classes, so we must descend; we just don't double-count (each node tested once).
+  const decl = cfg.decl, kindMap = cfg.kind;
   const stack = [tree.rootNode];
   let guard = 0;
   while (stack.length && out.length < 5000 && guard++ < 200000) {
     const node = stack.pop();
     if (decl.has(node.type)) {
-      // C/C++ `declaration`/`field_declaration` is only a symbol if it actually names something callable or a
-      // member — a bare statement (`int x;` at file scope is fine, but `return x;` parses as neither). nameOf
-      // returns null when there's nothing to name, so we drop those.
       const nm = nameOf(node);
       if (nm && /[A-Za-z_]/.test(nm)) {
+        const kind = kindMap[node.type] || node.type;
         out.push({
-          name: nm.slice(0, 80),
-          kind: kindMap[node.type] || node.type,
-          line: node.startPosition.row + 1,
-          col: node.startPosition.column,
+          name: nm.slice(0, 80), kind, line: node.startPosition.row + 1, endLine: node.endPosition.row + 1,
+          owner: ownerOf(node, kindMap, nm), arity: arityOf(node, kind), col: node.startPosition.column,
         });
       }
     }
     for (let i = node.namedChildCount - 1; i >= 0; i--) stack.push(node.namedChild(i));
   }
-  try {
-    tree.delete && tree.delete();
-    parser.delete && parser.delete();
-  } catch {
-    /* ignore */
-  }
+  try { tree.delete && tree.delete(); parser.delete && parser.delete(); } catch { /* ignore */ }
   if (health.bad) { out.parseError = true; out.parseMissing = health.missing; }
   return out;
 }

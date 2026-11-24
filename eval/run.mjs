@@ -151,7 +151,28 @@ process.env.VTS_CENTRALITY_BUDGET_MS = "0";
 const cord2 = orderForWarm(cdir, cands, 10).map((p) => p.toLowerCase());
 delete process.env.VTS_CENTRALITY_BUDGET_MS;
 const cacheReuseOk = cord2.findIndex((p) => p.endsWith("hub.h")) < cord2.findIndex((p) => p.endsWith("leaf.cpp"));
-const centralityOk = centralityRankOk && graphPersisted && cacheReuseOk;
+// multi-language import centrality (C# using + interface/hub · Python from..import · TS import..from):
+fs.writeFileSync(path.join(cdir, "IZSHudSource.cs"), "namespace MyGame.UI { public interface IZSHudSource {} }\n");
+fs.writeFileSync(path.join(cdir, "HudA.cs"), "using MyGame.UI;\npublic class HudA : IZSHudSource {}\n");
+fs.writeFileSync(path.join(cdir, "HudB.cs"), "using MyGame.UI;\npublic class HudB : IZSHudSource {}\n");
+fs.writeFileSync(path.join(cdir, "Leaf.cs"), "public class Leaf {}\n");
+fs.writeFileSync(path.join(cdir, "hub_core.py"), "def core_fn(): return 1\n");
+fs.writeFileSync(path.join(cdir, "a_mod.py"), "from pkg.hub_core import core_fn\n");
+fs.writeFileSync(path.join(cdir, "b_mod.py"), "import hub_core\n");
+fs.writeFileSync(path.join(cdir, "leaf_mod.py"), "x = 1\n");
+fs.writeFileSync(path.join(cdir, "hubUtil.ts"), "export const k = 1;\n");
+fs.writeFileSync(path.join(cdir, "aView.ts"), 'import { k } from "./hubUtil.js";\n');
+fs.writeFileSync(path.join(cdir, "bView.ts"), 'export * from "./hubUtil";\n');
+fs.writeFileSync(path.join(cdir, "leafView.ts"), "export const z = 0;\n");
+const rankBefore = (files, hi, lo) => {
+  const ord = orderForWarm(cdir, files.map((f) => path.join(cdir, f)), 10).map((p) => p.toLowerCase());
+  return ord.findIndex((p) => p.endsWith(hi)) < ord.findIndex((p) => p.endsWith(lo));
+};
+const multiLangCentralityOk =
+  rankBefore(["HudA.cs", "HudB.cs", "Leaf.cs", "IZSHudSource.cs"], "izshudsource.cs", "leaf.cs") &&
+  rankBefore(["a_mod.py", "b_mod.py", "leaf_mod.py", "hub_core.py"], "hub_core.py", "leaf_mod.py") &&
+  rankBefore(["aView.ts", "bView.ts", "leafView.ts", "hubUtil.ts"], "hubutil.ts", "leafview.ts");
+const centralityOk = centralityRankOk && graphPersisted && cacheReuseOk && multiLangCentralityOk;
 try { fs.rmSync(cdir, { recursive: true, force: true }); } catch { /* ignore */ }
 
 // 12) new read-only tools — hover + document_symbols (mock LSP), find_files + search_text (filesystem).
@@ -2018,12 +2039,11 @@ const digMax = await (async () => {
   const r = sp(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8", env: { ...process.env, VTS_ORCHESTRATOR: "1", VTS_ORCHESTRATOR_AWARE: "1" } });
   return r.stdout || "";
 })();
-const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && /adoption 20% \(2\/10\)/.test(dig) && // tree + posture
+const digOk = /Tool routing/.test(dig) && /COMPLEMENTARY/.test(dig) && /--scope/.test(dig) && !/\d+%/.test(dig) && // deterministic Zone-0 static digest (no dynamic %)
   /qvts/.test(digMax) && digMax.length <= 1000;
-// the rolling recent rate is surfaced alongside the all-time ratio when it diverges (#c): here recent 4/5=80%
-// vs all-time 2/10=20% — the live signal the steer loop can actually move.
-const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 0, converted: 0 }, block: { shown: 0, converted: 0 } } });
-const digRecentOk = /adoption 20% \(2\/10\), recent 80%/.test(dig2);
+// A3 prompt-cache determinism: varying ledger/recent counters must yield byte-identical routingDigest output.
+const dig2 = routingDigest({ builtin: 8, symbol: 2, recent: ["s", "s", "s", "s", "b"], mod: { warn: { shown: 3, converted: 1 }, block: { shown: 0, converted: 0 } } });
+const digRecentOk = dig === dig2 && !/\d+%/.test(dig2);
 // READ-SIDE steer (H1): a LARGE code-file whole-read nudges toward read_symbol / symbol-edit; tight-gated so it
 // never nags a small file, a non-code file, a generated path, or an already-sliced (offset/limit) read.
 const rsBig = readSteerDecision("/p/Source/Big.cpp", 20000);                        // large code file → steer
@@ -2069,11 +2089,23 @@ if (tsAvailable()) {
   // exact-name beats substring in the ranking.
   const exactHit = (await tsSearchSymbols(tsDir, "WidgetView", { skipDir: (n) => SKIP.has(n) }))[0];
   const rankOk = !!exactHit && exactHit.name === "WidgetView";
-  // (c) committable index: build → JSONL on disk → load meta+entries → query by name (abs path back out).
+  // (c) committable index v3: build → JSONL ({f,n,k,l,l1,o,arity}) → load meta+entries → query + git-checkout freshness.
+  fs.writeFileSync(path.join(tsDir, "sub", "Probe.cs"), "public class ProbeOwner {\n  public int Calc(int a, int b) {\n    return a + b;\n  }\n}\n");
+  const { indexFreshness } = await import("../server/symindex.js");
   await buildSymIndex(tsDir, { skipDir: (n) => SKIP.has(n), now: 1700000000000 });
   const idxPresent = hasSymIndex(tsDir);
   const loaded = loadSymIndex(tsDir);
-  const idxLoadOk = !!loaded && loaded.meta.v === 1 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4;
+  const calcRec = loaded && loaded.entries.find((e) => e.n === "Calc");
+  const fresh0 = indexFreshness(tsDir);
+  const probePath = path.join(tsDir, "sub", "Probe.cs");
+  const origProbeSt = fs.statSync(probePath);
+  const pastSec = Math.floor(origProbeSt.mtimeMs / 1000) - 60;
+  fs.utimesSync(probePath, pastSec, pastSec); // simulate `git checkout` restoring an older timestamp (same file size)
+  const staleCheckout = indexFreshness(tsDir);
+  fs.utimesSync(probePath, origProbeSt.atime, origProbeSt.mtime); // restore mtime → fresh again
+  const idxLoadOk = !!loaded && loaded.meta.v === 3 && loaded.meta.built === 1700000000000 && loaded.entries.length >= 4 &&
+    !!calcRec && calcRec.l === 2 && calcRec.l1 === 4 && calcRec.o === "ProbeOwner" && calcRec.arity === 2 &&
+    fresh0.stale === false && staleCheckout.stale === true && staleCheckout.changed >= 1;
   const idxHits = searchSymIndex(tsDir, "buildWidgetTree");
   const idxSearchOk = !!idxHits && idxHits.fromIndex && idxHits.length === 1 && /b\.ts$/.test(idxHits[0].file) && idxHits[0].line === 2;
   // (c2) MULTI-WORD token coverage (LocAgent migration, arXiv:2503.09089): a spaced query finds the decl by
@@ -3226,6 +3258,69 @@ const spawnSitesMissingHide = (() => {
 const noConsoleWindowOk = spawnSitesMissingHide.length === 0;
 if (!noConsoleWindowOk) console.error(`  spawn sites missing windowsHide: ${spawnSitesMissingHide.join(", ")}`);
 
+// ── Phase 3: 6KB+ #L1-200 chunk steer (.trd.md exempt) + cold Roslyn preempt + 3-hex hashline drift & collision safety ──
+const phase3Ok = await (async () => {
+  const { readSteerDecision: rsd } = await import("../server/policy.js");
+  const { lineHash3Hex } = await import("../server/hashline-edit.mjs");
+  const { tsAvailable: tsAvail } = await import("../server/treesitter.js");
+  const chunkSteerOk =
+    Boolean(rsd("/p/Assets/Scripts/Big.cs", 12000, { sliced: true, offset: 1, limit: 200 })) &&
+    rsd("/p/Assets/Scripts/Big.cs", 12000, { sliced: true, offset: 40, limit: 60 }) === null &&
+    rsd("/p/wiki/features/mod-ui.trd.md", 12000, { sliced: true, offset: 1, limit: 35 }) === null &&
+    rsd("/p/wiki/features/mod-ui.trd.md", 12000, { sliced: false }) === null;
+  if (!tsAvail()) return chunkSteerOk;
+  const p3Dir = path.join(os.tmpdir(), `vts-eval-p3-${process.pid}`);
+  fs.mkdirSync(path.join(p3Dir, ".vts-index"), { recursive: true });
+  const csFile = path.join(p3Dir, "Combat.cs");
+  const baseLines = [
+    "public class Combat {",
+    "  public int Calc(int x) {",
+    "    int a = 1;",
+    "    int b = 2;",
+    "    return x + a + b;",
+    "  }",
+    "  public int Ambig(int x) {",
+    "    int dup = 1;",
+    "    x += dup;",
+    "    int sep = 0;",
+    "    int dup = 1;",
+    "    x += dup;",
+    "    return x + sep;",
+    "  }",
+    "}",
+  ];
+  fs.writeFileSync(csFile, baseLines.join("\n") + "\n", "utf8");
+  const st = fs.statSync(csFile);
+  const hdr = { v: 3, built: Date.now(), files: 1, symbols: 2, maxMtime: st.mtimeMs, h: { "Combat.cs": { mt: st.mtimeMs, sz: st.size, h: 1 } } };
+  fs.writeFileSync(path.join(p3Dir, ".vts-index", "symbols.jsonl"), [JSON.stringify(hdr), JSON.stringify({ f: "Combat.cs", n: "Combat", k: "class", l: 1, l1: 15, o: "", arity: null }), JSON.stringify({ f: "Combat.cs", n: "Calc", k: "method", l: 2, l1: 6, o: "Combat", arity: 1 })].join("\n") + "\n", "utf8");
+  const coldRos = await runTool("search_symbol", { q: "Calc", projectPath: p3Dir, backend: "roslyn" });
+  const coldPreemptOk = !coldRos.isError && /Calc/.test(coldRos.text) && /cold roslyn/.test(coldRos.text);
+
+  const h3 = lineHash3Hex(baseLines[2]), h4 = lineHash3Hex(baseLines[3]);
+  const r1 = await runTool("replace_symbol_body", { path: csFile, symbol: "Calc", lines: `3#${h3}..4#${h4}`, body: "    int a = 10;\n    int b = 20;", apply: true, projectPath: p3Dir, backend: "roslyn" });
+  const t1 = fs.readFileSync(csFile, "utf8");
+  const editOk = !r1.isError && t1.includes("int a = 10;") && t1.includes("return x + a + b;");
+
+  // +5L header drift → unique window inside Calc re-anchors cleanly
+  fs.writeFileSync(csFile, ["// d1", "// d2", "// d3", "// d4", "// d5", ...baseLines].join("\n") + "\n", "utf8");
+  const rDrift = await runTool("replace_symbol_body", { path: csFile, symbol: "Calc", lines: `3#${h3}..4#${h4}`, body: "    int a = 99;\n    int b = 88;", apply: true, projectPath: p3Dir, backend: "roslyn" });
+  const tDrift = fs.readFileSync(csFile, "utf8");
+  const driftOk = !rDrift.isError && tDrift.includes("// d5") && tDrift.includes("int a = 99;") && tDrift.includes("return x + a + b;");
+
+  // 0-match bad hash AND 2-match duplicate-block collision inside Ambig must BOTH refuse without touching disk
+  const beforeReject = fs.readFileSync(csFile, "utf8");
+  const badH = h3 === "fff" ? "ffe" : "fff";
+  const rBad = await runTool("replace_symbol_body", { path: csFile, symbol: "Calc", lines: `3#${badH}..4#${h4}`, body: "    int bad = 1;", apply: true, projectPath: p3Dir, backend: "roslyn" });
+  const hDup1 = lineHash3Hex("    int dup = 1;"), hDup2 = lineHash3Hex("    x += dup;");
+  const rAmbig = await runTool("replace_symbol_body", { path: csFile, symbol: "Ambig", lines: `2#${hDup1}..3#${hDup2}`, body: "    int ambig = 1;", apply: true, projectPath: p3Dir, backend: "roslyn" });
+  const afterReject = fs.readFileSync(csFile, "utf8");
+  const rejectOk = rBad.isError && rAmbig.isError && /ambiguous collision/.test(rAmbig.text) && beforeReject === afterReject;
+
+  await disposeClients();
+  try { fs.rmSync(p3Dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  return chunkSteerOk && coldPreemptOk && editOk && driftOk && rejectOk;
+})();
+
 const rows = [
   ["LSP client handshake + symbol", lspOk, "true", lspOk],
   ["symbol → file:line (no bodies)", fmtOk, "true", fmtOk],
@@ -3338,6 +3433,7 @@ const rows = [
   ["CLI resolves tree-sitter without CLAUDE_PLUGIN_DATA: data dir derived from the cache/<mkt>/<plugin>/<ver> install layout; dev checkout derives nothing", derivedDataOk, "true", derivedDataOk],
   ["re-retrieval: a WHOLE read of a file a vts answer just named is counted; sliced reads, unnamed files and reads outside the window are not", rereadOk, "true", rereadOk],
   ["Bash→qvts delegation: quoted pattern kept whole, leading `cd` is the scope (rewrite, not block), a blocked command passes on re-issue", bashOrchOk, "true", bashOrchOk],
+  ["Phase 3: 6KB+ #L1-200 chunk steer (.trd.md exempt) + cold Roslyn preempt + 3-hex hashline drift & collision guard", phase3Ok, "true", phase3Ok],
 ];
 console.log(`vs-token-safer eval — mock LSP backend\n`);
 let ok = true;

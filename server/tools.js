@@ -144,15 +144,16 @@ export const TOOLS = [
   },
   {
     name: "replace_symbol_body",
-    description: "Change a whole function/class/method by NAMING it — USE INSTEAD OF Read-the-file + Edit (the outline gives the span, so you skip the whole-file Read and exact-match line-counting). PREVIEW by default; apply=true writes in ONE call.",
+    description: "Change a function/class/method by NAMING it — USE INSTEAD OF Read + Edit (skips file Read; optional `lines` edits a `LINE#HHH` sub-span). PREVIEW default; apply=true writes.",
     inputSchema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "Declaration name to replace." },
-        body: { type: "string", description: "New full text (signature + body)." },
-        path: { type: "string", description: "File holding the symbol (else resolved via the index)." },
-        line: { type: "number", description: "0-based line; disambiguate same-named (optional)." },
-        apply: { type: "boolean", description: "Write to disk (default false = preview)." },
+        symbol: { type: "string", description: "Declaration name." },
+        body: { type: "string", description: "New text (full decl or `lines` sub-span)." },
+        lines: { type: "string", description: "3-hex span (9#a3f..11#09c or after:9#a3f)." },
+        path: { type: "string", description: "File holding symbol (else via index)." },
+        line: { type: "number", description: "0-based line to disambiguate." },
+        apply: { type: "boolean", description: "Write to disk (default false)." },
         projectPath: ROOT,
         backend: BACKEND,
         maxResults: CAP,

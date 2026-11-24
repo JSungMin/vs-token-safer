@@ -38,7 +38,7 @@ import { classifyPowerShellSearch } from "../server/psearch.js";
 // MEASURE; the adoption ledger is the live metric the steer is tuned against.
 import { classifyDeclEdit } from "../server/edit-detect.js";
 import { recordEditEvent, resetStreak, recordSteerShown, decideEscalation } from "../server/edit-ledger.js";
-import { hookNoise, shouldSuppressSteer, readSteerDecision, topLevelDeclNames, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
+import { hookNoise, shouldSuppressSteer, evaluateReadSteer, hookReadSteerOn, orchestratorPresent, resolveSearchRoot, recordActiveProject, readActiveProject, subprojectsUnder } from "../server/policy.js";
 
 const CONFIG_FILE = process.env.VTS_CONFIG_FILE || path.join(os.homedir(), ".vs-token-safer", "config.json");
 const readConfig = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {}; } catch { return {}; } };
@@ -548,11 +548,6 @@ function isLogSearchSegment(segment) {
 // awk. The same token leak the Read-tool steer catches (raw bodies into context), through a side door no
 // search hook covers. Read-ONLY only: `-i`/inplace is the edit-steer's case, and any stdout redirect (`>`,
 // minus `2>` stderr) means the bytes go to a FILE, not into context — leave those alone.
-const readSteerOn = () => {
-  const v = process.env.VTS_READ_STEER;
-  if (v !== undefined && v !== "") return !/^(0|false|off|no)$/i.test(String(v));   // explicit env wins
-  return hookNoise() !== "quiet";                                                   // else the one-knob level
-};
 const BODY_READ_EXECS = new Set(["sed", "cat", "head", "tail", "awk"]);
 // Interpreters that can be handed an INLINE program (`-c`/`-e`/heredoc) which opens a code file, reads it,
 // and prints slices — a hand-rolled read_symbol. The model reaches for these exactly when read_symbol
@@ -1013,29 +1008,11 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
 
-  // Read — read-side steer (H1, warn-ONLY, never blocks): a whole-file Read of a LARGE code file is the dominant
-  // pre-edit token leak. Point it at read_symbol / the symbol-edit tools. Tight-gated in policy.readSteerDecision
-  // (code ext, not generated, not an already-sliced read, size ≥ threshold). VTS_READ_STEER=0 / matcher-removal off.
+  // Read — read-side steer delegated to policy.evaluateReadSteer (Phase 3 chunk-steer ready).
   if (toolName === "Read") {
-    const fp = ti && ti.file_path;
-    // (A) a Read tells us which project the agent is working in — record it so a later target-less qvts search
-    // scopes to THIS project, not the broad vault/monorepo parent. Best-effort; never blocks a Read.
-    if (ORCH && fp) { try { recordActiveProject(resolveSearchRoot(fp, orchRoot())); } catch { /* ignore */ } }
-    if (fp) {
-      let sz = 0; try { sz = fs.statSync(fp).size; } catch { /* unreadable → leave 0 (no steer) */ }
-      const minB = Number(process.env.VTS_READ_STEER_MIN ?? 6000);
-      const sliced = !!(ti.offset || ti.limit);
-      let s = sz ? readSteerDecision(fp, sz, { sliced, minBytes: minB, ko: KO }) : null;
-      // B: when the steer fires, upgrade the `<name>` placeholder to concrete read_symbol calls naming the
-      // file's real top-level decls — a ready call converts better. Best-effort, bounded, never throws into
-      // the hook; on any failure the placeholder nudge above stands.
-      if (s) {
-        let names = [];
-        try { names = topLevelDeclNames(fs.readFileSync(fp, "utf8"), fp); } catch { /* keep the placeholder */ }
-        if (names.length) s = readSteerDecision(fp, sz, { sliced, minBytes: minB, ko: KO, symbols: names });
-      }
-      if (s) emitWarn(s + setup);
-    }
+    const res = evaluateReadSteer(ti, { ko: KO, orch: ORCH, fallbackRoot: ORCH ? orchRoot() : "" });
+    if (res?.block) { process.stderr.write(res.block + setup + "\n"); process.exit(2); }
+    if (res?.warn) emitWarn(res.warn + setup);
     process.exit(0);
   }
 
@@ -1250,7 +1227,7 @@ process.stdin.on("end", () => {
   // context leak the Read-tool steer catches, through a side door none of the search hooks cover (live: a
   // model ranged-read engine headers with `sed -n '170,260p'`, ~90 raw lines per call, right after a properly
   // delegated locate). Warn-only, same VTS_READ_STEER switch as the Read-tool steer.
-  if (readSteerOn()) {
+  if (hookReadSteerOn()) {
     const br = segments.find(isBashCodeBodyRead);
     if (br) emitWarn(bodyReadNudge(br) + setup);
   }

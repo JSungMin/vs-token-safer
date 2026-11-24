@@ -30,11 +30,87 @@ function readIncludePrefix(f, maxBytes = 65536) {
   catch { return null; }
   finally { try { fs.closeSync(fd); } catch { /* ignore */ } }
 }
-function parseIncludes(txt) {
-  const out = []; const re = /#\s*include\s*["<]([^">]+)[">]/g; let m;
-  while ((m = re.exec(txt))) out.push(path.basename(m[1]).toLowerCase());
-  return out;
+const BCL_CS = /^(?:system|microsoft|unityengine|unityeditor|tmpro|cinemachine|nunit)(?:\.|$)/i;
+const UNITY_BASE = /^(?:MonoBehaviour|ScriptableObject|NetworkBehaviour|Editor|EditorWindow|PropertyDrawer|IEnumerable|IDisposable|IComparable|IEquatable)$/;
+
+function stripCodeComments(txt) {
+  return String(txt).replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 }
+
+function extractCsNamespace(txt) {
+  const m = /\bnamespace\s+([A-Za-z_][\w.]*)/.exec(stripCodeComments(txt));
+  return m ? m[1].toLowerCase() : "";
+}
+
+// Multi-language dependency parser for prewarm centrality:
+//   C/C++ (#include) · C# (using / static-hub / base-interface) · Python (import / from..import) · JS/TS (import/export/require).
+export function parseImports(txt, filePath = "") {
+  const ext = (path.extname(String(filePath)).slice(1) || "").toLowerCase();
+  const out = new Set();
+  const pushSpec = (raw) => {
+    const clean = String(raw || "").trim().replace(/[?#].*$/, "").replace(/[/\\]+$/, "");
+    const b = path.basename(clean).toLowerCase();
+    if (!b || b === "." || b === "..") return;
+    out.add(b);
+    const stem = b.replace(/\.[^.]+$/, "");
+    if (stem && stem !== b) out.add(stem);
+  };
+  if (!ext || /^(c|cc|cxx|cpp|h|hpp|hh|hxx|inl|ipp|tpp)$/.test(ext)) {
+    const re = /#\s*include\s*["<]([^">]+)[">]/g;
+    let m; while ((m = re.exec(txt))) pushSpec(m[1]);
+    return [...out];
+  }
+  if (/^(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(ext)) {
+    const clean = stripCodeComments(txt);
+    for (const m of clean.matchAll(/(?:^|[\s;])(?:import|export)\s+(?:type\s+)?(?:[^"'`;]*?\s+from\s+)?["'`]([^"'`\r\n]+)["'`]/gm)) pushSpec(m[1]);
+    for (const m of clean.matchAll(/\b(?:require|import)\s*\(\s*["'`]([^"'`\r\n]+)["'`]\s*\)/g)) pushSpec(m[1]);
+    return [...out];
+  }
+  if (ext === "py" || ext === "pyi") {
+    const noHash = String(txt).replace(/#[^\n]*/g, "");
+    for (const m of noHash.matchAll(/^\s*from\s+([.\w]+)\s+import\s+(?:\(([^)]*)\)|([^\n]+))/gm)) {
+      const modTail = m[1].replace(/^\.+/, "").split(".").filter(Boolean).pop();
+      if (modTail) out.add(modTail.toLowerCase());
+      for (const part of String(m[2] || m[3] || "").split(",")) {
+        const id = part.trim().split(/\s+as\s+/i)[0].trim();
+        if (/^[A-Za-z_]\w*$/.test(id) && id !== "*") out.add(id.toLowerCase());
+      }
+    }
+    for (const m of noHash.matchAll(/^\s*import\s+([^\n]+)/gm)) {
+      for (const part of m[1].split(",")) {
+        const mod = part.trim().split(/\s+as\s+/i)[0].trim().split(".").filter(Boolean).pop();
+        if (mod && /^[A-Za-z_]\w*$/.test(mod)) out.add(mod.toLowerCase());
+      }
+    }
+    return [...out];
+  }
+  if (ext === "cs") {
+    const clean = stripCodeComments(txt);
+    for (const m of clean.matchAll(/^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?(?:global::)?([A-Za-z_][\w.]*)\s*;/gm)) {
+      if (BCL_CS.test(m[1])) continue;
+      const low = m[1].toLowerCase();
+      out.add("ns:" + low);
+      const tail = low.split(".").pop();
+      if (tail) out.add(tail);
+    }
+    for (const m of clean.matchAll(/\b(?:class|struct|interface|record)\s+[A-Za-z_]\w*(?:<[^>]+>)?\s*:\s*([^{;\r\n]+)/g)) {
+      for (const rawBase of m[1].split(",")) {
+        const id = rawBase.trim().replace(/<.*$/, "").split(".").pop().trim();
+        if (/^[A-Z]\w{2,}$/.test(id) && !UNITY_BASE.test(id)) out.add(id.toLowerCase());
+      }
+    }
+    let qCount = 0;
+    for (const m of clean.matchAll(/\b([A-Z][A-Za-z0-9_]{2,})\s*\.\s*[A-Z_]/g)) {
+      if (!UNITY_BASE.test(m[1]) && !BCL_CS.test(m[1])) {
+        out.add(m[1].toLowerCase());
+        if (++qCount >= 24) break;
+      }
+    }
+    return [...out];
+  }
+  return [];
+}
+const parseIncludes = (txt) => parseImports(txt, "x.cpp");
 // FNV-1a 32-bit content hash — zero-dependency, fast (cbm/codebase-memory-mcp uses native XXH3 for the same
 // job; this is the pure-JS analog, on-mission for our Node package). Used as a CONTENT-EQUALITY check so the
 // include-graph cache is robust to mtime lying: a touch / branch-bounce / `p4 sync` that rewrites identical
@@ -141,38 +217,63 @@ function workingFiles(root) {
 // So coverage GROWS across warmups — first run scans a budget's worth, later runs reuse the cache and
 // extend it, until the whole module is mapped (then only changed files are rescanned). VTS_CENTRALITY_MAX
 // bounds the stat loop (0 = disable centrality); VTS_CENTRALITY_BUDGET_MS bounds fresh reads (0 = cache-only).
+const GRAPH_ENTRY_V = 2;
 function centralityRank(candidates) {
   const maxIter = envInt("VTS_CENTRALITY_MAX", 20000);
   if (maxIter === 0) return new Map(); // disabled
   const list = candidates.slice(0, maxIter);
   const budgetMs = envInt("VTS_CENTRALITY_BUDGET_MS", 400);
-  const byName = new Map();
-  for (const f of list) { const b = path.basename(f).toLowerCase(); if (!byName.has(b)) byName.set(b, norm(f)); }
+  const byName = new Map(), byStem = new Map(), byNs = new Map();
+  for (const f of list) {
+    const nf = norm(f), b = path.basename(f).toLowerCase(), stem = b.replace(/\.[^.]+$/, "");
+    if (!byName.has(b)) byName.set(b, nf);
+    if (stem && !byStem.has(stem)) byStem.set(stem, nf);
+    if (stem === "index" || stem === "__init__") {
+      const dirStem = path.basename(path.dirname(f)).toLowerCase();
+      if (dirStem && !byStem.has(dirStem)) byStem.set(dirStem, nf);
+    }
+  }
   const graph = loadGraph();
   const start = Date.now();
   let dirty = false;
-  const fanin = new Map();
+  const fileEdges = [];
   for (const f of list) {
-    const nf = norm(f);
+    const nf = norm(f), isCs = /\.cs$/i.test(f);
     let st; try { st = fs.statSync(f); } catch { continue; }
     const mt = st.mtimeMs, sz = st.size;
     const cached = graph[nf];
-    let inc;
-    if (cached && cached.m === mt && cached.s === sz) inc = cached.i; // mtime+size match → no read (fast path)
+    let inc, ns = cached && cached.ns ? cached.ns : "";
+    if (cached && cached.v === GRAPH_ENTRY_V && cached.m === mt && cached.s === sz) inc = cached.i;
     else if (Date.now() - start < budgetMs) {
       const txt = readIncludePrefix(f);
       if (txt == null) continue;
       const h = fnv1a(txt);
-      // content-equality: bytes unchanged despite mtime/size jitter → reuse the parsed includes, skip parsing.
-      inc = (cached && cached.h === h) ? cached.i : parseIncludes(txt);
-      graph[nf] = { m: mt, s: sz, h, i: inc };
+      if (cached && cached.v === GRAPH_ENTRY_V && cached.h === h) inc = cached.i;
+      else {
+        inc = parseImports(txt, f);
+        ns = isCs ? extractCsNamespace(txt) : "";
+      }
+      graph[nf] = ns ? { v: GRAPH_ENTRY_V, m: mt, s: sz, h, i: inc, ns } : { v: GRAPH_ENTRY_V, m: mt, s: sz, h, i: inc };
       dirty = true;
-    } else inc = cached ? cached.i : null; // budget spent → reuse stale cache, else defer to a later warmup
-    if (!inc) continue;
+    } else inc = cached ? cached.i : null;
+    if (ns) { const arr = byNs.get(ns) || []; arr.push(nf); byNs.set(ns, arr); }
+    if (inc && inc.length) fileEdges.push([nf, inc]);
+  }
+  const fanin = new Map();
+  const bump = (target, w = 1) => fanin.set(target, (fanin.get(target) || 0) + w);
+  for (const [nf, inc] of fileEdges) {
     const seen = new Set();
-    for (const b of inc) {
-      const target = byName.get(b);
-      if (target && target !== nf && !seen.has(target)) { seen.add(target); fanin.set(target, (fanin.get(target) || 0) + 1); }
+    for (const tok of inc) {
+      if (tok.startsWith("ns:")) {
+        const targets = byNs.get(tok.slice(3));
+        if (targets && targets.length) {
+          const w = 1 / Math.sqrt(targets.length);
+          for (const t of targets) if (t !== nf && !seen.has(t)) { seen.add(t); bump(t, w); }
+        }
+        continue;
+      }
+      const target = byName.get(tok) || byStem.get(tok);
+      if (target && target !== nf && !seen.has(target)) { seen.add(target); bump(target, 1); }
     }
   }
   if (dirty) saveGraph(graph);

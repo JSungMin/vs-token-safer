@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { tsFileSymbols, tsSupports } from "./treesitter.js";
 import { fnv1a } from "./warmset.js";
 import { splitIdent, symbolMatchScore } from "./concept.js";
-import { openReader as _openReader, writeOnDisk as _writeOnDisk, candidatesOnDisk as _candidatesOnDisk } from "./symindex-ondisk.mjs";
+import { openReader as _openReader, writeOnDisk as _writeOnDisk, candidatesOnDisk as _candidatesOnDisk, toV3Record, SYMINDEX_FORMAT_V } from "./symindex-ondisk.mjs";
 
 // On-disk query tier (Phase 2): when the sidecar files exist, a query loads NOTHING large — it binary-searches a
 // small term dict and reads only the matching postings + candidate symbol lines, so cold (one-shot) queries are
@@ -29,7 +29,7 @@ const _ondiskOn = process.env.VTS_SYMINDEX_ONDISK !== "0";
 
 const DIR = ".vts-index";
 const FILE = "symbols.jsonl";
-export const SYMINDEX_VERSION = 1;
+export const SYMINDEX_VERSION = SYMINDEX_FORMAT_V;
 
 // Directories never worth indexing. Kept HERE (not just core.js) because the chunk worker runs in an isolated
 // child process and can't receive a skipDir closure — it imports this shared set instead. Superset of core.js's
@@ -90,36 +90,40 @@ export function symIndexMeta(root) {
   let fd, meta = null;
   try {
     fd = fs.openSync(p, "r");
-    const buf = Buffer.alloc(65536);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    const s = buf.toString("utf8", 0, n);
-    const nl = s.indexOf("\n");
-    const o = JSON.parse(nl === -1 ? s : s.slice(0, nl));
+    const chunk = Buffer.alloc(65536);
+    let acc = "", at = 0;
+    while (at < st.size) {
+      const n = fs.readSync(fd, chunk, 0, chunk.length, at);
+      if (n <= 0) break;
+      const nl = chunk.indexOf(0x0a);
+      if (nl >= 0 && nl < n) { acc += chunk.toString("utf8", 0, nl); break; }
+      acc += chunk.toString("utf8", 0, n);
+      at += n;
+    }
+    const o = JSON.parse(acc);
     if (o && o.v) meta = o;
   } catch { meta = null; }
   finally { try { if (fd !== undefined) fs.closeSync(fd); } catch { /* ignore */ } }
   _metaCache.set(p, { mt: st.mtimeMs, sz: st.size, meta });
   return meta;
 }
-// Is the committed index STALE relative to the current tree? A BUDGETED probe (400ms, like bigTreeLikely) that
-// reads mtime/existence ONLY (never file bodies) and EARLY-EXITS the instant it finds a source newer than the
-// index's watermark. Returns { stale, changed } — `changed` is a lower bound (≥1 on early-exit) or a count-delta
-// when the walk completes in budget. NEVER blocks the answer; a legacy index with no watermark → not stale
-// (can't judge honestly). Cached by root + the jsonl's mtime so repeat queries don't re-walk. VTS_STALE_CHECK=0
-// disables (always treats the index as fresh).
-const _freshnessCache = new Map(); // `${root}\0${jsonlMtime}` → { stale, changed }
+// Is the committed index STALE relative to the current tree? Checks per-file {mt, sz} manifest (`meta.h`) so both
+// newer edits AND `git checkout` past timestamps / same-mtime size changes (`|st.mtimeMs - stored.mt| >= 1 ||
+// st.size !== stored.sz`) are caught immediately; falls back to `maxMtime` on legacy header-only indexes.
+const _freshnessCache = new Map(); // `${root}|${jsonlMtime}` → { at, res }
 export function indexFreshness(root) {
   if (/^(0|false|off|no)$/i.test(String(process.env.VTS_STALE_CHECK ?? "1"))) return { stale: false, changed: 0 };
   const meta = symIndexMeta(root);
-  if (!meta || meta.maxMtime == null) return { stale: false, changed: 0 }; // no watermark → don't cry stale
+  if (!meta || (meta.maxMtime == null && !meta.h)) return { stale: false, changed: 0 };
   let jmt; try { jmt = fs.statSync(symIndexPath(root)).mtimeMs; } catch { return { stale: false, changed: 0 }; }
-  const key = `${root}\0${jmt}`;
+  const key = `${root}|${jmt}`;
+  const ttl = Number(process.env.VTS_FRESHNESS_TTL_MS ?? ((meta.files || 0) >= 2000 ? 2000 : 0));
   const hit = _freshnessCache.get(key);
-  if (hit) return hit;
-  const t0 = Date.now();
-  const stack = [root];
+  if (ttl > 0 && hit && Date.now() - hit.at < ttl) return hit.res;
+  const t0 = Date.now(), stack = [root], H = meta.h && typeof meta.h === "object" ? meta.h : null;
   let seen = 0, changed = 0, budget = false;
-  const maxMt = meta.maxMtime;
+  const seenRels = H ? new Set() : null;
+  const earlyStop = (meta.files || 0) >= 2000;
   outer:
   while (stack.length) {
     if (Date.now() - t0 > 400) { budget = true; break; }
@@ -129,17 +133,27 @@ export function indexFreshness(root) {
       if (e.isDirectory()) { if (!defaultSkipDir(e.name) && e.name !== DIR) stack.push(path.join(dir, e.name)); continue; }
       if (!isIndexable(e.name)) continue;
       seen++;
-      let st; try { st = fs.statSync(path.join(dir, e.name)); } catch { continue; }
-      if (Math.round(st.mtimeMs) > maxMt) { changed = 1; break outer; } // any newer source → stale, stop early
+      const abs = path.join(dir, e.name);
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      if (H) {
+        const rel = path.relative(root, abs).replace(/\\/g, "/");
+        seenRels.add(rel);
+        const stored = H[rel];
+        // Exact per-file stamp check (sub-1ms tolerance handles Math.floor/round integer serialization on NTFS).
+        if (!stored || Math.abs(st.mtimeMs - stored.mt) >= 1 || st.size !== stored.sz) {
+          changed++;
+          if (earlyStop) break outer;
+        }
+      } else if (Math.round(st.mtimeMs) > meta.maxMtime) { changed = 1; break outer; }
     }
   }
+  if (!budget && H) { for (const rel in H) if (!seenRels.has(rel)) changed++; }
   let res;
   if (changed > 0) res = { stale: true, changed };
-  // Count-delta is only trustworthy when the whole tree was walked in budget (a partial walk under-counts).
-  else if (!budget && meta.files != null && Math.abs(seen - meta.files) > Math.max(2, Math.round(meta.files * 0.02)))
+  else if (!budget && !H && meta.files != null && Math.abs(seen - meta.files) > Math.max(2, Math.round(meta.files * 0.02)))
     res = { stale: true, changed: Math.abs(seen - meta.files) };
   else res = { stale: false, changed: 0 };
-  _freshnessCache.set(key, res);
+  if (ttl > 0) _freshnessCache.set(key, { at: Date.now(), res });
   return res;
 }
 
@@ -305,18 +319,13 @@ async function buildSymIndexSingle(
   const skip = skipDir || (() => false);
   const within = inScope || (() => true);
   // Prior index → reuse map (rel → its records) + the per-file stat/hash manifest.
-  const prior = incremental ? loadSymIndex(root) : null;
+  const rawPrior = incremental ? loadSymIndex(root) : null;
+  const prior = rawPrior && rawPrior.meta && rawPrior.meta.v === SYMINDEX_VERSION ? rawPrior : null;
   const priorHashes = (prior && prior.meta && prior.meta.h) || {};
   const priorByFile = new Map();
-  if (prior) for (const e of prior.entries) { const a = priorByFile.get(e.f) || []; a.push({ f: e.f, n: e.n, k: e.k, l: e.l }); priorByFile.set(e.f, a); }
-  const stack = [root];
-  const t0 = Date.now();
-  let files = 0,
-    symbols = 0,
-    timedOut = false,
-    reused = 0,
-    reparsed = 0,
-    parseErrors = 0; // files whose grammar could not parse them — recorded, not skipped (see below)
+  if (prior) for (const e of prior.entries) { const a = priorByFile.get(e.f) || []; a.push(toV3Record(e.f, e)); priorByFile.set(e.f, a); }
+  const stack = [root], t0 = Date.now();
+  let files = 0, symbols = 0, timedOut = false, reused = 0, reparsed = 0, parseErrors = 0;
   const newHashes = {};
   // Stream symbol records to a temp file as we walk. A full UE Engine tree has MILLIONS of symbols; buffering
   // them in an array and joining with "\n" at the end exhausted the V8 heap (Zone OOM) even at 16 GB. A write
@@ -332,71 +341,33 @@ async function buildSymIndexSingle(
     if (!body.write(s)) await once(body, "drain");
   };
   while (stack.length) {
-    if (Date.now() - t0 >= timeBudgetMs) {
-      timedOut = true;
-      break;
-    }
+    if (Date.now() - t0 >= timeBudgetMs) { timedOut = true; break; }
     const dir = stack.pop();
-    let ents;
-    try {
-      ents = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (!skip(e.name) && e.name !== DIR) stack.push(p);
-        continue;
-      }
-      if (!tsSupports(e.name)) continue;
-      if (!within(p)) continue;
-      if (Date.now() - t0 >= timeBudgetMs) {
-        timedOut = true;
-        break;
-      }
+      if (e.isDirectory()) { if (!skip(e.name) && e.name !== DIR) stack.push(p); continue; }
+      if (!tsSupports(e.name) || !within(p)) continue;
+      if (Date.now() - t0 >= timeBudgetMs) { timedOut = true; break; }
       const rel = path.relative(root, p).replace(/\\/g, "/");
-      let st;
-      try {
-        st = fs.statSync(p);
-      } catch {
-        continue;
-      }
-      const mt = Math.round(st.mtimeMs),
-        sz = st.size;
-      const pri = priorHashes[rel];
+      let st; try { st = fs.statSync(p); } catch { continue; }
+      const mt = st.mtimeMs, sz = st.size, pri = priorHashes[rel];
       let recs, h, bad;
-      if (pri && pri.mt === mt && pri.sz === sz) {
-        // unchanged by stat → reuse, no read, no parse (the fast path)
+      if (pri && Math.abs(pri.mt - mt) < 1 && pri.sz === sz) {
         recs = priorByFile.get(rel) || [];
         h = pri.h;
-        bad = pri.e; // a bad parse is BAKED IN: the fast path reuses records verbatim until the bytes change,
-        //             so the flag must ride along with them or the index silently launders the defect.
+        bad = pri.e;
         reused++;
       } else {
-        // stat changed (or new file): read + hash. If the content hash still matches, reuse (mtime jitter).
-        let src;
-        try {
-          src = fs.readFileSync(p, "utf8");
-        } catch {
-          continue;
-        }
+        let src; try { src = fs.readFileSync(p, "utf8"); } catch { continue; }
         h = fnv1a(src);
         if (pri && pri.h === h) {
           recs = priorByFile.get(rel) || [];
           bad = pri.e;
           reused++;
         } else {
-          let syms;
-          try {
-            syms = await tsFileSymbols(p);
-          } catch {
-            continue;
-          }
-          recs = syms.map((s) => ({ f: rel, n: s.name, k: s.kind, l: s.line }));
-          // RECORD, don't skip: a partial parse still yields useful decls, and dropping the file would lose
-          // them AND the evidence. (Deliberately NOT folded into the 0-symbol abort below — that guard exists
-          // for a DEGENERATE build clobbering a good index; a partial parse is not degenerate.)
+          let syms; try { syms = await tsFileSymbols(p); } catch { continue; }
+          recs = syms.map((s) => toV3Record(rel, s));
           bad = syms.parseError ? 1 : undefined;
           if (bad) parseErrors++;
           reparsed++;
@@ -897,7 +868,7 @@ function _searchViaReader(reader, root, q, qTokens, max) {
       const e = reader.readSymbol(id);
       if (!e) continue;
       const r = symbolMatchScore(e.n, qTokens, q, coverMin);
-      if (r) h.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, rank: r });
+      if (r) h.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, endLine: e.l1 ?? e.l, owner: e.o || "", arity: e.arity ?? null, rank: r });
     }
     return h;
   };
@@ -932,7 +903,7 @@ export function searchSymIndex(root, q, { max = 40 } = {}) {
     const h = [];
     const consider = (e) => {
       const r = symbolMatchScore(e.n, qTokens, q, coverMin);
-      if (r) h.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, rank: r });
+      if (r) h.push({ name: e.n, kind: e.k, file: path.join(root, e.f).replace(/\\/g, "/"), line: e.l, endLine: e.l1 ?? e.l, owner: e.o || "", arity: e.arity ?? null, rank: r });
     };
     if (pool) for (const i of pool) consider(idx.entries[i]);
     else for (const e of idx.entries) consider(e);

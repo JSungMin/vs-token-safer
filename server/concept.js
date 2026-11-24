@@ -143,6 +143,9 @@ export function importSpecifiers(text, ext) {
       add(m[1] || m[2]);
   } else if (/^(c|h|cc|cpp|hpp|hh|cxx|hxx|inl|ipp|tpp)$/.test(e)) {
     for (const m of String(text).matchAll(/^\s*#\s*include\s*["<]([^">]+)[">]/gm)) add(m[1]);
+  } else if (e === "cs") {
+    for (const m of String(text).matchAll(/^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?(?:global::)?([A-Za-z_][\w.]*)\s*;/gm))
+      add(m[1]);
   }
   return [...out];
 }

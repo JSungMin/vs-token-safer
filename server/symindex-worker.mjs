@@ -15,6 +15,7 @@ import { once } from "node:events";
 import { tsFileSymbols } from "./treesitter.js";
 import { fnv1a } from "./warmset.js";
 import { defaultSkipDir, isIndexable } from "./symindex.js";
+import { toV3Record } from "./symindex-ondisk.mjs";
 
 const [root, target, outPath, shallowArg] = process.argv.slice(2);
 if (!root || !target || !outPath) {
@@ -96,11 +97,11 @@ for (let k = 0; k < files.length; k++) {
   } catch {
     continue;
   }
-  h[rel] = { mt: Math.round(st.mtimeMs), sz: st.size, h: fnv1a(src) };
+  h[rel] = { mt: st.mtimeMs, sz: st.size, h: fnv1a(src), e: syms.parseError ? 1 : undefined };
   if (syms.length) {
     fileCount++;
     for (const s of syms) {
-      await writeLine(JSON.stringify({ f: rel, n: s.name, k: s.kind, l: s.line }) + "\n");
+      await writeLine(JSON.stringify(toV3Record(rel, s)) + "\n");
       symbols++;
     }
   }
